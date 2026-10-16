@@ -314,3 +314,122 @@ model version, SKU, FC) và giá trị số giữ nguyên.
   MAX(loaded_at)` của cả phạm vi. Với BIGQUERY mỗi lần D-1 ghi lại cửa sổ (`loaded_at` mới) nên dấu vân tay luôn đổi:
   `NO_NEW_DATA` thực tế chỉ xảy ra với DEMO / Excel, và model chờ duyệt sẽ không duyệt được nữa
   (`DATA_CHANGED_SINCE_TRAINING`) sau lần D-1 kế tiếp.
+
+## Chiến lược dự báo trực tiếp DIRECT (1.2.0)
+
+`model.forecast_strategy` có hai giá trị:
+- `RECURSIVE` là mặc định, áp dụng cho mọi model trước 1.2.0 và cho DEMO.
+- `DIRECT` lấy từ thử nghiệm L7_direct (16/10/2026, `experiments/model_tuning_20261016/`).
+
+**Huấn luyện DIRECT:**
+- Lấy `direct_origins` mốc (mặc định 12), mỗi mốc cách nhau `direct_origin_step_days` ngày (mặc định 7), tính lùi từ ngày
+  cuối của dữ liệu.
+- Với mỗi mốc t0 và mỗi h = 1…`backtest_horizon_days` (30) mà ngày đích t0 + h − 1 vẫn còn trong dữ liệu, tạo một dòng
+  huấn luyện gồm:
+  - feature tính **tại t0**, chỉ từ dữ liệu trước t0 (lag, rolling, giá);
+  - mã SKU, mã FC và tuổi chuỗi;
+  - lịch của **ngày đích**;
+  - `horizon` = h.
+- Target là nhu cầu của ngày đích. Chuỗi chỉ được tính nếu đã bắt đầu trước t0. Ngày không rõ (NaN) bị bỏ qua, không coi
+  là 0.
+
+**Dự báo DIRECT:**
+- Mỗi ngày h dùng cùng feature tại mốc dự báo, cộng lịch của ngày đó và h.
+- **Không có giá trị dự báo nào được đưa lại làm đầu vào.** Model đệ quy thì có, và điều này làm dự báo bị đẩy lên ở các
+  ngày xa (bias +0,18 ở ngày 1–7, +0,51 ở ngày 15–30 trong backtest R0).
+- Quy tắc fallback (chuỗi mới, gián đoạn, ngừng bán) và baseline giữ nguyên.
+- Kỳ dự báo lớn hơn `backtest_horizon_days` bị từ chối (`DIRECT_HORIZON_EXCEEDS_TRAINING`), cả khi huấn luyện lẫn khi kéo
+  dài kỳ dự báo.
+
+**Kiểm chứng 17/10/2026** (bản sao DB, dữ liệu BigQuery thật 01/01–15/10):
+- `model.backtest` production với DIRECT cho kết quả **trùng tuyệt đối** với harness L7_direct, sai khác 0 ở tổng và cả 7 fold:
+  WAPE 0,80595, bias +0,06898; baseline 0,83904 / +0,11876.
+- Model cuối: 5,2 triệu dòng, huấn luyện 86–88 giây, RAM đỉnh khoảng 1,7 GB (working set) / 2,1 GB (private).
+- Một job huấn luyện đầy đủ mất khoảng 13–14 phút (backtest khoảng 11 phút).
+
+Phần giải thích ("Xem cách tính") của model DIRECT:
+- nguồn của mọi feature lịch sử là *thực tế tại mốc dự báo*;
+- ngày lịch sử được đánh dấu theo khoảng cách tới mốc, không theo ngày đích;
+- không có phần "đệ quy".
+
+## Nhóm feature Giá (quyết định 17/10/2026)
+
+Chủ dự án quyết định **bật** nhóm Giá cho model phát hành (`model.feature_price = true`). Metric xấu đi không tự động
+tắt nhóm này; muốn đổi phải có phê duyệt của chủ dự án.
+
+**Feature:**
+- `price_last` là giá bình quân theo số lượng của ngày có giá gần nhất **trước** mốc dự báo t0.
+- `price_rel_28` = `price_last` ÷ trung bình giá của 28 ngày trước t0.
+- Giá của ngày không có đơn được lấy từ ngày có giá gần nhất trước đó. Chuỗi chưa từng có giá thì để trống (NaN), không
+  điền 0.
+- Không dùng giá của ngày t0 hay sau t0. Không có giá kế hoạch cho tương lai: mọi ngày đích dùng cùng giá đã biết tại t0.
+
+**Khi nào giá thật sự vào model:**
+- Công tắc bật **và** độ phủ `avg_unit_price` của phạm vi dữ liệu ≥ `feature_min_coverage` (0,5).
+- Không đủ dữ liệu thì nhóm bị bỏ ra khỏi lần huấn luyện đó, không tự tạo giá trị. Lần chạy ghi
+  `feature_groups.price = {switch_on, used}` và `feature_decisions.price.reason`. Trang Cấu hình cảnh báo khi công tắc bật
+  mà không có dữ liệu.
+- Model đã huấn luyện giữ đúng danh sách feature của nó. Dự báo, kéo dài kỳ và giải thích đều dựng lại từ cấu hình đã
+  lưu của lần chạy đó.
+
+**Test chứng minh** (`backend/tests/test_v120_price.py`):
+- giá ánh xạ từ BigQuery đi vào `demand_daily`; giá thiếu vẫn là NULL;
+- registry trả `DATA_OK`;
+- huấn luyện DIRECT có hai feature giá và cây có tách theo giá;
+- dự báo đọc đúng giá cuối đã biết, đổi giá cuối thì dự báo đổi; nhóm đối chứng tắt giá thì không đổi;
+- phần giải thích tái lập đúng số đã publish, với giá là đầu vào *thực tế*;
+- công tắc vẫn bật sau khởi động lại, sau D-1, sau khi lưu mục khác và với settings do 1.1.9 ghi.
+
+Test rò rỉ dữ liệu: `test_price_features_never_read_the_origin_day_or_later` trong `test_v120_features.py`.
+
+**Backtest trên dữ liệu thật** (bản sao, 01/01–15/10/2026, 7 fold, 3.353.298 điểm, chiến lược DIRECT):
+
+| | WAPE | Bias | MAE | Thời gian backtest |
+|---|---|---|---|---|
+| Chỉ nhu cầu | 0,805953 | +0,068976 | 6,7337 | 684 s |
+| Nhu cầu + giá | 0,808117 | +0,071829 | 6,7517 | 837 s |
+
+Kết luận đúng phạm vi: hai feature giá hiện có **chưa cải thiện** metric tổng.
+- Có giá tốt hơn ở 4 fold và kém hơn ở 3 fold.
+- Fold kém nhất là fold 6 (+0,018).
+- Kết quả này không có nghĩa mọi feature giá đều vô ích.
+
+**Giới hạn đã biết:**
+- `sales_price` là giá thực bán trên dòng đơn. Trong cùng SKU × FC × ngày có trung bình 5,6 mức giá, nên giá bình quân
+  phụ thuộc vào cơ cấu đơn (đơn lớn thường có giá thấp hơn) và không phải giá niêm yết.
+- Chỉ biết giá vào ngày có đơn. Thay đổi giá trong những ngày không bán được không quan sát được.
+- 83 ngày-chuỗi có giá bình quân = 0. Đây là dữ liệu nguồn, chưa có quy tắc nghiệp vụ, nên được giữ nguyên.
+- Backtest dùng giá theo lần nạp mới nhất, không phải giá đúng như tại từng thời điểm trong quá khứ. Điều này cũng đúng
+  với số lượng.
+
+## Ngoại lệ quality gate (1.2.0)
+
+Ngưỡng chuẩn (`quality.wape_max`, `abs_bias_max`) **không đổi**.
+
+Từ 1.2.0, một lần huấn luyện bị từ chối **chỉ vì** ngưỡng WAPE/bias:
+- vẫn được giữ file model (có hash) để xem lại;
+- **không** được publish tự động.
+
+Chủ dự án có thể phát hành **đúng lần huấn luyện đó** qua `POST /api/training-runs/{id}/release-with-exception` (trang
+*Hiệu năng model*). Yêu cầu phải có:
+- người phê duyệt;
+- lý do kinh doanh (≥ 20 ký tự);
+- ngày xem lại (trong tương lai);
+- WAPE và bias **đúng** của lần chạy đó (3 chữ số);
+- chuỗi xác nhận `EXCEPTION-<mã lần chạy>`.
+
+Yêu cầu bị từ chối nếu:
+- có kiểm tra khác ngoài ngưỡng metric bị trượt (backtest không tin cậy, quá ít điểm);
+- dữ liệu đã đổi sau khi huấn luyện;
+- file model bị thiếu hoặc bị sửa;
+- đã có model mới hơn được chấp nhận;
+- đang có job huấn luyện chạy.
+
+Khi phát hành, ngoại lệ được ghi ở ba nơi:
+- trong lần huấn luyện (`quality_gate.exception`: người duyệt, lý do, ngày xem lại, metric, ngưỡng chuẩn,
+  `standard_gate_changed = false`);
+- trong nhật ký audit (`MODEL_RELEASED_WITH_GATE_EXCEPTION`);
+- một cảnh báo WARNING `QUALITY_GATE_EXCEPTION_ACTIVE`.
+
+Mọi lần huấn luyện sau, theo lịch hay thủ công, vẫn qua quality gate và cơ chế bảo vệ model đang dùng như bình thường.
+Không có cơ chế bỏ qua chung.

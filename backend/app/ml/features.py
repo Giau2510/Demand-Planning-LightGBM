@@ -14,6 +14,12 @@ import pandas as pd
 LAGS = [1, 2, 3, 4, 5, 6, 7, 14, 21, 28]
 ROLL_WINDOWS = [7, 14, 28, 56]
 LAST_SALE_WINDOW = 180
+CALENDAR = ["dow", "dom", "month", "weekofyear", "is_weekend", "days_to_month_end"]
+
+
+def is_direct(cfg) -> bool:
+    """DIRECT multi-horizon strategy (1.2.0); configurations without the field are RECURSIVE (all models before)."""
+    return getattr(cfg, "forecast_strategy", "RECURSIVE") == "DIRECT"
 
 
 @dataclass
@@ -118,6 +124,10 @@ def feature_names(cfg) -> list[str]:
         names += ["disc_last"]
     if cfg.feature_promotion:
         names += ["promo_last", "promo_mean_7"]
+    if is_direct(cfg):
+        # features at the ORIGIN (calendar removed), then the calendar of the TARGET day and the horizon (1 = first
+        # forecast day); same column order as the experiment harness (L7_direct)
+        names = [n for n in names if n not in CALENDAR] + (CALENDAR if cfg.feature_calendar else []) + ["horizon"]
     return names
 
 
@@ -184,6 +194,33 @@ def features_at(p: Panel, Y: np.ndarray, price: np.ndarray, disc: np.ndarray, pr
         return np.column_stack(cols).astype(np.float32)
 
 
+class _NoCalendar:
+    """The same configuration with the calendar group off: DIRECT features at the origin (calendar is per target day)."""
+    feature_calendar = False
+
+    def __init__(self, cfg):
+        self._cfg = cfg
+
+    def __getattr__(self, name):
+        return getattr(self._cfg, name)
+
+
+def calendar_row(d) -> list[float]:
+    """Calendar features of one day, identical to the calendar block of features_at."""
+    return [float(d.dayofweek), float(d.day), float(d.month), float(d.isocalendar()[1]),
+            1.0 if d.dayofweek >= 5 else 0.0, float(d.days_in_month - d.day)]
+
+
+def direct_extra(cfg, target_day, h: int) -> list[float]:
+    """Columns appended to the origin features of a DIRECT row: target-day calendar (if on) + horizon h (1-based)."""
+    return (calendar_row(target_day) if cfg.feature_calendar else []) + [float(h)]
+
+
+def origin_features(p: Panel, Y, price, disc, promo, dates, t0: int, cfg, sc, fcc) -> np.ndarray:
+    """DIRECT: features of every series at origin t0, from columns [0, t0) only (calendar left out)."""
+    return features_at(p, Y, price, disc, promo, dates, t0, _NoCalendar(cfg), sc, fcc)
+
+
 def static_codes(p: Panel, sku_codes: dict | None = None, fc_codes: dict | None = None):
     sc = sku_codes or p.sku_codes
     fcc = fc_codes or p.fc_codes
@@ -207,6 +244,33 @@ def training_matrix(p: Panel, cfg, min_t: int = 7, max_rows: int = 4_000_000):
         X = features_at(p, p.Y, p.price, p.disc, p.promo, p.dates, t, cfg, sc, fcc)
         Xs.append(X[ok])
         ys.append(target[ok])
+    if not Xs:
+        return np.empty((0, len(feature_names(cfg))), dtype=np.float32), np.empty(0)
+    return np.vstack(Xs), np.concatenate(ys)
+
+
+def direct_training_matrix(p: Panel, cfg, horizon: int):
+    """DIRECT training rows: for origins t0 = T - j * step (j = 1..direct_origins, t0 >= 7) and h = 1..horizon with
+    t0 + h - 1 < T: features at t0 (data < t0), target-day calendar, h -> target Y[t0 + h - 1]. A series counts only if
+    it started before t0 and its target day is known (NaN = not started / no data at all, never 0)."""
+    sc, fcc = static_codes(p)
+    S, T = p.Y.shape
+    Xs, ys = [], []
+    for j in range(1, cfg.direct_origins + 1):
+        t0 = T - j * cfg.direct_origin_step_days
+        if t0 < 7:
+            break
+        Xb = origin_features(p, p.Y, p.price, p.disc, p.promo, p.dates, t0, cfg, sc, fcc)
+        for h in range(1, horizon + 1):
+            td = t0 + h - 1
+            if td >= T:
+                break
+            target = p.Y[:, td]
+            ok = ~np.isnan(target) & (t0 > p.start_idx)
+            if ok.any():
+                extra = np.tile(np.array(direct_extra(cfg, p.dates[td], h), dtype=np.float32), (int(ok.sum()), 1))
+                Xs.append(np.hstack([Xb[ok], extra]))
+                ys.append(target[ok])
     if not Xs:
         return np.empty((0, len(feature_names(cfg))), dtype=np.float32), np.empty(0)
     return np.vstack(Xs), np.concatenate(ys)

@@ -79,6 +79,28 @@ Chi tiết: [TRIEN-KHAI-1.1.6.md](TRIEN-KHAI-1.1.6.md).
 - tự khởi động lại phiên bản trước nếu dừng giữa chừng sau khi đã tắt ứng dụng;
 - chỉ cập nhật `current.txt` sau khi migration thành công.
 
+### Rollback từ 1.2.0
+
+- 1.2.0 không đổi schema (vẫn 3), nên `scripts\rollback-version.ps1 -To 1.1.9` (hoặc `1.1.8`) **không cần khôi phục DB**.
+- Một model DIRECT phát hành bằng 1.2.0 vẫn được bản cũ *hiển thị*, gồm forecast và chỉ số. Tuy vậy, bản cũ không *giải
+  thích* hay *kéo dài* được model đó: nó báo lỗi số feature, không trả số sai.
+- Muốn bỏ hẳn model DIRECT đã phát hành thì làm theo thứ tự:
+  1. dừng ứng dụng;
+  2. `scripts\restore.ps1 -File <bản sao lưu tạo ngay trước khi phát hành>`;
+  3. chạy lại D-1 thủ công nếu dữ liệu đã được nạp thêm sau thời điểm sao lưu.
+
+## Gỡ cài đặt (giữ nguyên dữ liệu)
+
+1. `Stop.bat` (hoặc `scripts\stop.ps1`); nếu đã bật tự khởi động: `scripts\unregister-autostart.ps1`.
+2. Xóa thư mục phiên bản không dùng nữa trong `%LOCALAPPDATA%\Programs\DemandForecast\<phiên bản>`. Muốn gỡ hẳn thì xóa
+   cả thư mục `%LOCALAPPDATA%\Programs\DemandForecast`, rồi xóa các shortcut "Demand Forecasting" trên Desktop / Start
+   Menu.
+3. **Không xóa** thư mục dữ liệu, là nơi `%LOCALAPPDATA%\DemandForecast\storage.json` trỏ tới. Trên máy này đó là
+   `D:\Buymed\Lightgbm AI\data\runtime`, gồm DB, model và cấu hình, cùng với thư mục `backups\`. Cài lại bất kỳ phiên bản
+   nào cũng dùng lại đúng dữ liệu đó.
+4. Nếu đường dẫn dữ liệu đã cấu hình không còn (ví dụ ổ D bị rút), ứng dụng **từ chối khởi động** với `STORAGE_NOT_FOUND`.
+   Nó không tạo DB trống thay thế. Cắm lại ổ, hoặc khôi phục bản sao lưu bằng `scripts\restore.ps1`.
+
 ## Chuyển sang máy Windows khác
 
 1. Máy mới: giải nén gói → `Install.bat`.

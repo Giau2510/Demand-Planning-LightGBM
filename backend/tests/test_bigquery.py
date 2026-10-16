@@ -173,7 +173,11 @@ def test_d0_snapshot_from_bigquery_and_failure_creates_no_snapshot():
     _activate(fake)
     from app.bq import sql_sources
     # 1.1.6: D0 defaults to the user's SQL feed and scheduled BigQuery D0 runs are OFF; this test covers TABLE mode
-    sql_sources.set_options("d0", mode="TABLE", schedule_enabled=True)
+    # 1.2.0: TABLE mode reads the D-0 table, which must pass its metadata check before the D-0 flow can be switched on
+    from app.bq import source_tables
+    sql_sources.set_options("d0", mode="TABLE")
+    assert source_tables.check("d0")["status"] == "PASSED"
+    sql_sources.set_options("d0", schedule_enabled=True)
     res = run_d0_snapshot("J", "slot", False)
     assert res["rows_error"] == 1 and res["series"] == 1
     fake.errors["d0"] = RuntimeError("backend unavailable")

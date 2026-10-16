@@ -120,6 +120,7 @@ export default function ExplainPanel({ runId, sku, fc, date, maxHorizon, origin,
                   {!gate.thresholds_approved_by_business && <span className="warn-t"> · {L("ngưỡng chưa được nghiệp vụ phê duyệt", "thresholds not business-approved")}</span>}</p>
               )}
               {lg?.uses_forecast_inputs && <div className="alert info small">{t("ex.lgb_recursive").replace("{h}", String(lg.recursive_step))}</div>}
+              {lg?.forecast_strategy === "DIRECT" && <div className="alert info small" data-testid="ex-direct">{t("ex.direct")}</div>}
             </section>
 
             <Block title={`1. ${t("ex.identity")}`} open>

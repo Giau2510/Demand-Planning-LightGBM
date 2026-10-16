@@ -1,0 +1,10 @@
+{
+ "name": "L7_direct",
+ "status": "DONE",
+ "started": "2026-10-16T18:25:41",
+ "pid": 22504,
+ "log": "D:\\Buymed\\Lightgbm AI\\experiments\\model_tuning_20261016\\logs\\L7_direct.log",
+ "exit_code": 0,
+ "ended": "2026-10-16T21:40:43",
+ "seconds": 11702.2
+}

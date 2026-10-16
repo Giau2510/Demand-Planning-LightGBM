@@ -1,0 +1,274 @@
+{
+ "name": "L2_regularized",
+ "spec": {
+  "group": "lgbm",
+  "params": {
+   "num_leaves": 15,
+   "min_data_in_leaf": 200,
+   "lambda_l2": 10.0,
+   "feature_fraction": 0.7,
+   "bagging_fraction": 0.7
+  },
+  "hypothesis": "simpler, more regularised trees generalise better across the level shift"
+ },
+ "folds": [
+  {
+   "fold": 6,
+   "origin": "2026-03-20",
+   "end": "2026-04-18",
+   "train_days": 78,
+   "metrics": {
+    "n_points": 435871,
+    "sum_actual": 5174104.0,
+    "sum_forecast": 8494076.707816754,
+    "wape": 1.1311115678751558,
+    "mae": 13.42711235156529,
+    "bias": 0.64165171550799,
+    "mape": 2.2401388002913794,
+    "mape_points": 154109,
+    "mape_excluded_points": 281762,
+    "notes": []
+   },
+   "baseline_metrics": {
+    "n_points": 435871,
+    "sum_actual": 5174104.0,
+    "sum_forecast": 5752234.226411788,
+    "wape": 0.8242655507778234,
+    "mae": 9.784628211883192,
+    "bias": 0.11173533164617251,
+    "mape": 1.3991125222099927,
+    "mape_points": 154109,
+    "mape_excluded_points": 281762,
+    "notes": []
+   },
+   "seconds": 35.3,
+   "n_rows": 911714,
+   "rounds": 300
+  },
+  {
+   "fold": 7,
+   "origin": "2026-04-19",
+   "end": "2026-05-18",
+   "train_days": 108,
+   "metrics": {
+    "n_points": 451933,
+    "sum_actual": 4637090.0,
+    "sum_forecast": 7348000.752196355,
+    "wape": 1.0883209423889673,
+    "mae": 11.166792774022822,
+    "bias": 0.5846146510411389,
+    "mape": 1.875616064230022,
+    "mape_points": 150123,
+    "mape_excluded_points": 301810,
+    "notes": []
+   },
+   "baseline_metrics": {
+    "n_points": 451933,
+    "sum_actual": 4637090.0,
+    "sum_forecast": 5229319.127959905,
+    "wape": 0.7843718069546866,
+    "mae": 8.048101515736862,
+    "bias": 0.12771568547513745,
+    "mape": 1.3051220406435184,
+    "mape_points": 150123,
+    "mape_excluded_points": 301810,
+    "notes": []
+   },
+   "seconds": 46.5,
+   "n_rows": 1346927,
+   "rounds": 300
+  },
+  {
+   "fold": 8,
+   "origin": "2026-05-19",
+   "end": "2026-06-17",
+   "train_days": 138,
+   "metrics": {
+    "n_points": 466386,
+    "sum_actual": 4917073.0,
+    "sum_forecast": 5632554.901547555,
+    "wape": 0.8391504167227356,
+    "mae": 8.84710059265525,
+    "bias": 0.1455097171727072,
+    "mape": 1.5168113857034267,
+    "mape_points": 149932,
+    "mape_excluded_points": 316454,
+    "notes": []
+   },
+   "baseline_metrics": {
+    "n_points": 466386,
+    "sum_actual": 4917073.0,
+    "sum_forecast": 4633497.891464753,
+    "wape": 0.7089230361312686,
+    "mae": 7.474122979761582,
+    "bias": -0.05767152705181455,
+    "mape": 1.2243018226906535,
+    "mape_points": 149932,
+    "mape_excluded_points": 316454,
+    "notes": []
+   },
+   "seconds": 56.3,
+   "n_rows": 1798423,
+   "rounds": 300
+  },
+  {
+   "fold": 9,
+   "origin": "2026-06-18",
+   "end": "2026-07-17",
+   "train_days": 168,
+   "metrics": {
+    "n_points": 484388,
+    "sum_actual": 4413596.0,
+    "sum_forecast": 6027014.767976065,
+    "wape": 0.9595078433321778,
+    "mae": 8.742743377828367,
+    "bias": 0.3655565140026557,
+    "mape": 1.3884042931784595,
+    "mape_points": 155121,
+    "mape_excluded_points": 329267,
+    "notes": []
+   },
+   "baseline_metrics": {
+    "n_points": 484388,
+    "sum_actual": 4413596.0,
+    "sum_forecast": 4927449.054121328,
+    "wape": 0.7957100501506029,
+    "mae": 7.2502677492103444,
+    "bias": 0.11642503167968422,
+    "mape": 1.2014056110358335,
+    "mape_points": 155121,
+    "mape_excluded_points": 329267,
+    "notes": []
+   },
+   "seconds": 67.2,
+   "n_rows": 2264309,
+   "rounds": 300
+  },
+  {
+   "fold": 10,
+   "origin": "2026-07-18",
+   "end": "2026-08-16",
+   "train_days": 198,
+   "metrics": {
+    "n_points": 498510,
+    "sum_actual": 3684366.0,
+    "sum_forecast": 5219624.999366015,
+    "wape": 1.0000330993678874,
+    "mae": 7.391001083600461,
+    "bias": 0.4166955724176195,
+    "mape": 1.5780911454002022,
+    "mape_points": 147579,
+    "mape_excluded_points": 350931,
+    "notes": []
+   },
+   "baseline_metrics": {
+    "n_points": 498510,
+    "sum_actual": 3684366.0,
+    "sum_forecast": 4429162.562741925,
+    "wape": 0.8621435384388892,
+    "mae": 6.371892921193028,
+    "bias": 0.20215053627732016,
+    "mape": 1.3024676943516333,
+    "mape_points": 147579,
+    "mape_excluded_points": 350931,
+    "notes": []
+   },
+   "seconds": 81.9,
+   "n_rows": 2748072,
+   "rounds": 300
+  },
+  {
+   "fold": 11,
+   "origin": "2026-08-17",
+   "end": "2026-09-15",
+   "train_days": 228,
+   "metrics": {
+    "n_points": 505446,
+    "sum_actual": 2639117.0,
+    "sum_forecast": 4875500.769085355,
+    "wape": 1.5072247342560827,
+    "mae": 7.869767332208999,
+    "bias": 0.8473984931647044,
+    "mape": 2.0927146084740653,
+    "mape_points": 94228,
+    "mape_excluded_points": 411218,
+    "notes": []
+   },
+   "baseline_metrics": {
+    "n_points": 505446,
+    "sum_actual": 2639117.0,
+    "sum_forecast": 3741875.7430522395,
+    "wape": 1.1834255453103444,
+    "mae": 6.179094255099061,
+    "bias": 0.4178514037279285,
+    "mape": 1.6527561965086506,
+    "mape_points": 94228,
+    "mape_excluded_points": 411218,
+    "notes": []
+   },
+   "seconds": 91.8,
+   "n_rows": 3246221,
+   "rounds": 300
+  },
+  {
+   "fold": 12,
+   "origin": "2026-09-16",
+   "end": "2026-10-15",
+   "train_days": 258,
+   "metrics": {
+    "n_points": 510764,
+    "sum_actual": 2551140.0,
+    "sum_forecast": 3269144.1915082503,
+    "wape": 1.0682432516730533,
+    "mae": 5.33561114149234,
+    "bias": 0.2814444489554671,
+    "mape": 1.389739569327041,
+    "mape_points": 90379,
+    "mape_excluded_points": 420385,
+    "notes": []
+   },
+   "baseline_metrics": {
+    "n_points": 510764,
+    "sum_actual": 2551140.0,
+    "sum_forecast": 2630194.873257359,
+    "wape": 0.9044628728568932,
+    "mae": 4.51756860988663,
+    "bias": 0.0309880575967446,
+    "mape": 1.2094657741675359,
+    "mape_points": 90379,
+    "mape_excluded_points": 420385,
+    "notes": []
+   },
+   "seconds": 66.2,
+   "n_rows": 3549564,
+   "rounds": 300
+  }
+ ],
+ "seed": 7,
+ "threads": "all",
+ "pooled": {
+  "n_points": 3353298,
+  "sum_actual": 28016486.0,
+  "sum_forecast": 40865917.08949635,
+  "wape": 1.0582213394317823,
+  "mae": 8.841338688387307,
+  "bias": 0.45863821356812384,
+  "mape": 1.726316143182795,
+  "mape_points": 941471,
+  "mape_excluded_points": 2411827,
+  "notes": []
+ },
+ "baseline_pooled": {
+  "n_points": 3353298,
+  "sum_actual": 28016486.0,
+  "sum_forecast": 31343733.479009297,
+  "wape": 0.8390370437128948,
+  "mae": 7.010074734981414,
+  "bias": 0.11876034271426106,
+  "mape": 1.31574209552366,
+  "mape_points": 941471,
+  "mape_excluded_points": 2411827,
+  "notes": []
+ },
+ "seconds": 445.4
+}

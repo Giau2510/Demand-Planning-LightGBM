@@ -1,0 +1,10 @@
+{
+ "name": "L5_l1",
+ "status": "DONE",
+ "started": "2026-10-16T22:37:25",
+ "pid": 22504,
+ "log": "D:\\Buymed\\Lightgbm AI\\experiments\\model_tuning_20261016\\logs\\L5_l1.log",
+ "exit_code": 0,
+ "ended": "2026-10-16T22:45:25",
+ "seconds": 479.7
+}

@@ -1,0 +1,136 @@
+{
+ "created": "2026-10-16",
+ "reference_training_run": "TRN-20261016095451-697A11",
+ "scope": "BIGQUERY:lakehouse-prod-394907.gold_buymed_vn2.demand_planing_lightgbm",
+ "seed": 7,
+ "fold_structure": "production (12 x 30 days, step 30, min 56 days of history -> 7 folds evaluated)",
+ "window_meaning": "training rows from the last N days before each origin; features use history < t only",
+ "selection_protocol": "per fold k: the configuration with the lowest pooled WAPE over the folds BEFORE k (their test days all precede origin k); fold 1 evaluated uses R0_production",
+ "specs": {
+  "R0_production": {
+   "group": "reproduction",
+   "app_path": true,
+   "hypothesis": "exact production configuration (app.ml.model.train / forecast)"
+  },
+  "W30": {
+   "group": "window",
+   "window": 30,
+   "hypothesis": "only the newest regime (after the drop) is learned"
+  },
+  "W60": {
+   "group": "window",
+   "window": 60,
+   "hypothesis": "recent regime, more rows"
+  },
+  "W90": {
+   "group": "window",
+   "window": 90,
+   "hypothesis": "about one quarter of recent history"
+  },
+  "W180": {
+   "group": "window",
+   "window": 180,
+   "hypothesis": "half a year"
+  },
+  "L1_no_sku": {
+   "group": "lgbm",
+   "drop_sku": true,
+   "hypothesis": "sku_code categorical with ~9.7k levels overfits SKU levels of the past"
+  },
+  "L2_regularized": {
+   "group": "lgbm",
+   "params": {
+    "num_leaves": 15,
+    "min_data_in_leaf": 200,
+    "lambda_l2": 10.0,
+    "feature_fraction": 0.7,
+    "bagging_fraction": 0.7
+   },
+   "hypothesis": "simpler, more regularised trees generalise better across the level shift"
+  },
+  "L3_early_stop": {
+   "group": "lgbm",
+   "early_stopping": {
+    "val_days": 30,
+    "max_rounds": 2000,
+    "patience": 50
+   },
+   "hypothesis": "300 rounds is arbitrary; rounds chosen on the last 30 days BEFORE the origin (metric l1), then refit on the whole training window"
+  },
+  "L4_tweedie15": {
+   "group": "lgbm",
+   "params": {
+    "tweedie_variance_power": 1.5
+   },
+   "hypothesis": "heavier zero mass suits intermittent daily demand"
+  },
+  "L5_l1": {
+   "group": "lgbm",
+   "cfg": {
+    "objective": "regression_l1"
+   },
+   "hypothesis": "WAPE numerator = absolute error: the median objective optimises it directly"
+  },
+  "L6_trend": {
+   "group": "lgbm",
+   "trend": true,
+   "hypothesis": "explicit recent-trend ratios (series and whole scope), from data < t only"
+  },
+  "L7_direct": {
+   "group": "lgbm",
+   "direct": {
+    "origins": 12,
+    "step": 7
+   },
+   "hypothesis": "recursive feedback of predicted means into lags/zero-share/days-since-sale inflates forecasts; a direct multi-horizon model (features at the origin + horizon) avoids it"
+  },
+  "L8_fallback14": {
+   "group": "lgbm",
+   "cfg": {
+    "fallback_window_days": 14
+   },
+   "hypothesis": "fallback rates (intermittent / no model) adapt faster with a 14-day window"
+  },
+  "C1_w90_nosku_reg": {
+   "group": "combined",
+   "window": 90,
+   "drop_sku": true,
+   "params": {
+    "num_leaves": 15,
+    "min_data_in_leaf": 200,
+    "lambda_l2": 10.0,
+    "feature_fraction": 0.7,
+    "bagging_fraction": 0.7
+   },
+   "hypothesis": "recent regime + no SKU identity + regularisation"
+  },
+  "C2_direct_nosku_reg": {
+   "group": "combined",
+   "direct": {
+    "origins": 12,
+    "step": 7
+   },
+   "drop_sku": true,
+   "params": {
+    "num_leaves": 15,
+    "min_data_in_leaf": 200,
+    "lambda_l2": 10.0,
+    "feature_fraction": 0.7,
+    "bagging_fraction": 0.7
+   },
+   "hypothesis": "direct strategy + no SKU identity + regularisation"
+  },
+  "C3_w90_nosku_trend_es": {
+   "group": "combined",
+   "window": 90,
+   "drop_sku": true,
+   "trend": true,
+   "early_stopping": {
+    "val_days": 30,
+    "max_rounds": 2000,
+    "patience": 50
+   },
+   "hypothesis": "recent regime + no SKU identity + trend features + early stopping"
+  }
+ }
+}

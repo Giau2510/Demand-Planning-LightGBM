@@ -26,6 +26,8 @@ INTERNAL_FIELDS = ["order_id", "created_at", "order_date", "sku_id", "fc_id", "o
 REFERENCE_FIELDS = ["product_id", "item_code", "outbound_qty", "order_status", "sales_price", "price_after_discount",
                     "seller_code", "sku_status", "open_date", "open_hours", "open_days"]
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# full BigQuery table id project.dataset.table (1.2.0 source tables of the D-1 and D-0 feeds)
+TABLE_ID_RE = re.compile(r"^([a-z][a-z0-9\-]{4,61}[a-z0-9])\.([A-Za-z_][A-Za-z0-9_]{0,1023})\.([A-Za-z_][A-Za-z0-9_]{0,1023})$")
 
 
 class GeneralSettings(BaseModel):
@@ -91,6 +93,21 @@ class ModelSettings(BaseModel):
     objective: Literal["tweedie", "poisson", "regression", "regression_l1"] = "tweedie"
     max_train_days: int = Field(730, ge=60, le=3650)
     num_threads: int = Field(0, ge=0, le=64)
+    # 1.2.0: how the multi-day forecast is produced. RECURSIVE (every model before 1.2.0): a one-day model whose own
+    # forecasts feed the lags of the next days. DIRECT: one model for every horizon day - features computed at the
+    # forecast origin, calendar of the target day and the horizon as a feature; trained on `direct_origins` origins
+    # taken every `direct_origin_step_days` days before the end of the data (experiment L7_direct, 16/10/2026)
+    forecast_strategy: Literal["RECURSIVE", "DIRECT"] = "RECURSIVE"
+    direct_origins: int = Field(12, ge=1, le=52)
+    direct_origin_step_days: int = Field(7, ge=1, le=30)
+
+    @model_validator(mode="after")
+    def _feature_groups(self):
+        # feature groups (1.2.0 UI): historical demand = lags + rolling statistics; price. Calendar and the SKU / FC
+        # codes alone do not describe demand: at least one of the two groups must stay on
+        if not (self.feature_lags or self.feature_rolling or self.feature_price):
+            raise ValueError("FEATURE_GROUPS_EMPTY: turn on 'historical demand' or 'price'")
+        return self
 
 
 class ImportSettings(BaseModel):
@@ -234,6 +251,17 @@ class BigQuerySettings(BaseModel):
     # Manager (DPAPI, per Windows account) and never in the DB, logs or the frontend.
     oauth_enabled: bool = False
     oauth_client_id: str = ""
+    # --- 1.2.0: table of the D-0 feed (today, intraday), full id project.dataset.table; read only by D0_SYNC when the
+    # D-0 feed is in TABLE mode. The D-1 table stays project_id / dataset_id / source_table (scope key unchanged).
+    d0_table_id: str = "lakehouse-prod-394907.gold_buymed_vn2.demand_planing_lightgbm_D0"
+
+    @field_validator("d0_table_id")
+    @classmethod
+    def _d0_table(cls, v):
+        v = (v or "").strip()
+        if v and not TABLE_ID_RE.match(v):
+            raise ValueError("d0_table_id must be project.dataset.table")
+        return v
 
     @field_validator("oauth_client_id")
     @classmethod

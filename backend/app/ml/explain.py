@@ -23,7 +23,7 @@ from ..data.demand import fingerprint, panel_for_run
 from ..messages import AppError
 from . import model
 from . import feature_catalog
-from .features import LAGS, LAST_SALE_WINDOW, ROLL_WINDOWS
+from .features import LAGS, LAST_SALE_WINDOW, ROLL_WINDOWS, is_direct
 
 HISTORY_WINDOW_DAYS = 56
 _cache: "OrderedDict[tuple, dict]" = OrderedDict()
@@ -63,13 +63,16 @@ def _feature_info(name: str) -> tuple[str, str]:
     return FEATURE_INFO.get(name, (name, name))
 
 
-def _input_source(name: str, t: int, T: int) -> str:
+def _input_source(name: str, t: int, T: int, direct: bool = False) -> str:
     """Where a feature value at target index t comes from: ACTUAL history, FORECAST values (recursion), MIXED,
-    TARGET_DATE (calendar), HELD_CONSTANT (price after origin), ASSUMED_ZERO (promotion after origin), STATIC."""
-    if name in ("sku_code", "fc_code", "series_age"):
+    TARGET_DATE (calendar), HELD_CONSTANT (price after origin), ASSUMED_ZERO (promotion after origin), STATIC.
+    DIRECT models compute every history feature at the origin T from actual data only (no forecast is fed back)."""
+    if name in ("sku_code", "fc_code", "series_age", "horizon"):
         return "STATIC"
     if name in ("dow", "dom", "month", "weekofyear", "is_weekend", "days_to_month_end"):
         return "TARGET_DATE"
+    if direct:
+        return "ACTUAL"
     if name.startswith("lag_"):
         return "FORECAST" if t - int(name[4:]) >= T else "ACTUAL"
     if name in ("price_last", "disc_last"):
@@ -176,8 +179,10 @@ def explain(run_id: str, sku: str, fc_id: str, target_date: str) -> dict:
         calc_lo = {model.FB_NEW: int(p.start_idx[s]), model.FB_INTERMITTENT: T - mc.fallback_window_days,
                    model.FB_INACTIVE: T - mc.inactive_days}.get(method)
         t_idx = T + h - 1                      # target day index; days >= T are forecasts, not history
+        direct = is_direct(mc)
+        ref = T if direct else t_idx           # DIRECT: history features are read relative to the origin T
         feats = model_feature_names(rep)
-        lgb_lo = t_idx - max(ROLL_WINDOWS) if method == model.METHOD_LGBM else None
+        lgb_lo = ref - max(ROLL_WINDOWS) if method == model.METHOD_LGBM else None
         days = []
         for i in range(lo, T):
             y = p.Y[s, i]
@@ -190,7 +195,7 @@ def explain(run_id: str, sku: str, fc_id: str, target_date: str) -> dict:
             else:
                 st = "ORDERS"
             if method == model.METHOD_LGBM:
-                used_by = _features_using_day(t_idx - i, feats)
+                used_by = _features_using_day(ref - i, feats)
                 in_calc = bool(used_by)
             else:
                 used_by = []
@@ -207,9 +212,10 @@ def explain(run_id: str, sku: str, fc_id: str, target_date: str) -> dict:
             hist["calc"] = {"kind": "LIGHTGBM_FEATURE_WINDOWS", "from": used[0]["date"] if used else None,
                             "rolling_from": str(p.dates[max(lgb_lo, lo)].date()),
                             "to": run["data_as_of"], "known_days": len(used), "sum": float(sum(d["qty"] for d in used)),
-                            "recursive_days": max(0, h - 1),
-                            "recursive_from": run["forecast_origin"] if h > 1 else None,
-                            "recursive_to": str(p.dates[T - 1].date() + __import__("datetime").timedelta(days=h - 1)) if h > 1 else None,
+                            "recursive_days": 0 if direct else max(0, h - 1),
+                            "recursive_from": run["forecast_origin"] if h > 1 and not direct else None,
+                            "recursive_to": str(p.dates[T - 1].date() + __import__("datetime").timedelta(days=h - 1)) if h > 1 and not direct else None,
+                            "forecast_strategy": "DIRECT" if direct else "RECURSIVE",
                             "last_sale_window_days": LAST_SALE_WINDOW}
         if calc_lo is not None:
             used = [d for d in days if d["in_calc"]]
@@ -258,6 +264,7 @@ def explain(run_id: str, sku: str, fc_id: str, target_date: str) -> dict:
             splits = booster.feature_importance(importance_type="split")
             T = rep["panel"].T
             t = T + h - 1
+            direct = is_direct(rep["mcfg"])
             feats = []
             for i, n in enumerate(names):
                 v = X[i]
@@ -266,7 +273,7 @@ def explain(run_id: str, sku: str, fc_id: str, target_date: str) -> dict:
                 c = float(contrib[i])
                 feats.append({"name": n, "value": None if np.isnan(v) else float(v), "contribution": c,
                               "effect": "NEGLIGIBLE" if abs(c) < 0.005 else ("UP" if c > 0 else "DOWN"),
-                              "source": _input_source(n, t, T), "used_in_trees": int(splits[i]) > 0,
+                              "source": _input_source(n, t, T, direct), "used_in_trees": int(splits[i]) > 0,
                               "missing": bool(np.isnan(v)), "vi": vi, "en": en, "group": cat["group"],
                               "window": cat["window"], "includes_target_day": cat["includes_target_day"],
                               "catalog": {"vi": cat["vi"], "en": cat["en"]}})
@@ -281,7 +288,8 @@ def explain(run_id: str, sku: str, fc_id: str, target_date: str) -> dict:
                       prediction_before_clip=pred, reproduced_yhat=reproduced,
                       published_yhat=val["yhat"], matches_published=abs(reproduced - val["yhat"]) <= 1e-4,
                       n_trees=booster.num_trees(), features=feats,
-                      recursive_step=h, uses_forecast_inputs=any(f["source"] in ("FORECAST", "MIXED") for f in feats))
+                      recursive_step=0 if direct else h, forecast_strategy="DIRECT" if direct else "RECURSIVE",
+                      uses_forecast_inputs=any(f["source"] in ("FORECAST", "MIXED") for f in feats))
             if not lg["matches_published"]:
                 lg = {"status": "NOT_REPRODUCED"}
                 out["notes"].append("LIGHTGBM_NOT_REPRODUCED")

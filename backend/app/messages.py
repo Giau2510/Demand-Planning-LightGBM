@@ -100,6 +100,33 @@ CATALOG: dict[str, tuple[str, str]] = {
     "PROMOTION_NOT_ALLOWED": ("Không thể dùng model này: không còn là model chờ duyệt hoặc đã có model mới hơn được chấp nhận.",
                               "This model cannot be put in use: it is no longer a candidate or a newer model was accepted."),
     "FORECAST_TOO_LARGE": ("Job dự báo vượt giới hạn an toàn (số dòng).", "Forecast job exceeds the safety limit (rows)."),
+    "DIRECT_HORIZON_EXCEEDS_TRAINING": ("Model dự báo trực tiếp (DIRECT) chỉ được huấn luyện và kiểm định tới số ngày backtest; "
+                                        "kỳ dự báo đang bật dài hơn — giảm kỳ dự báo hoặc tăng số ngày backtest rồi huấn luyện lại.",
+                                        "A DIRECT model is trained and evaluated only up to the backtest horizon; the enabled "
+                                        "horizon is longer — shorten it or raise the backtest horizon and retrain."),
+    "QUALITY_GATE_EXCEPTION_ACTIVE": ("Model đang dùng được phát hành theo NGOẠI LỆ quality gate đã phê duyệt (chưa đạt ngưỡng "
+                                      "chuẩn). Theo dõi sai số và xem lại trước ngày hẹn.",
+                                      "The model in use was released under an approved quality-gate EXCEPTION (standard "
+                                      "thresholds not met). Monitor the error and review it before the agreed date."),
+    "RELEASED_WITH_GATE_EXCEPTION": ("Đã phát hành model theo ngoại lệ quality gate đã phê duyệt (chỉ cho lần huấn luyện này).",
+                                     "Model released under an approved quality-gate exception (this training run only)."),
+    "BQ_TABLE_ID_INVALID": ("Mã bảng phải có dạng project.dataset.table (ví dụ lakehouse-prod-394907.gold_buymed_vn2.ten_bang).",
+                            "The table id must be project.dataset.table."),
+    "BQ_TABLE_CHECK_FAILED": ("Bảng chưa đạt kiểm tra (không tồn tại, thiếu quyền, sai location hoặc thiếu cột đã ánh xạ) — chưa lưu, "
+                              "nguồn đang dùng giữ nguyên.",
+                              "The table did not pass the check (missing, no permission, wrong location or a mapped column is "
+                              "missing) — not saved, the current source is unchanged."),
+    "BQ_TABLE_CHANGE_NEEDS_PRODUCTION_OFF": ("Không đổi bảng D-1 khi chế độ sản xuất đang bật (sẽ đổi phạm vi dữ liệu dự báo). "
+                                             "Tắt chế độ sản xuất trước, đổi bảng, rồi kiểm tra lại toàn kỳ.",
+                                             "The D-1 table cannot change while production mode is on (it would switch the "
+                                             "forecast data scope). Turn production off, change it, then re-validate."),
+    "BQ_D0_TABLE_MISSING": ("Chưa cấu hình bảng D-0.", "The D-0 table is not configured."),
+    "D0_TABLE_NOT_CHECKED": ("Bảng D-0 chưa được kiểm tra thành công (trang BigQuery → Bảng nguồn D-1 / D-0).",
+                             "The D-0 table has not passed its check (BigQuery page → D-1 / D-0 source tables)."),
+    "SCHEDULER_TICK_DEFERRED": ("Bộ lập lịch hoãn một lượt vì database đang bận ghi (sẽ thử lại ở lượt sau).",
+                                "The scheduler deferred one tick because the database was busy writing (retried next tick)."),
+    "FEATURE_GROUPS_EMPTY": ("Phải bật ít nhất một nhóm feature: nhu cầu lịch sử hoặc giá.",
+                             "At least one feature group must be on: historical demand or price."),
     "NO_ACTIVE_DATASET": ("Chưa có bộ dữ liệu cho nguồn đang chọn. Hãy bấm 'Tạo dữ liệu Demo' (nguồn DEMO) hoặc import file Excel rồi chọn lô làm bộ dữ liệu (nguồn MANUAL_IMPORT).",
                           "No dataset for the selected source yet. Click 'Generate DEMO data' (DEMO source) or import an Excel file and select it as dataset (MANUAL_IMPORT)."),
     "ACTIVE_DATASET_INCONSISTENT": ("Cấu hình đang trỏ tới một lô không còn hoạt động. Hệ thống không tự chọn lô khác — vào 'Lịch sử lô import' và chọn lại bộ dữ liệu.",
@@ -247,7 +274,8 @@ def category(code: str) -> str:
     if code in ("TRAINING_FAILED", "QUALITY_GATE_FAILED", "DATA_NOT_TRAINABLE", "FORECAST_TOO_LARGE", "PUBLISH_FAILED",
                 "MODEL_ARTIFACT_MISSING", "DATA_CHANGED_SINCE_TRAINING", "REPRODUCTION_MISMATCH", "NOTHING_TO_EXTEND",
                 "NOT_LIGHTGBM", "TRACE_TOO_LARGE", "TRACE_TIMEOUT", "UNSUPPORTED_MODEL", "PROMOTION_REVIEW_REQUIRED",
-                "PROMOTION_NOT_ALLOWED"):
+                "PROMOTION_NOT_ALLOWED", "DIRECT_HORIZON_EXCEEDS_TRAINING", "QUALITY_GATE_EXCEPTION_ACTIVE",
+                "RELEASED_WITH_GATE_EXCEPTION"):
         return "MODEL"
     if code in ("NO_ACTIVE_DATASET", "ACTIVE_DATASET_INCONSISTENT", "SOURCE_NOT_READY", "SCHEDULER_DISABLED",
                 "FLOW_NOT_READY", "D0_SCHEDULE_DISABLED", "D1_SCHEDULE_DISABLED", "TRAIN_SCHEDULE_DISABLED",

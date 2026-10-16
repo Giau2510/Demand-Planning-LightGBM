@@ -159,6 +159,50 @@ export function IngestCheckView({ r }: { r: any }) {
   );
 }
 
+/** 1.2.0: the table of each feed, configured and checked separately (metadata only, no query, no cost). A table is saved
+ * only after a PASSED check of that exact id; the D-1 table cannot change while production mode is on. */
+export function SourceTables() {
+  const { t } = useI18n();
+  const st = useAsync(() => get("/api/bigquery/source-tables"), []);
+  const act = useAction();
+  const [ids, setIds] = useState<Record<string, string>>({});
+  const [res, setRes] = useState<Record<string, any>>({});
+  useEffect(() => {
+    if (st.data?.d1 && st.data?.d0) setIds({ d1: st.data.d1.table_id, d0: st.data.d0.table_id });
+  }, [st.data]);
+  if (!st.data?.d1 || !st.data?.d0) return <Card title={t("bq.tables")}>{st.error ? <ErrorBox error={st.error} /> : <Loading />}</Card>;
+  const row = (kind: "d1" | "d0") => {
+    const s = st.data[kind];
+    const lc = res[kind] ?? s.last_check;
+    return (
+      <div key={kind} className="stack" data-testid={`table-${kind}`}>
+        <Field label={t(kind === "d1" ? "bq.table_d1" : "bq.table_d0")}>
+          <input data-testid={`table-${kind}-id`} value={ids[kind] ?? ""} onChange={(e) => setIds({ ...ids, [kind]: e.target.value })} />
+        </Field>
+        <div className="row wrap small">
+          <button data-testid={`table-${kind}-check`} disabled={act.busy}
+            onClick={async () => { const r = await act.run(() => post(`/api/bigquery/source-tables/${kind}/check`, { table_id: ids[kind] })); if (r) setRes({ ...res, [kind]: r }); }}>{t("bq.table_check")}</button>
+          <button className="primary" data-testid={`table-${kind}-save`} disabled={act.busy || (kind === "d1" && s.production_enabled && ids.d1 !== s.table_id)}
+            onClick={async () => { const r = await act.run(() => put(`/api/bigquery/source-tables/${kind}`, { table_id: ids[kind] }), t("common.saved")); if (r) { setRes({}); st.reload(); } }}>{t("bq.table_save")}</button>
+          {lc ? <Pill status={lc.status === "PASSED" ? "OK" : "FAILED"} label={`${lc.status} · ${fmtTime(lc.checked_at)}`} /> : <span className="muted">{t("bq.table_never_checked")}</span>}
+          {kind === "d0" && <span className="muted">{t("bq.table_mode")}: <b>{s.mode}</b></span>}
+        </div>
+        {lc?.errors?.length > 0 && <Issues items={lc.errors.map((e: any) => ({ code: e.code, detail: e.column ? `${e.field ?? ""} → ${e.column}` : e.detail }))} tone="bad" />}
+        {kind === "d1" && s.production_enabled && <div className="small muted">{t("bq.table_prod_lock")}</div>}
+      </div>
+    );
+  };
+  return (
+    <Card title={t("bq.tables")}>
+      <p className="small">{t("bq.tables_note")}</p>
+      <ErrorBox error={act.error} />
+      <OkBox text={act.ok} />
+      {row("d1")}
+      {row("d0")}
+    </Card>
+  );
+}
+
 export default function BigQuery() {
   const { t, pick } = useI18n();
   const sys = useSystem();
@@ -231,6 +275,8 @@ export default function BigQuery() {
         <div className="alert info small">{t("bq.adc_help")}<br />ADC file: {st.data?.adc_default_file_exists ? "✔" : "✘"} · GOOGLE_APPLICATION_CREDENTIALS: {st.data?.adc_env_set ? "✔" : "✘"}</div>
         <p className="small muted">{t("bq.cost_note")}</p>
       </Card>
+
+      <SourceTables />
 
       <Card title={t("bq.checks")}>
         <div className="row wrap">

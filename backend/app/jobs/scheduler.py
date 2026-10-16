@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
@@ -163,11 +164,28 @@ class Scheduler:
 
     def _loop(self) -> None:
         while not self._stop.is_set():
-            try:
-                self.tick()
-            except Exception:  # pragma: no cover - logged, loop continues
-                log.exception("scheduler tick failed")
+            self.safe_tick()
             self._stop.wait(self.tick_seconds)
+
+    def safe_tick(self) -> str:
+        """One loop iteration. A long write transaction (e.g. a D-1 full reload) can hold the database lock longer than
+        the busy timeout: that tick is deferred with a WARNING (SCHEDULER_TICK_DEFERRED) and the next tick plans the
+        same slots again (idempotency keys prevent double runs). Any other error stays an ERROR."""
+        try:
+            self.tick()
+            return "OK"
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e).lower() or "busy" in str(e).lower():
+                self.deferred_ticks = getattr(self, "deferred_ticks", 0) + 1
+                log.warning("scheduler tick deferred: database busy",
+                            extra={"ctx": {"code": "SCHEDULER_TICK_DEFERRED", "error": str(e)[:200],
+                                           "deferred_ticks": self.deferred_ticks}})
+                return "DEFERRED"
+            log.exception("scheduler tick failed")
+            return "ERROR"
+        except Exception:  # pragma: no cover - logged, loop continues
+            log.exception("scheduler tick failed")
+            return "ERROR"
 
     def tick(self, now: datetime | None = None, wait: bool = False) -> list[dict]:
         sched = ss.get("schedule")

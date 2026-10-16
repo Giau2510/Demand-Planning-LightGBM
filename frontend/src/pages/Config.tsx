@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { get, post, put } from "../api";
 import { useI18n } from "../i18n";
-import { Card, DateInput, ErrorBox, Field, Loading, OkBox, Term, fmtDatesInText, fmtTime, useAction, useAsync } from "../components/ui";
+import { Card, DateInput, ErrorBox, Field, Loading, OkBox, Term, fmtDatesInText, fmtPct, fmtTime, useAction, useAsync } from "../components/ui";
 
 type Setter = (patch: Record<string, any>) => void;
 
@@ -98,6 +98,51 @@ function HorizonEditor({ v, set }: { v: any; set: Setter }) {
   );
 }
 
+/** 1.2.0 feature groups. Historical demand = lags + rolling statistics of the demand; price = quantity-weighted unit
+ * price of the order lines. Calendar and SKU / FC codes are always part of the model. A group that is on but has no data
+ * in the active source is left out of the next training (shown here). Changes apply to the NEXT training only: a model
+ * in use keeps the exact feature list it was trained with. */
+export function FeatureGroups({ v, set }: { v: any; set: Setter }) {
+  const { t } = useI18n();
+  const reg = useAsync(() => get("/api/features/registry"), []);
+  const price = reg.data?.decisions?.price;
+  const hist = !!(v.feature_lags || v.feature_rolling);
+  const none = !v.feature_lags && !v.feature_rolling && !v.feature_price;
+  return (
+    <>
+      <div className="full"><b>{t("cfg.feature_groups")}</b> <span className="small muted">{t("cfg.fg_note")}</span></div>
+      <Field label={t("cfg.fg_history")}>
+        <label className="row small">
+          <input type="checkbox" data-testid="fg-history" checked={hist}
+            onChange={(e) => set({ feature_lags: e.target.checked, feature_rolling: e.target.checked })} />{t("cfg.fg_history_desc")}
+        </label>
+      </Field>
+      <Field label={t("cfg.fg_price")}>
+        <label className="row small">
+          <input type="checkbox" data-testid="fg-price" checked={!!v.feature_price} onChange={(e) => set({ feature_price: e.target.checked })} />{t("cfg.fg_price_desc")}
+        </label>
+        {v.feature_price && price && !price.used && (
+          <div className="alert warn small" data-testid="fg-price-nodata">{t("cfg.fg_price_nodata").replace("{c}", fmtPct(price.coverage ?? 0))}</div>
+        )}
+      </Field>
+      <div className="full small muted">{t("cfg.fg_always")}</div>
+      {none && <div className="full alert error small" data-testid="fg-empty">{t("cfg.fg_empty")}</div>}
+      <Field label={t("cfg.strategy")}>
+        <select data-testid="strategy" value={v.forecast_strategy ?? "RECURSIVE"} onChange={(e) => set({ forecast_strategy: e.target.value })}>
+          <option value="RECURSIVE">{t("cfg.strategy.RECURSIVE")}</option>
+          <option value="DIRECT">{t("cfg.strategy.DIRECT")}</option>
+        </select>
+      </Field>
+      {v.forecast_strategy === "DIRECT" && (
+        <>
+          <Field label={t("cfg.direct_origins")}><Num v={v} k="direct_origins" set={set} min={1} /></Field>
+          <Field label={t("cfg.direct_origin_step_days")}><Num v={v} k="direct_origin_step_days" set={set} min={1} /></Field>
+        </>
+      )}
+    </>
+  );
+}
+
 export default function Config() {
   const { t } = useI18n();
   return (
@@ -121,10 +166,7 @@ export default function Config() {
       <Section section="model" title={<Term id="features">{t("cfg.model")}</Term>}>
         {(v, set) => (
           <>
-            <div className="full"><b>{t("cfg.feature_groups")}</b></div>
-            {["feature_lags", "feature_rolling", "feature_calendar", "feature_price", "feature_promotion"].map((k) => (
-              <Field key={k} label={t(`cfg.${k}`)}><Bool v={v} k={k} set={set} /></Field>
-            ))}
+            <FeatureGroups v={v} set={set} />
             <div className="full"><b><Term id="fallback">{t("cfg.fallback")}</Term></b></div>
             {["min_total_history_days", "min_series_history_days", "inactive_days", "fallback_window_days"].map((k) => (
               <Field key={k} label={t(`cfg.${k}`)}><Num v={v} k={k} set={set} /></Field>

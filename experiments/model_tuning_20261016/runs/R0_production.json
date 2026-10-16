@@ -1,0 +1,268 @@
+{
+ "name": "R0_production",
+ "spec": {
+  "group": "reproduction",
+  "app_path": true,
+  "hypothesis": "exact production configuration (app.ml.model.train / forecast)"
+ },
+ "folds": [
+  {
+   "fold": 6,
+   "origin": "2026-03-20",
+   "end": "2026-04-18",
+   "train_days": 78,
+   "metrics": {
+    "n_points": 435871,
+    "sum_actual": 5174104.0,
+    "sum_forecast": 8297415.129276604,
+    "wape": 1.1056051446354016,
+    "mae": 13.124332660990545,
+    "bias": 0.6036428972584634,
+    "mape": 2.0769151896358595,
+    "mape_points": 154109,
+    "mape_excluded_points": 281762,
+    "notes": []
+   },
+   "baseline_metrics": {
+    "n_points": 435871,
+    "sum_actual": 5174104.0,
+    "sum_forecast": 5752234.226411788,
+    "wape": 0.8242655507778234,
+    "mae": 9.784628211883192,
+    "bias": 0.11173533164617251,
+    "mape": 1.3991125222099927,
+    "mape_points": 154109,
+    "mape_excluded_points": 281762,
+    "notes": []
+   },
+   "seconds": 69.9,
+   "n_rows": 911714,
+   "rounds": 300
+  },
+  {
+   "fold": 7,
+   "origin": "2026-04-19",
+   "end": "2026-05-18",
+   "train_days": 108,
+   "metrics": {
+    "n_points": 451933,
+    "sum_actual": 4637090.0,
+    "sum_forecast": 6721542.368217925,
+    "wape": 0.9829008158609918,
+    "mae": 10.085122228783572,
+    "bias": 0.4495173413105902,
+    "mape": 1.6829183650811763,
+    "mape_points": 150123,
+    "mape_excluded_points": 301810,
+    "notes": []
+   },
+   "baseline_metrics": {
+    "n_points": 451933,
+    "sum_actual": 4637090.0,
+    "sum_forecast": 5229319.127959905,
+    "wape": 0.7843718069546866,
+    "mae": 8.048101515736862,
+    "bias": 0.12771568547513745,
+    "mape": 1.3051220406435184,
+    "mape_points": 150123,
+    "mape_excluded_points": 301810,
+    "notes": []
+   },
+   "seconds": 76.7,
+   "n_rows": 1346927,
+   "rounds": 300
+  },
+  {
+   "fold": 8,
+   "origin": "2026-05-19",
+   "end": "2026-06-17",
+   "train_days": 138,
+   "metrics": {
+    "n_points": 466386,
+    "sum_actual": 4917073.0,
+    "sum_forecast": 5433271.88231611,
+    "wape": 0.8055365183206922,
+    "mae": 8.492711755388628,
+    "bias": 0.10498092713207832,
+    "mape": 1.458296226430613,
+    "mape_points": 149932,
+    "mape_excluded_points": 316454,
+    "notes": []
+   },
+   "baseline_metrics": {
+    "n_points": 466386,
+    "sum_actual": 4917073.0,
+    "sum_forecast": 4633497.891464753,
+    "wape": 0.7089230361312686,
+    "mae": 7.474122979761582,
+    "bias": -0.05767152705181455,
+    "mape": 1.2243018226906535,
+    "mape_points": 149932,
+    "mape_excluded_points": 316454,
+    "notes": []
+   },
+   "seconds": 84.1,
+   "n_rows": 1798423,
+   "rounds": 300
+  },
+  {
+   "fold": 9,
+   "origin": "2026-06-18",
+   "end": "2026-07-17",
+   "train_days": 168,
+   "metrics": {
+    "n_points": 484388,
+    "sum_actual": 4413596.0,
+    "sum_forecast": 5302432.480541375,
+    "wape": 0.8553248656379489,
+    "mae": 7.7934598001605915,
+    "bias": 0.2013860082665868,
+    "mape": 1.2912215663516406,
+    "mape_points": 155121,
+    "mape_excluded_points": 329267,
+    "notes": []
+   },
+   "baseline_metrics": {
+    "n_points": 484388,
+    "sum_actual": 4413596.0,
+    "sum_forecast": 4927449.054121328,
+    "wape": 0.7957100501506029,
+    "mae": 7.2502677492103444,
+    "bias": 0.11642503167968422,
+    "mape": 1.2014056110358335,
+    "mape_points": 155121,
+    "mape_excluded_points": 329267,
+    "notes": []
+   },
+   "seconds": 108.0,
+   "n_rows": 2264309,
+   "rounds": 300
+  },
+  {
+   "fold": 10,
+   "origin": "2026-07-18",
+   "end": "2026-08-16",
+   "train_days": 198,
+   "metrics": {
+    "n_points": 498510,
+    "sum_actual": 3684366.0,
+    "sum_forecast": 5294325.712802799,
+    "wape": 1.026951420075873,
+    "mae": 7.5899478361101345,
+    "bias": 0.4369706247432528,
+    "mape": 1.6216657606542462,
+    "mape_points": 147579,
+    "mape_excluded_points": 350931,
+    "notes": []
+   },
+   "baseline_metrics": {
+    "n_points": 498510,
+    "sum_actual": 3684366.0,
+    "sum_forecast": 4429162.562741925,
+    "wape": 0.8621435384388892,
+    "mae": 6.371892921193028,
+    "bias": 0.20215053627732016,
+    "mape": 1.3024676943516333,
+    "mape_points": 147579,
+    "mape_excluded_points": 350931,
+    "notes": []
+   },
+   "seconds": 133.7,
+   "n_rows": 2748072,
+   "rounds": 300
+  },
+  {
+   "fold": 11,
+   "origin": "2026-08-17",
+   "end": "2026-09-15",
+   "train_days": 228,
+   "metrics": {
+    "n_points": 505446,
+    "sum_actual": 2639117.0,
+    "sum_forecast": 5071234.216973348,
+    "wape": 1.5580191070833769,
+    "mae": 8.134983186786641,
+    "bias": 0.9215647570658473,
+    "mape": 2.184673415699433,
+    "mape_points": 94228,
+    "mape_excluded_points": 411218,
+    "notes": []
+   },
+   "baseline_metrics": {
+    "n_points": 505446,
+    "sum_actual": 2639117.0,
+    "sum_forecast": 3741875.7430522395,
+    "wape": 1.1834255453103444,
+    "mae": 6.179094255099061,
+    "bias": 0.4178514037279285,
+    "mape": 1.6527561965086506,
+    "mape_points": 94228,
+    "mape_excluded_points": 411218,
+    "notes": []
+   },
+   "seconds": 156.2,
+   "n_rows": 3246221,
+   "rounds": 300
+  },
+  {
+   "fold": 12,
+   "origin": "2026-09-16",
+   "end": "2026-10-15",
+   "train_days": 258,
+   "metrics": {
+    "n_points": 510764,
+    "sum_actual": 2551140.0,
+    "sum_forecast": 3063973.6628025398,
+    "wape": 1.0158792101542655,
+    "mae": 5.074065690207126,
+    "bias": 0.20102137193667918,
+    "mape": 1.355268055343019,
+    "mape_points": 90379,
+    "mape_excluded_points": 420385,
+    "notes": []
+   },
+   "baseline_metrics": {
+    "n_points": 510764,
+    "sum_actual": 2551140.0,
+    "sum_forecast": 2630194.873257359,
+    "wape": 0.9044628728568932,
+    "mae": 4.51756860988663,
+    "bias": 0.0309880575967446,
+    "mape": 1.2094657741675359,
+    "mape_points": 90379,
+    "mape_excluded_points": 420385,
+    "notes": []
+   },
+   "seconds": 171.7,
+   "n_rows": 3549564,
+   "rounds": 300
+  }
+ ],
+ "seed": 7,
+ "threads": "all",
+ "pooled": {
+  "n_points": 3353298,
+  "sum_actual": 28016486.0,
+  "sum_forecast": 39184195.452930704,
+  "wape": 1.0173069353426087,
+  "mae": 8.499502731856548,
+  "bias": 0.3986120690842779,
+  "mape": 1.6562654787835924,
+  "mape_points": 941471,
+  "mape_excluded_points": 2411827,
+  "notes": []
+ },
+ "baseline_pooled": {
+  "n_points": 3353298,
+  "sum_actual": 28016486.0,
+  "sum_forecast": 31343733.479009297,
+  "wape": 0.8390370437128948,
+  "mae": 7.010074734981414,
+  "bias": 0.11876034271426106,
+  "mape": 1.31574209552366,
+  "mape_points": 941471,
+  "mape_excluded_points": 2411827,
+  "notes": []
+ },
+ "seconds": 800.9
+}

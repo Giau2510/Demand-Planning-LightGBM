@@ -1,0 +1,10 @@
+{
+ "name": "L3_early_stop",
+ "status": "DONE",
+ "started": "2026-10-16T22:18:45",
+ "pid": 22504,
+ "log": "D:\\Buymed\\Lightgbm AI\\experiments\\model_tuning_20261016\\logs\\L3_early_stop.log",
+ "exit_code": 0,
+ "ended": "2026-10-16T22:28:32",
+ "seconds": 586.6
+}

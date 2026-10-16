@@ -425,3 +425,75 @@ sau khi bật chế độ sản xuất nó sẽ chạy D-0 BigQuery theo lịch,
   D-1 thủ công; huấn luyện 07:00 chờ D-1 (`TRAIN_WAITS_FOR_D1`).
 - Huấn luyện đầu trên dữ liệu thật bị quality gate từ chối (WAPE 1,017; bias +0,399; baseline 0,839 / +0,119); phạm vi
   BIGQUERY chưa có model đang dùng.
+
+## 14. Bảng nguồn D-1 / D-0 (1.2.0)
+
+Mỗi luồng đọc đúng **một** bảng, cấu hình bằng full table id `project.dataset.table` trên trang **BigQuery → Bảng nguồn D-1 / D-0**:
+
+| Luồng | Bảng (mặc định) | Lưu ở | Dùng bởi |
+|---|---|---|---|
+| D-1 (ngày đã đóng) | `lakehouse-prod-394907.gold_buymed_vn2.demand_planing_lightgbm` | `bigquery.project_id / dataset_id / source_table` (khóa phạm vi dữ liệu, mapping hash) | `D1_SYNC`, kiểm tra toàn kỳ, *Kiểm tra trùng & thử tổng hợp* |
+| D-0 (hôm nay) | `lakehouse-prod-394907.gold_buymed_vn2.demand_planing_lightgbm_D0` | `bigquery.d0_table_id` | `D0_SYNC` khi luồng D-0 ở chế độ **TABLE** |
+
+**Kiểm tra** (`POST /api/bigquery/source-tables/{d1|d0}/check`):
+- Chỉ đọc metadata, không chạy query, không tốn phí.
+- Bảng phải tồn tại, đọc được bằng tài khoản Windows đang chạy app và đúng location.
+- Bảng phải có mọi cột mà luồng đó đọc, với kiểu dữ liệu tương thích:
+  - D-1: mọi cột đã ánh xạ, gồm cả trường tham chiếu;
+  - D-0: chỉ các trường nội bộ đã ánh xạ.
+- Kết quả và thời điểm kiểm tra được lưu (`sync_state.bq_table_check:<luồng>`) và ghi vào nhật ký audit.
+
+**Lưu** (`PUT /api/bigquery/source-tables/{d1|d0}`):
+- Chỉ lưu sau khi kiểm tra **đạt** cho đúng mã bảng đó.
+- Lỗi (không tìm thấy, thiếu quyền, sai location, thiếu cột) trả về `BQ_TABLE_CHECK_FAILED`; nguồn đang dùng giữ nguyên.
+- App không tự tạo, đổi tên hay chuyển sang bảng khác.
+- Bảng D-1 **không đổi được khi chế độ sản xuất đang bật** (`BQ_TABLE_CHANGE_NEEDS_PRODUCTION_OFF`). Đổi bảng D-1 là đổi
+  phạm vi dữ liệu nên phải kiểm tra toàn kỳ lại.
+
+**D-0 ở chế độ TABLE:**
+- Trước 1.2.0, chế độ này đọc chính bảng D-1 với ngày = hôm nay. Bảng D-1 chỉ có ngày D vào khoảng trưa ngày D+1, nên cách
+  đọc đó không có dữ liệu.
+- Từ 1.2.0, chế độ TABLE đọc bảng D-0, không lọc theo phân vùng của bảng D-1.
+- Luồng D-0 chỉ "sẵn sàng" khi bảng D-0 đã kiểm tra đạt (`D0_TABLE_NOT_CHECKED`).
+- Chế độ SQL (SQL do người dùng viết) không đổi.
+
+**Kiểm tra thật ngày 16/10/2026 23:5x** (chỉ đọc):
+- Bảng D-0 có 12 cột: `fc_code, created_date, so_code, order_status, product_id, sku_code, item_code, seller_code,
+  sku_system_status, demand_quantity, outbound_quantity, sales_price`. Tại thời điểm kiểm tra có 9.329 dòng, chỉ của ngày
+  16/10; 1.809 SKU, 2 FC.
+- Bảng D-0 **không có** các cột `open_date`, `total_open_hours`, `total_open_days`, `seller_class`, `refresh_time`. Vì vậy
+  kiểm tra D-0 chỉ so các trường nội bộ, không so trường tham chiếu.
+- Bảng D-1 được làm mới lúc 14:08 ngày 16/10 nhưng ngày mới nhất vẫn là 15/10. Ngày D có trong nguồn vào khoảng 12:00–14:10
+  ngày D+1.
+
+**Lịch D-1 03:00 với giờ làm mới của nguồn:** xem [SCHEDULER.md](SCHEDULER.md), mục *D-1: tín hiệu và giờ dự phòng*.
+
+**`sales_price` (giá) — kiểm tra 16/10/2026:** đây là **đơn giá của dòng đơn**, đã gồm ảnh hưởng deal (theo chủ dự án),
+không phải thành tiền. Bằng chứng:
+- Trung vị `sales_price` giảm khi số lượng tăng: 105.100 khi SL ≤ 1, 70.100 khi SL 2–5, 41.100 khi SL 6–20.
+- Trong cùng SKU × FC × ngày có trung bình 5,6 mức giá, và tương quan giá–số lượng có trung vị −0,05.
+
+Nhóm feature **Giá** dùng đơn giá bình quân theo số lượng (`SUM(giá × SL) / SUM(SL có giá)`); dòng không có giá bị bỏ qua
+trong phép tính giá, không coi là 0.
+
+**Quyết định của chủ dự án ngày 17/10/2026: nhóm Giá BẬT cho model phát hành.** Bật công tắc thôi chưa đủ: nguồn chưa có
+dữ liệu giá thì lần huấn luyện vẫn bỏ nhóm này ra (ghi `used: false`, lý do `NO_DATA`). Production 1.1.9 ngày 17/10 đang ở
+trạng thái đó (công tắc bật, độ phủ giá 0). Các bước để giá thật sự vào model (ứng dụng làm, không sửa tay DB):
+1. *Ánh xạ trường* (`POST /api/bigquery/mapping`): `unit_price ← sales_price`. Lưu mapping **tắt chế độ sản xuất** và đổi
+   mapping hash; phạm vi dữ liệu giữ nguyên.
+2. Kiểm tra toàn kỳ lại (ước tính đọc khoảng 3,5 GB), rồi bật lại chế độ sản xuất.
+3. Chạy D-1: mapping hash mới nên D-1 **nạp lại toàn kỳ**. Chỉ chạy khi ngày hôm qua đã đủ trong nguồn (khoảng
+   12:00–14:10); trước đó D-1 chờ/thử lại, không ghi gì.
+4. Kiểm tra: độ phủ `avg_unit_price` ≥ `feature_min_coverage` (0,5) → registry `DATA_OK`. Sau khi huấn luyện, lần chạy phải
+   có `feature_groups.price = {switch_on: true, used: true}` và file model có `price_last`, `price_rel_28`.
+
+Đã làm thử trên **bản sao cô lập** (17/10/2026, code 1.2.0, BigQuery thật, chỉ đọc):
+- Nạp lại 01/01–15/10: đọc 8.893.414 dòng; 1.347.346 ngày × SKU × FC, **cả 1.347.346 không đổi số lượng** (tổng
+  41.722.635); không có dòng trùng hoàn toàn.
+- Độ phủ giá 99,98 %: 239 ngày-chuỗi không có giá (lưu NULL), 83 ngày-chuỗi có giá bình quân = 0, không có giá âm; kiểu
+  REAL.
+- Tại mốc dự báo (16/10), `price_last` có cho 100 % trong 17.137 chuỗi và đúng bằng giá cuối đã biết.
+
+Kết quả backtest (7 fold, cùng điểm): chỉ nhu cầu WAPE 0,805953 / bias +0,068976; nhu cầu + giá WAPE 0,808117 / bias
++0,071829. Hai feature giá hiện có chưa cải thiện metric tổng. Chi tiết, giới hạn và các thử nghiệm đề xuất ở
+`experiments/final_release_20261017/`.

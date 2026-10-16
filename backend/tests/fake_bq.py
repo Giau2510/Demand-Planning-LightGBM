@@ -18,8 +18,10 @@ class FakeJob:
 
 
 class FakeBQ:
-    def __init__(self, location="asia-southeast1", schema=None, responses=None, bytes_=1000, errors=None):
+    def __init__(self, location="asia-southeast1", schema=None, responses=None, bytes_=1000, errors=None,
+                 tables=None):
         self.location = location
+        self.tables = tables or {}               # full table id -> schema [(name, type)] (1.2.0 D-1 / D-0 tables)
         self.schema = schema or [("order_id", "STRING"), ("created_at", "TIMESTAMP"), ("sku", "STRING"),
                                  ("warehouse", "STRING"), ("qty", "INT64"), ("price", "FLOAT64"),
                                  ("updated_at", "TIMESTAMP"), ("dt", "DATE")]
@@ -44,8 +46,11 @@ class FakeBQ:
     def get_table(self, name):
         if "table" in self.errors:
             raise self.errors["table"]
-        return SimpleNamespace(schema=[SimpleNamespace(name=n, field_type=t, mode="NULLABLE") for n, t in self.schema],
-                               num_rows=12345, time_partitioning="DAY(dt)")
+        if name in self.errors:
+            raise self.errors[name]
+        sch = self.tables.get(name, self.schema)
+        return SimpleNamespace(schema=[SimpleNamespace(name=n, field_type=t, mode="NULLABLE") for n, t in sch],
+                               num_rows=12345, time_partitioning="DAY(dt)", location=self.location)
 
     def query(self, sql, job_config=None):
         kind = re.match(r"-- df:(\w+)", sql).group(1)

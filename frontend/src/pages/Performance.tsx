@@ -74,6 +74,49 @@ function Promotion({ d, onPromoted }: { d: any; onPromoted: () => void }) {
   );
 }
 
+/** 1.2.0: documented quality-gate exception for ONE training run. The standard thresholds are never changed; the
+ * approver restates the run's real WAPE / bias and types EXCEPTION-<run id>. Shown for runs the backend marks eligible
+ * (rejected only on the metric thresholds, model file kept), and as a record once released. */
+export function GateException({ d, onDone }: { d: any; onDone: () => void }) {
+  const { t } = useI18n();
+  const act = useAction();
+  const [f, setF] = useState({ approved_by: "", reason: "", review_by: "", acknowledged_wape: "", acknowledged_bias: "", confirm_text: "" });
+  const exc = d?.quality_gate?.exception;
+  if (exc) {
+    return (
+      <Card title={t("perf.exception_active")}>
+        <div className="alert warn small" data-testid="exception-active">
+          {t("perf.exception_by")}: <b>{exc.approved_by}</b> · {t("perf.exception_review")}: <b>{fmtDate(exc.review_by)}</b> · WAPE {fmtNum(exc.metrics?.wape, 3)} · bias {fmtNum(exc.metrics?.bias, 3)}
+          <br />{t("perf.exception_reason")}: {exc.reason}
+        </div>
+      </Card>
+    );
+  }
+  if (!d?.gate_exception?.eligible) return null;
+  const s = (k: string) => (e: any) => setF({ ...f, [k]: e.target.value });
+  return (
+    <Card title={t("perf.exception")}>
+      <ErrorBox error={act.error} />
+      <OkBox text={act.ok} />
+      <p className="small">{t("perf.exception_note")}</p>
+      <div className="form-grid">
+        <label>{t("perf.exception_by")}<input data-testid="exc-by" value={f.approved_by} onChange={s("approved_by")} /></label>
+        <label>{t("perf.exception_review")}<input data-testid="exc-review" type="date" value={f.review_by} onChange={s("review_by")} /></label>
+        <label className="full">{t("perf.exception_reason")}<textarea data-testid="exc-reason" value={f.reason} onChange={s("reason")} /></label>
+        <label>{t("perf.exception_ack")} — WAPE<input data-testid="exc-wape" value={f.acknowledged_wape} onChange={s("acknowledged_wape")} /></label>
+        <label>bias<input data-testid="exc-bias" value={f.acknowledged_bias} onChange={s("acknowledged_bias")} /></label>
+        <label className="full">{t("perf.exception_confirm")}: <code>EXCEPTION-{d.id}</code><input data-testid="exc-confirm" value={f.confirm_text} onChange={s("confirm_text")} /></label>
+      </div>
+      <button className="primary" data-testid="exc-release" disabled={act.busy}
+        onClick={async () => {
+          const body = { ...f, acknowledged_wape: Number(f.acknowledged_wape), acknowledged_bias: Number(f.acknowledged_bias) };
+          const r = await act.run(() => post(`/api/training-runs/${d.id}/release-with-exception`, body), t("perf.exception_done"));
+          if (r) onDone();
+        }}>{t("perf.exception_btn")}</button>
+    </Card>
+  );
+}
+
 export default function Performance() {
   const { t } = useI18n();
   const runs = useAsync(() => get("/api/training-runs?limit=100"), []);
@@ -123,6 +166,7 @@ export default function Performance() {
             <div className="alert warn small" data-testid="bt-short">{t("perf.span_short")}</div>
           )}
           <Promotion d={d} onPromoted={() => { det.reload(); runs.reload(); }} />
+          <GateException d={d} onDone={() => { det.reload(); runs.reload(); }} />
           {d.quality_gate?.checks && (
             <Card title={<Term id="quality_gate">{t("perf.gate")}</Term>}>
               {!d.quality_gate.thresholds_approved_by_business && <div className="alert warn small">{t("cfg.quality_warning")}</div>}

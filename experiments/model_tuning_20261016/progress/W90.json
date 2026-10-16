@@ -1,0 +1,10 @@
+{
+ "name": "W90",
+ "status": "DONE",
+ "started": "2026-10-16T18:09:48",
+ "pid": 22504,
+ "log": "D:\\Buymed\\Lightgbm AI\\experiments\\model_tuning_20261016\\logs\\W90.log",
+ "exit_code": 0,
+ "ended": "2026-10-16T18:17:51",
+ "seconds": 483.5
+}

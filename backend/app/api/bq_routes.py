@@ -9,12 +9,35 @@ from pydantic import BaseModel, Field
 
 from .. import db
 from .. import settings_service as ss
-from ..bq import connector, oauth, sql_sources
+from ..bq import connector, oauth, source_tables, sql_sources
 from ..messages import AppError
 from ..timeutil import now_vn, today_vn, vn_slot
 from . import background
 
 router = APIRouter(prefix="/api")
+
+
+# ------------------------------------------------------------------ 1.2.0: source tables of the D-1 / D-0 feeds
+class TableBody(BaseModel):
+    table_id: str
+
+
+@router.get("/bigquery/source-tables")
+def bq_source_tables():
+    """Configured table of each feed + its last metadata check (no BigQuery call)."""
+    return source_tables.status()
+
+
+@router.post("/bigquery/source-tables/{kind}/check")
+def bq_source_table_check(kind: str, body: TableBody):
+    """Metadata-only check (no query, no cost) of a table for the D-1 or D-0 feed; nothing is saved."""
+    return source_tables.check(kind, body.table_id)
+
+
+@router.put("/bigquery/source-tables/{kind}")
+def bq_source_table_save(kind: str, body: TableBody):
+    """Save the table of ONE feed after a PASSED check of that exact id (D-1: only with production mode off)."""
+    return source_tables.save(kind, body.table_id)
 
 
 # ------------------------------------------------------------------ identity + OAuth

@@ -47,11 +47,27 @@ nhật ký riêng. Không còn công tắc chung cho mọi job.
    hệ thống **vẫn kiểm tra** nguồn: số dòng của D-1 phải ≥ tỷ lệ cấu hình × trung bình 7 ngày trước. Không đạt →
    `SOURCE_INCOMPLETE`, retry với backoff. Không bao giờ coi dữ liệu là đủ chỉ vì đã đến giờ.
 
+**Lịch đã chốt ngày 17/10/2026: D-1 bắt đầu 03:00, dự phòng 06:00, huấn luyện 09:00.** Khi so với giờ làm mới của nguồn
+(16/10/2026: bảng D-1 làm mới lúc 14:08 nhưng ngày mới nhất vẫn là 15/10, tức ngày D có vào khoảng 12:00–14:10 ngày D+1),
+diễn biến hằng ngày như sau:
+- Từ 03:00 đến 06:00, job chờ tín hiệu (chưa cấu hình bảng tín hiệu hoàn tất).
+- Lúc 06:00, kiểm tra thấy ngày hôm qua có 0 dòng, nên trả `SOURCE_INCOMPLETE`.
+- Job thử lại sau 60, 120 rồi 240 giây và *Thất bại* (`RETRIES_EXHAUSTED`) vào khoảng 06:08.
+- Lượt huấn luyện 09:00 trên BIGQUERY chờ D-1 của ngày đó thành công, nên **sẽ không chạy**.
+
+Muốn luồng hằng ngày chạy được cần **một quyết định của chủ dự án**, chọn một trong ba hướng: dời giờ dự phòng hoặc giờ D-1
+sau giờ làm mới của nguồn, cấu hình bảng tín hiệu hoàn tất, hoặc tăng số lần thử / khoảng chờ. Ứng dụng không tự đổi giờ.
+
 ## Retry, timeout, khóa, idempotency
 
 - **Idempotency key** cho mỗi lần chạy theo lịch (vd. `D0_SYNC:2026-10-14T10:00`, `TRAIN_PUBLISH:2026-10-14`):
   job đã thành công/bị bỏ qua không bao giờ chạy lại.
 - **Khóa** theo loại job (có thời hạn) — hai job cùng loại không chạy chồng.
+- **Database bận (1.2.0):** một transaction ghi dài (ví dụ nạp lại toàn kỳ D-1 khoảng 1,35 triệu dòng) có thể giữ khóa
+  SQLite lâu hơn `busy_timeout` (30 s).
+  - Trước 1.2.0, lượt tick đó ghi lỗi ERROR `database is locked`.
+  - Từ 1.2.0, lượt tick đó được **hoãn** với cảnh báo WARNING `SCHEDULER_TICK_DEFERRED`. Lượt sau (60 s) lập lịch lại đúng
+    các slot đó; idempotency key ngăn chạy trùng. Các lỗi khác vẫn là ERROR.
 - **Retry** exponential backoff: chờ `retry_base_seconds × 2^(lần−1)`, tối đa `retry_max_seconds`, tối đa `max_attempts`
   lần (mặc định 60 s, 1800 s, 4 lần). Hết lượt → *Thất bại* + cảnh báo `RETRIES_EXHAUSTED`.
 - **Timeout** mỗi job (mặc định 3600 s): quá hạn → job bị đánh dấu `TIMEOUT`, huấn luyện bị hủy trước bước publish.

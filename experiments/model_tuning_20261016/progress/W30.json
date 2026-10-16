@@ -1,0 +1,10 @@
+{
+ "name": "W30",
+ "status": "DONE",
+ "started": "2026-10-16T22:00:44",
+ "pid": 22504,
+ "log": "D:\\Buymed\\Lightgbm AI\\experiments\\model_tuning_20261016\\logs\\W30.log",
+ "exit_code": 0,
+ "ended": "2026-10-16T22:03:59",
+ "seconds": 195.2
+}

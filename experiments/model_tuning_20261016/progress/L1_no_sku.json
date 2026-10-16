@@ -1,0 +1,10 @@
+{
+ "name": "L1_no_sku",
+ "status": "DONE",
+ "started": "2026-10-16T18:17:51",
+ "pid": 22504,
+ "log": "D:\\Buymed\\Lightgbm AI\\experiments\\model_tuning_20261016\\logs\\L1_no_sku.log",
+ "exit_code": 0,
+ "ended": "2026-10-16T18:25:41",
+ "seconds": 469.7
+}

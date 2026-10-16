@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import timedelta
+from datetime import date, timedelta
 
 import numpy as np
 
@@ -17,10 +17,10 @@ from .. import settings_service as ss
 from ..data.demand import data_window, fingerprint, load_demand, panel_for_run, resolve_scope
 from ..data.quality import build_report
 from ..messages import AppError
-from ..timeutil import now_iso, now_vn
+from ..timeutil import now_iso, now_vn, today_vn
 from . import feature_registry as registry
 from . import model
-from .features import build_panel, feature_names
+from .features import build_panel, feature_names, is_direct
 
 log = logging.getLogger("df.pipeline")
 
@@ -206,6 +206,9 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
     # switches are stored with the run so the model is always rebuilt/explained with exactly its own feature list
     mcfg, decisions = registry.resolve(mcfg_settings, cov)
     names = feature_names(mcfg)
+    if is_direct(mcfg) and max(hcfg.enabled) > model.direct_max_horizon(mcfg):
+        raise AppError("DIRECT_HORIZON_EXCEEDS_TRAINING", 409,
+                       detail=f"enabled horizon {max(hcfg.enabled)} > {model.direct_max_horizon(mcfg)} days")
     with db.read() as c:
         lineage = data_lineage(c, scope)
 
@@ -219,6 +222,14 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
                   "feature_config_json, params_json, job_id) VALUES (?,?,?,?, 'RUNNING', ?,?,?,?)",
                   (run_id, scope["scope_key"], scope["data_source"], fp, started,
                    json.dumps({"features": names, "config": fcfg,
+                               # 1.2.0: groups as chosen in the UI and as actually used, + identity of the configuration
+                               "feature_groups": {
+                                   "historical_demand": {"switch_on": bool(mcfg_settings.feature_lags or mcfg_settings.feature_rolling),
+                                                         "used": bool(mcfg.feature_lags or mcfg.feature_rolling)},
+                                   "price": {"switch_on": bool(mcfg_settings.feature_price),
+                                             "used": bool(decisions.get("price", {}).get("used"))}},
+                               "forecast_strategy": mcfg.forecast_strategy,
+                               "config_fingerprint": hashlib.sha256(json.dumps(fcfg, sort_keys=True).encode()).hexdigest()[:16],
                                "feature_set_version": registry.feature_set_version(names),
                                "registry_version": registry.REGISTRY_VERSION,
                                "settings_switches": {k: getattr(mcfg_settings, k) for k in (
@@ -284,6 +295,11 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
                        json.dumps({"pooled": bt["metrics"], "baseline": bt["baseline_metrics"],
                                    "by_method": bt["by_method"]}), int(bt["reliable"]), json.dumps(bt["notes"])))
         if not gate["passed"]:
+            if booster is not None:
+                # model file kept (hash recorded) so the run can be reviewed; it is published only through an
+                # explicit, documented gate exception for THIS run (release_with_gate_exception), never automatically
+                version, mpath, sha = _save_model(booster, names, panel, common["train_end"], scope, run_id, mcfg)
+                common.update(model_version=version, model_path=mpath.name, model_sha256=sha)
             finish("REJECTED", "QUALITY_GATE_FAILED", **common)
             return {"status": "REJECTED", "reason_code": "QUALITY_GATE_FAILED", "training_run_id": run_id,
                     "quality_gate": gate}
@@ -303,15 +319,7 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
             promotion.update(decision="INITIAL_MODEL", note="no model in use for this scope: nothing to protect")
         gate["promotion"] = promotion
         common["quality_gate_json"] = json.dumps(gate)
-        version = f"MV-{now_vn():%Y%m%d-%H%M%S}-{run_id[-4:]}"
-        mpath = paths.models_dir() / f"{version}.txt"
-        booster.save_model(str(mpath))
-        sha = hashlib.sha256(mpath.read_bytes()).hexdigest()
-        meta = {"model_version": version, "features": names, "sku_codes": panel.sku_codes,
-                "fc_codes": panel.fc_codes, "train_end": common["train_end"],
-                "feature_set_version": registry.feature_set_version(names), "training_run_id": run_id,
-                "data_source": scope["data_source"], "scope_key": scope["scope_key"]}
-        (paths.models_dir() / f"{version}.json").write_text(json.dumps(meta), encoding="utf-8")
+        version, mpath, sha = _save_model(booster, names, panel, common["train_end"], scope, run_id, mcfg)
         if inc:
             promotion["decision"] = "REVIEW_REQUIRED"
             gate["promotion"] = promotion
@@ -367,6 +375,22 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
                 "training_run_id": run_id, "error": f"{type(e).__name__}: {e}"}
 
 
+def _save_model(booster, names: list[str], panel, train_end: str, scope: dict, run_id: str, mcfg):
+    """Model file + metadata (feature list, codes, strategy) in the models folder; returns (version, path, sha256)."""
+    version = f"MV-{now_vn():%Y%m%d-%H%M%S}-{run_id[-4:]}"
+    mpath = paths.models_dir() / f"{version}.txt"
+    booster.save_model(str(mpath))
+    sha = hashlib.sha256(mpath.read_bytes()).hexdigest()
+    meta = {"model_version": version, "features": names, "sku_codes": panel.sku_codes,
+            "fc_codes": panel.fc_codes, "train_end": train_end,
+            "feature_set_version": registry.feature_set_version(names), "training_run_id": run_id,
+            "data_source": scope["data_source"], "scope_key": scope["scope_key"],
+            "forecast_strategy": "DIRECT" if is_direct(mcfg) else "RECURSIVE",
+            "max_horizon": model.direct_max_horizon(mcfg) if is_direct(mcfg) else None}
+    (paths.models_dir() / f"{version}.json").write_text(json.dumps(meta), encoding="utf-8")
+    return version, mpath, sha
+
+
 def extend_forecast(run_id: str, job_id: str | None = None, cancel=None, progress=None) -> dict:
     """New immutable forecast run with the CURRENTLY configured horizons, produced by the SAME accepted model from
     the SAME data (no retraining). Refused unless the data fingerprint and the model file hash match the training
@@ -394,6 +418,9 @@ def extend_forecast(run_id: str, job_id: str | None = None, cancel=None, progres
     if not mpath.exists() or hashlib.sha256(mpath.read_bytes()).hexdigest() != tr["model_sha256"]:
         raise AppError("MODEL_ARTIFACT_MISSING", 409, detail=f"{tr['model_path']} missing or modified")
     mcfg = ss.ModelSettings.model_validate(json.loads(tr["feature_config_json"])["config"])
+    if is_direct(mcfg) and new_max > model.direct_max_horizon(mcfg):
+        raise AppError("DIRECT_HORIZON_EXCEEDS_TRAINING", 409,
+                       detail=f"{new_max} > {model.direct_max_horizon(mcfg)} days the model was trained for")
     if hcfg.max_forecast_rows < run["n_series"] * new_max:
         raise AppError("FORECAST_TOO_LARGE", 422)
     stage("PREPARING_DATA")
@@ -492,3 +519,125 @@ def promote_candidate(training_run_id: str, cancel=None) -> dict:
     return {"status": "PUBLISHED", "reason_code": "MODEL_PROMOTED", "training_run_id": training_run_id,
             "forecast_run_id": fr_id, "model_version": tr["model_version"], "verdict": prom.get("verdict"),
             "replaced_training_run_id": prom.get("replaced_training_run_id")}
+
+
+GATE_METRIC_CHECKS = ("WAPE_MAX", "ABS_BIAS_MAX")
+
+
+def exception_eligible(tr: dict | None) -> dict:
+    """Can this training run be released through a documented quality-gate exception? Only a run REJECTED by the gate
+    whose ONLY failed checks are the metric thresholds (WAPE_MAX / ABS_BIAS_MAX) and whose model file was kept."""
+    if not tr:
+        return {"eligible": False, "reason": "NOT_FOUND"}
+    if tr["status"] != "REJECTED" or tr.get("reject_reason") != "QUALITY_GATE_FAILED":
+        return {"eligible": False, "reason": f"{tr['status']} {tr.get('reject_reason') or ''}".strip()}
+    if not tr.get("model_path"):
+        return {"eligible": False, "reason": "NO_MODEL_FILE"}
+    gate = json.loads(tr.get("quality_gate_json") or "{}")
+    failed = [c["check"] for c in gate.get("checks", []) if not c.get("passed")]
+    other = [c for c in failed if c not in GATE_METRIC_CHECKS]
+    if not failed or other:
+        return {"eligible": False, "reason": "NON_METRIC_CHECK_FAILED", "failed_checks": failed}
+    return {"eligible": True, "failed_checks": failed}
+
+
+def release_with_gate_exception(training_run_id: str, approval: dict, cancel=None) -> dict:
+    """Documented, owner-approved exception for ONE training run (1.2.0). The standard quality gate and its thresholds
+    are NOT changed and no other run is affected: every later run (scheduled or manual) goes through the normal gate
+    and the incumbent protection. Refused unless the run is exception_eligible, its model file is intact, its data
+    fingerprint equals the current data, no newer model was accepted for its scope and no training / extension job is
+    running. The approval must give the approver, a business reason, a future review date, the confirmation text
+    EXCEPTION-<run id> and restate the run's own backtest WAPE and bias (3 decimals): the approver signs the real
+    numbers. The forecast is computed from the run's own panel, exactly as at training time."""
+    approved_by = str(approval.get("approved_by") or "").strip()
+    reason = str(approval.get("reason") or "").strip()
+    if approval.get("confirm_text") != f"EXCEPTION-{training_run_id}":
+        raise AppError("CONFIRMATION_MISMATCH", 422, detail=f"type EXCEPTION-{training_run_id}")
+    if len(approved_by) < 3 or len(reason) < 20:
+        raise AppError("VALIDATION_ERROR", 422, detail="approved_by (>= 3 characters) and a business reason "
+                                                       "(>= 20 characters) are required")
+    try:
+        review_by = date.fromisoformat(str(approval.get("review_by")))
+    except ValueError:
+        raise AppError("VALIDATION_ERROR", 422, detail="review_by must be a date YYYY-MM-DD") from None
+    if review_by <= today_vn():
+        raise AppError("VALIDATION_ERROR", 422, detail="review_by must be a future date")
+    with db.read() as c:
+        tr = db.one(c, "SELECT * FROM training_runs WHERE id=?", (training_run_id,))
+        if not tr:
+            raise AppError("BATCH_NOT_FOUND", 404, detail=training_run_id)
+        elig = exception_eligible(tr)
+        if not elig["eligible"]:
+            raise AppError("PROMOTION_NOT_ALLOWED", 409, detail=f"not eligible for a gate exception: {elig}")
+        newer = db.one(c, "SELECT id FROM training_runs WHERE scope_key=? AND status='ACCEPTED' AND rowid > "
+                          "(SELECT rowid FROM training_runs WHERE id=?)", (tr["scope_key"], training_run_id))
+        if newer:
+            raise AppError("PROMOTION_NOT_ALLOWED", 409, detail=f"superseded by {newer['id']}")
+        busy = db.one(c, "SELECT id FROM job_runs WHERE job_type IN ('TRAIN_PUBLISH','FORECAST_EXTEND') AND "
+                         "status IN ('PENDING','RUNNING')")
+        if busy:
+            raise AppError("LOCKED", 409, detail=busy["id"])
+        cur_fp = fingerprint(tr["scope_key"], c)
+        hcfg = ss.get("horizons", c)
+        inc = incumbent(tr["scope_key"], c)
+    m = json.loads(tr["metrics_json"] or "{}")
+    try:
+        ack = (round(float(approval.get("acknowledged_wape")), 3), round(float(approval.get("acknowledged_bias")), 3))
+    except (TypeError, ValueError):
+        raise AppError("VALIDATION_ERROR", 422, detail="acknowledged_wape / acknowledged_bias are required") from None
+    if ack != (round(m["wape"], 3), round(m["bias"], 3)):
+        raise AppError("VALIDATION_ERROR", 422, detail=f"acknowledged metrics {ack} differ from the run's backtest "
+                                                       f"({round(m['wape'], 3)}, {round(m['bias'], 3)})")
+    if tr["data_fingerprint"] != cur_fp:
+        raise AppError("DATA_CHANGED_SINCE_TRAINING", 409, detail="the data changed after this run was trained")
+    mpath = paths.models_dir() / tr["model_path"]
+    if not mpath.exists() or hashlib.sha256(mpath.read_bytes()).hexdigest() != tr["model_sha256"]:
+        raise AppError("MODEL_ARTIFACT_MISSING", 409, detail=f"{tr['model_path']} missing or modified")
+    mcfg = ss.ModelSettings.model_validate(json.loads(tr["feature_config_json"])["config"])
+    panel = panel_for_run(tr)
+    if panel is None:
+        raise AppError("DATA_CHANGED_SINCE_TRAINING", 409, detail="training data no longer available")
+    max_h = max(hcfg.enabled)
+    if panel.n_series * max_h > hcfg.max_forecast_rows:
+        raise AppError("FORECAST_TOO_LARGE", 422)
+    if is_direct(mcfg) and max_h > model.direct_max_horizon(mcfg):
+        raise AppError("DIRECT_HORIZON_EXCEEDS_TRAINING", 409, detail=f"{max_h} > {model.direct_max_horizon(mcfg)}")
+    import lightgbm as lgb
+    booster = lgb.Booster(model_file=str(mpath))
+    details = model.classification_details(panel, mcfg)
+    fc = model.forecast(panel, booster, mcfg, max_h, cancel)
+    gate = json.loads(tr["quality_gate_json"] or "{}")
+    thresholds = {c["check"]: c.get("threshold") for c in gate.get("checks", []) if c["check"] in GATE_METRIC_CHECKS}
+    exc = {"type": "QUALITY_GATE_EXCEPTION", "scope": "THIS_TRAINING_RUN_ONLY", "training_run_id": training_run_id,
+           "model_version": tr["model_version"], "approved_by": approved_by, "reason": reason,
+           "approved_at": now_iso(), "review_by": str(review_by), "failed_checks": elig["failed_checks"],
+           "metrics": {"wape": m.get("wape"), "bias": m.get("bias"), "n_points": m.get("n_points")},
+           "baseline_metrics": json.loads(tr["baseline_metrics_json"] or "null"),
+           "standard_thresholds": thresholds, "standard_gate_changed": False,
+           "forecast_strategy": "DIRECT" if is_direct(mcfg) else "RECURSIVE"}
+    gate["exception"] = exc
+    gate["promotion"] = {**(gate.get("promotion") or {}), "policy": "GATE_EXCEPTION",
+                         "decision": "RELEASED_WITH_GATE_EXCEPTION", "decided_at": exc["approved_at"],
+                         "replaced_training_run_id": (inc or {}).get("training_run", {}).get("id")}
+    fr_id = db.new_id("FCR")
+    scope = {"scope_key": tr["scope_key"], "data_source": tr["data_source"]}
+    with db.tx() as c:
+        cur = c.execute("UPDATE training_runs SET status='ACCEPTED', reject_reason=NULL, quality_gate_json=? "
+                        "WHERE id=? AND status='REJECTED' AND reject_reason='QUALITY_GATE_FAILED'",
+                        (json.dumps(gate), training_run_id))
+        if cur.rowcount != 1:
+            raise AppError("PROMOTION_NOT_ALLOWED", 409, detail="state changed")
+        n = _publish_run(c, fr_id=fr_id, training_run_id=training_run_id, version=tr["model_version"], scope=scope,
+                         panel=panel, fc=fc, details=details, horizons=hcfg.enabled, max_h=max_h, job_id=None,
+                         mcfg=mcfg)
+        db.audit(c, "MODEL_RELEASED_WITH_GATE_EXCEPTION", "training_run", training_run_id,
+                 {k: exc[k] for k in ("approved_by", "reason", "review_by", "failed_checks", "metrics",
+                                      "standard_thresholds")} | {"forecast_run_id": fr_id})
+        db.alert(c, "WARNING", "QUALITY_GATE_EXCEPTION_ACTIVE",
+                 {"training_run_id": training_run_id, "model_version": tr["model_version"],
+                  "review_by": exc["review_by"]}, "training_run", training_run_id)
+    log.info("released with gate exception", extra={"ctx": {"training_run_id": training_run_id,
+                                                             "forecast_run_id": fr_id, "rows": n}})
+    return {"status": "PUBLISHED", "reason_code": "RELEASED_WITH_GATE_EXCEPTION", "training_run_id": training_run_id,
+            "forecast_run_id": fr_id, "model_version": tr["model_version"], "exception": exc,
+            "replaced_training_run_id": gate["promotion"]["replaced_training_run_id"]}

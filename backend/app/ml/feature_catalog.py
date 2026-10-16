@@ -39,6 +39,13 @@ def _static(name):
                            fen="Days from the first order day of the SKU×FC to the target day (target day − first day).",
                            mvi="Chuỗi mới thường dao động hơn chuỗi lâu năm.", men="Young series behave differently from mature ones.",
                            uvi="ngày", uen="days"),
+        "horizon": dict(vi="Kỳ dự báo (số ngày kể từ mốc)", en="Forecast horizon (days from the origin)",
+                        fvi="Ngày dự báo − ngày cuối có dữ liệu (1 = ngày đầu tiên sau mốc dự báo). Chỉ có ở model dự báo trực tiếp (DIRECT); "
+                            "ở model này mọi feature lag/rolling/giá được tính tại mốc dự báo từ dữ liệu thực.",
+                        fen="Target day − last data day (1 = first day after the forecast origin). DIRECT models only; there every "
+                            "lag / rolling / price feature is computed at the forecast origin from actual data.",
+                        mvi="Cho model học khác biệt theo độ xa của ngày dự báo.", men="Lets the model learn how demand differs with the distance from the origin.",
+                        uvi="ngày", uen="days"),
         "dow": dict(vi="Thứ trong tuần của ngày dự báo", en="Day of week of the target day",
                     fvi="0 = Thứ Hai, 1 = Thứ Ba, …, 5 = Thứ Bảy, 6 = Chủ Nhật (của chính ngày dự báo).",
                     fen="0 = Monday, 1 = Tuesday, …, 5 = Saturday, 6 = Sunday (of the target day itself).",

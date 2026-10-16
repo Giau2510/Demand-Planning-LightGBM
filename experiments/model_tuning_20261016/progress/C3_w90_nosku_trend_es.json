@@ -1,0 +1,10 @@
+{
+ "name": "C3_w90_nosku_trend_es",
+ "status": "DONE",
+ "started": "2026-10-16T23:10:06",
+ "pid": 22504,
+ "log": "D:\\Buymed\\Lightgbm AI\\experiments\\model_tuning_20261016\\logs\\C3_w90_nosku_trend_es.log",
+ "exit_code": 0,
+ "ended": "2026-10-16T23:16:29",
+ "seconds": 383.0
+}

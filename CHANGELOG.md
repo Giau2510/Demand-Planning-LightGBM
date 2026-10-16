@@ -5,6 +5,37 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.2.0 - 2026-10-17 (L7_direct strategy, quality-gate exception record, D-1 / D-0 source tables, feature groups) [experiments/final_release_20261017/]
+
+Database schema unchanged (3): rollback to 1.1.9 / 1.1.8 needs no restore. A DIRECT model published with 1.2.0 is
+displayed by older versions but cannot be explained or extended by them (they refuse it; see docs/VAN-HANH.md).
+
+* Forecast strategy `model.forecast_strategy`: RECURSIVE (default, every earlier model, DEMO) | DIRECT (experiment
+  L7_direct, 16/10/2026). DIRECT = one LightGBM model for every horizon day: features at the forecast origin (data before
+  it only), calendar of the target day and the horizon; trained on `direct_origins` (12) origins every
+  `direct_origin_step_days` (7) days. Horizons above the backtest horizon are refused (DIRECT_HORIZON_EXCEEDS_TRAINING).
+  Production implementation reproduces the experiment harness exactly (0 difference, 7 folds, real data).
+* Quality gate: a run rejected only on the metric thresholds keeps its model file for review. One such run can be
+  published with `POST /api/training-runs/{id}/release-with-exception` (approver, business reason, review date, restated
+  WAPE / bias, `EXCEPTION-<run id>`); recorded in `quality_gate.exception`, the audit log and a WARNING alert. The
+  standard thresholds are never changed; every later run goes through the normal gate.
+* BigQuery: separate D-1 / D-0 source tables (`bigquery.d0_table_id`, new), metadata-only checks, saved only after a
+  passed check; the D-1 table cannot change while production mode is on. The D-0 feed in TABLE mode now reads the D-0
+  table (before: the D-1 table, which never has today's rows). D-0 readiness needs a passed D-0 table check.
+* Feature groups in Configuration: Historical demand (lags + rolling) and Price (quantity-weighted unit price); at least
+  one on (FEATURE_GROUPS_EMPTY). Each training run records the groups (switch / used), the strategy and a configuration
+  fingerprint.
+* Price group: owner decision 17/10/2026, ON for the release model (`model.feature_price = true`, saved explicitly). A
+  group that is on but has no data in the scope is still left out of a training (recorded `used: false`, reason
+  `NO_DATA`); for BigQuery the price exists only after mapping `unit_price <- sales_price` and a full reload. Tests
+  `test_v120_price.py`: mapped price -> demand_daily (missing price stays NULL) -> registry -> DIRECT training (trees
+  split on the price) -> published forecast and explanation read the last known price; the switch survives a restart,
+  a BigQuery load, other settings saves and a 1.1.9 settings row. Backtest on real data (7 folds): demand only WAPE
+  0.805953 / bias +0.068976, demand + price WAPE 0.808117 / bias +0.071829 (no gain from these two price features).
+* Scheduler: a tick blocked by a long write transaction is deferred with a WARNING (SCHEDULER_TICK_DEFERRED) instead of
+  an ERROR "database is locked".
+* Changed defaults: `bigquery.d0_table_id` (new key) = `lakehouse-prod-394907.gold_buymed_vn2.demand_planing_lightgbm_D0`.
+
 ## 1.1.9 - built and deployed 2026-10-16 16:31 (Vietnam time) (audit + BigQuery ingest + storage/release) [demandforecast_v119_production_ingest_training_20261016_171500.md, demandforecast_audit_v118_20261016.md, demandforecast_bq_ingest_20261016.md, demandforecast_storage_release_20261016.md]
 
 Package `DemandForecast-1.1.9-win64-portable.zip`, built from the release commit (tag `v1.1.9`). Database schema unchanged (3): rollback to 1.1.8 / 1.1.6 needs no restore.

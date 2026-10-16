@@ -72,6 +72,7 @@ def training_run(run_id: str):
         r["in_use"] = bool(inc and inc["training_run"]["id"] == run_id)
         r["incumbent_training_run_id"] = inc["training_run"]["id"] if inc else None
         r["can_promote"] = r["status"] == "REJECTED" and r["reject_reason"] == pipeline.PENDING_REVIEW
+        r["gate_exception"] = pipeline.exception_eligible(db.one(c, "SELECT * FROM training_runs WHERE id=?", (run_id,)))
     return r
 
 
@@ -85,6 +86,21 @@ def promote_training_run(run_id: str, body: PromoteBody):
     if not body.confirm:
         raise AppError("CONFIRMATION_MISMATCH", 422, detail="confirm=true required")
     return pipeline.promote_candidate(run_id)
+
+
+class GateExceptionBody(BaseModel):
+    confirm_text: str = ""
+    approved_by: str = ""
+    reason: str = ""
+    review_by: str = ""
+    acknowledged_wape: float | None = None
+    acknowledged_bias: float | None = None
+
+
+@router.post("/training-runs/{run_id}/release-with-exception")
+def release_with_exception(run_id: str, body: GateExceptionBody):
+    """Owner-approved quality-gate exception for THIS training run only (standard thresholds unchanged)."""
+    return pipeline.release_with_gate_exception(run_id, body.model_dump())
 
 
 # ------------------------------------------------------------------ forecast runs

@@ -1226,13 +1226,18 @@ def fetch_d0(day: date, cutoff, snap: dict | None = None) -> dict:
     if _is_sql(snap):
         res = _run(_client(bq), bq, "d0", _d0_sql(bq, snap), None)
         return {**_d0_from_rows(bq, snap, res["rows"], day), "estimated_bytes": res["estimated_bytes"]}
+    # 1.2.0: TABLE mode reads the D-0 table (bigquery.d0_table_id), never the D-1 history table
+    from .source_tables import parse
+    d0t = (bq.d0_table_id or "").strip()
+    if not d0t:
+        raise AppError("BQ_D0_TABLE_MISSING", 409)
+    parse(d0t)
     od = _order_date_expr(bq)
     ts = _created_ts_expr(bq)
     upd = _col(bq, "source_updated_at")
     cut = f" AND {ts} <= @cutoff" if ts else ""
     distinct = "DISTINCT " if bq.exact_duplicate_policy == "DROP_EXACT" else ""
-    sql = (f"WITH src AS (SELECT {distinct}{_select_list(bq, with_refs=bool(distinct))} FROM {_table_ref(bq)} WHERE {od} = @day{cut}"
-           f"{_partition_filter(bq, 'day', 'day')}) "
+    sql = (f"WITH src AS (SELECT {distinct}{_select_list(bq, with_refs=bool(distinct))} FROM `{d0t}` WHERE {od} = @day{cut}) "
            f"SELECT CAST(sku_id AS STRING) AS sku_id, CAST(fc_id AS STRING) AS fc_id, SUM(order_qty) AS cumulative_qty, "
            + ("MAX(source_updated_at) AS source_updated_at, " if upd else "NULL AS source_updated_at, ")
            + "COUNT(*) AS n_rows FROM src WHERE sku_id IS NOT NULL AND fc_id IS NOT NULL AND order_qty >= 0 "
@@ -1244,7 +1249,7 @@ def fetch_d0(day: date, cutoff, snap: dict | None = None) -> dict:
     bad = sum(int(r.get("n_rows") or 0) for r in res["rows"] if r.get("sku_id") is None)
     return {"rows": good, "rows_read": sum(int(r["n_rows"]) for r in good) + bad,
             "rows_valid": sum(int(r["n_rows"]) for r in good), "rows_error": bad, "cutoff_applied": bool(ts),
-            "source": _public(snap)}
+            "source": {**_public(snap), "table": d0t}}
 
 
 # ------------------------------------------------------------------ SQL editor: dry run, validation, preview, test

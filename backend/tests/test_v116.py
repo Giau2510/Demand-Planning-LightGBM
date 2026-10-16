@@ -468,7 +468,10 @@ def test_d1_is_independent_backfill_is_bounded_and_counts_new_updated(client, mo
     assert b["backfill"] and b["mode"] == "BACKFILL" and b["series_days_unchanged"] == 1
     # D0 never calls the history query, and syncing never starts a training
     monkeypatch.setattr(connector, "fetch_daily", lambda *a, **k: (_ for _ in ()).throw(AssertionError("history called")))
-    sql_sources.set_options("d0", mode="TABLE", schedule_enabled=True)
+    from app.bq import source_tables                    # 1.2.0: the D-0 table must pass its check before D-0 can be on
+    sql_sources.set_options("d0", mode="TABLE")
+    assert source_tables.check("d0")["status"] == "PASSED"
+    sql_sources.set_options("d0", schedule_enabled=True)
     fake.responses["d0"] = [{"sku_id": "S1", "fc_id": "F1", "cumulative_qty": 1, "source_updated_at": None, "n_rows": 1}]
     sync.run_d0_snapshot("J5", "slot", False)
     with db.read() as c:

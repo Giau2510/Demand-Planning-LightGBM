@@ -81,6 +81,10 @@ def readiness(flow: str, conn=None) -> dict:
                 d0 = ss.get("sql_sources", c).d0
                 if d0.mode == "SQL" and not _active_valid(d0):
                     reasons.append(_reason("SQL_NOT_VALIDATED", "d0: no D-0 SQL version validated by BigQuery"))
+                if d0.mode == "TABLE":
+                    from ..bq import source_tables
+                    if not source_tables.is_ok("d0", c):     # 1.2.0: the D-0 table must have passed its check
+                        reasons.append(_reason("D0_TABLE_NOT_CHECKED", bq.d0_table_id or "-"))
         else:
             from ..data.demand import resolve_scope
             try:
