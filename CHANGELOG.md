@@ -5,9 +5,10 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
-## 1.1.9 - 2026-10-16 (audit + BigQuery ingest + storage/release) [demandforecast_audit_v118_20261016.md, demandforecast_bq_ingest_20261016.md, demandforecast_storage_release_20261016.md]
+## 1.1.9 - built and deployed 2026-10-16 16:31 (Vietnam time) (audit + BigQuery ingest + storage/release) [demandforecast_v119_production_ingest_training_20261016_171500.md, demandforecast_audit_v118_20261016.md, demandforecast_bq_ingest_20261016.md, demandforecast_storage_release_20261016.md]
 
 Package `DemandForecast-1.1.9-win64-portable.zip`, built from the release commit (tag `v1.1.9`). Database schema unchanged (3): rollback to 1.1.8 / 1.1.6 needs no restore.
+First BigQuery production load 16/10/2026 16:43-16:49 (source BIGQUERY, 01/01-15/10: 1,347,346 day x SKU x FC rows, 41,722,635); first training on real data REJECTED by the quality gate (WAPE 1.017, bias +0.399), no model in use for the BigQuery scope.
 
 Storage / release / VPS preparation (late afternoon; tooling and docs, no change to forecasting, BigQuery or schedules):
 * `scripts\release.ps1`: clean commit -> QA (`run-tests.ps1`) -> package -> verification (SHA-256, `VERSION`,

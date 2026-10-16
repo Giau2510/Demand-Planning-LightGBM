@@ -416,3 +416,12 @@ hôm qua `WARNING` (0 dòng; TB 7 ngày 18.817), trùng `BLOCKED`.
 **Trước khi đổi nguồn sang BIGQUERY:** công tắc luồng D-0 không tự tắt khi đổi nguồn. Nếu D-0 đang bật (ví dụ cho DEMO),
 sau khi bật chế độ sản xuất nó sẽ chạy D-0 BigQuery theo lịch, mà D-0 BigQuery chưa được kiểm chứng. Hãy tắt D-0 ở trang
 **Lịch chạy dữ liệu** trước. Huấn luyện tự động trên BIGQUERY chờ luồng D-1 được bật (`TRAIN_WAITS_FOR_D1`).
+
+**Production từ 16/10/2026 (bản 1.1.9):** ánh xạ gợi ý (15 cột) đã lưu, 6 cổng truy cập đạt, chế độ sản xuất bật, nguồn
+`BIGQUERY`.
+- Nạp đầu 16:43–16:49: 01/01–15/10, 8.893.414 dòng nguồn → 1.347.346 dòng ngày × SKU × FC, tổng 41.722.635; 0 trùng,
+  0 dòng bị loại. Đối soát từng ngày với BigQuery: 288/288 ngày khớp. Chạy lại 12/10–15/10: 13.345 dòng không đổi.
+- D-0 BigQuery chưa bật vì SQL D-0 chưa được xác nhận (`SQL_NOT_VALIDATED`). D-1 tắt, nên dữ liệu chỉ cập nhật khi chạy
+  D-1 thủ công; huấn luyện 07:00 chờ D-1 (`TRAIN_WAITS_FOR_D1`).
+- Huấn luyện đầu trên dữ liệu thật bị quality gate từ chối (WAPE 1,017; bias +0,399; baseline 0,839 / +0,119); phạm vi
+  BIGQUERY chưa có model đang dùng.

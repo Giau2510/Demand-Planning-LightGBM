@@ -285,3 +285,20 @@ schedules untouched (protected-state snapshot identical before/after).
 | Release (`scripts\release.ps1`) | BLOCKED | uncommitted tree; needs the user's commit permission |
 | Local upgrade, production ingest | NOT RUN | need the 1.1.9 package |
 | Pre-commit checkpoint (16:12) | DONE | `checkpoints\source-1.1.9-precommit-20261016-161233.zip` (status, diff, 17 untracked files), SHA-256 `0145A702...3871` |
+
+# Release 1.1.9 + BigQuery production ingest + first real-data training (2026-10-16 16:10 - 17:15)
+
+User authorized: commit/push, release 1.1.9, upgrade, source BIGQUERY, real write, training. Report `reports/demandforecast_v119_production_ingest_training_20261016_171500.md`.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Commit / push / tag | DONE | `9066427` (43 files, secret scan 0 strong), pushed `main`, tag `v1.1.9` |
+| Release | DONE | QA 302 passed (incl. real BQ) + vitest 61 + typecheck + build; `dist/DemandForecast-1.1.9-win64-portable.zip` `F8311492...DD46` |
+| Upgrade | DONE | 1.1.8 -> 1.1.9 16:31 (pid 29728), schema 3, backups `backup-20261016-162709-manual.zip`, `-162940-cli.zip` |
+| Pre-switch backup | DONE | `backup-20261016-164254-manual.zip` verified (integrity ok, counts = live) |
+| BigQuery gates (live app) | DONE | 6 access gates PASS, validation passed, ingest-check READY, 0 duplicates |
+| Source switch | DONE | production ON, active source BIGQUERY |
+| D-1 load + re-run | DONE | 1,347,346 / 41,722,635; 288/288 days reconciled; re-run 13,345 unchanged; data-check OK (old WARN only) |
+| Training | REJECTED | TRN-20261016095451-697A11: WAPE 1.017 / bias 0.399 (gate 0.60 / 0.20); baseline 0.839 / 0.119; not published |
+| Schedules | PARTIAL | D-0 OFF (restore refused: SQL_NOT_VALIDATED), D-1 OFF (as before), train ON 07:00 but waits for D-1 |
+
