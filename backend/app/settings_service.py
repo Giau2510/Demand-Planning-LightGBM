@@ -354,7 +354,9 @@ def _d0_seed() -> SqlSource:
 
 
 class SqlSourcesSettings(BaseModel):
-    history: SqlSource = Field(default_factory=lambda: SqlSource(mode="TABLE"))
+    # history = order LINES: several lines of one order x SKU x FC x day are normal and summed (business rule
+    # confirmed 16/10/2026); only fully identical rows are a data error (exact-duplicate gate). BLOCK stays selectable.
+    history: SqlSource = Field(default_factory=lambda: SqlSource(mode="TABLE", key_duplicate_policy="SUM_ALL"))
     d0: SqlSource = Field(default_factory=_d0_seed)
 
 

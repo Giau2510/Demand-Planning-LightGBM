@@ -1,0 +1,27 @@
+# Demand Forecasting on a Linux VPS. ONE instance only: the scheduler (D-1, D-0, training) runs inside this process,
+# so never start a second unit, a second worker or a second copy of the app against the same data.
+[Unit]
+Description=Demand Forecasting (FastAPI + in-process scheduler)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=demandforecast
+Group=demandforecast
+EnvironmentFile=/etc/demandforecast/app.env
+Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+WorkingDirectory=/opt/demandforecast/current/backend
+# local address only: the reverse proxy (TLS + login) is the only way in
+ExecStart=/opt/demandforecast/current/.venv/bin/python -m app.cli serve --host 127.0.0.1 --port ${DF_PORT}
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/demandforecast
+
+[Install]
+WantedBy=multi-user.target

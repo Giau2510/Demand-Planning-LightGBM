@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { get, post, put } from "../api";
 import { useI18n } from "../i18n";
-import { Card, Code, ErrorBox, Field, Loading, OkBox, Pill, fmtDate, fmtTime, useAction, useAsync } from "../components/ui";
+import { Card, Code, ErrorBox, Field, JobProgress, Loading, OkBox, Pill, fmtDate, fmtTime, jobOutcome, useAction, useAsync } from "../components/ui";
 
 /** Pill tone for the effective state reported by the backend (never computed from the form). */
 const STATE_PILL: Record<string, string> = { OFF: "SKIPPED", ON: "OK", ON_NOT_READY: "RETRY_WAIT", ON_NOT_LOADED: "PENDING",
@@ -21,13 +21,22 @@ function Readiness({ r }: { r: any }) {
   );
 }
 
+/** A job can SUCCEED as a job while its result is FAILED / REJECTED (e.g. training rejected by the quality gate):
+ *  show that outcome next to the job status, as the Jobs page does. */
+function Outcome({ r }: { r: any }) {
+  const { t } = useI18n();
+  const oc = jobOutcome({ status: r.status, result: { result: { status: r.result_status } } });
+  return r.status === "SUCCEEDED" && (oc === "bad" || oc === "warn")
+    ? <span className={`pill ${oc}`} data-testid="job-outcome">{t(`job.outcome.${oc}`)}</span> : null;
+}
+
 function LastRun({ v }: { v: any }) {
   const { t } = useI18n();
   const lr = v.last_run;
   return (
     <div className="small" data-testid="last-run">
       <b>{t("sch.last_run")}:</b>{" "}
-      {lr ? <>{fmtTime(lr.finished_at || lr.started_at || lr.created_at)} <Pill status={lr.status} /> <Code code={lr.reason_code} />
+      {lr ? <>{fmtTime(lr.finished_at || lr.started_at || lr.created_at)} <Pill status={lr.status} /><Outcome r={lr} /> <Code code={lr.reason_code} />
         {lr.error ? <div className="bad-t">{lr.error}</div> : null}
         {Object.keys(lr.summary || {}).length > 0 && <span className="muted mono"> {Object.entries(lr.summary).map(([k, x]) => `${k}=${x}`).join(" · ")}</span>}</>
         : <span className="muted">{t("sch.never")}</span>}
@@ -43,6 +52,8 @@ function FlowCard({ flow, v, title, intro, children, onSaved, confirmOn }: {
   const { t, pick } = useI18n();
   const act = useAction();
   const [form, setForm] = useState<any>(v.config);
+  const [runId, setRunId] = useState<string | null>(null);     // job started by "run once now", followed until it ends
+  const [running, setRunning] = useState(false);
   useEffect(() => { setForm(v.config); }, [JSON.stringify(v.config)]);       // always the backend's saved values
   const set = (p: any) => setForm((f: any) => ({ ...f, ...p }));
   const dirty = JSON.stringify(form) !== JSON.stringify(v.config);
@@ -74,15 +85,20 @@ function FlowCard({ flow, v, title, intro, children, onSaved, confirmOn }: {
             : <button className="primary" data-testid={`toggle-${flow}`} disabled={act.busy || dirty || !v.readiness.ready}
                 title={!v.readiness.ready ? t("sch.cannot_enable") : dirty ? t("sch.save_first") : undefined}
                 onClick={() => { if (confirmOn && !window.confirm(confirmOn)) return; save({ enabled: true }, t("sch.saved_on")); }}>{t("sch.turn_on")}</button>}
-          <button data-testid={`run-${flow}`} disabled={act.busy || !v.readiness.ready}
+          <button data-testid={`run-${flow}`} disabled={act.busy || running || !v.readiness.ready}
             title={!v.readiness.ready ? t("sch.cannot_run") : undefined}
             onClick={async () => {
               if (!window.confirm(t("sch.run_confirm"))) return;
               const r = await act.run(() => post(`/api/schedules/${flow}/run`));
-              if (r) act.setOk(`${t("sch.run_started")}: ${r.id}`);
+              if (r) {
+                act.setOk(`${t(r.already_active ? "sch.run_already_active" : "sch.run_started")}: ${r.id}`);
+                setRunId(r.id);
+                setRunning(true);
+              }
               onSaved();
             }}>{t("sch.run_now")}</button>
         </div>
+        {runId && <JobProgress jobId={runId} onDone={() => { setRunning(false); onSaved(); }} />}
         {dirty && <div className="alert warn small">{t("sch.unsaved")}</div>}
         <div className="small" data-testid={`next-${flow}`}>
           <b>{t("sch.next_run")}:</b> {v.next_runs?.length ? v.next_runs.map((x: string) => fmtTime(x)).join(" · ") : <span className="muted">{t("sch.no_next")}</span>}
@@ -92,7 +108,7 @@ function FlowCard({ flow, v, title, intro, children, onSaved, confirmOn }: {
           <details className="small"><summary>{t("sch.history")}</summary>
             <table className="tbl small"><tbody>
               {v.history.map((h: any) => (
-                <tr key={h.id}><td>{fmtTime(h.created_at)}</td><td>{t(`job.trigger.${h.trigger}`)}</td><td><Pill status={h.status} /></td>
+                <tr key={h.id}><td>{fmtTime(h.created_at)}</td><td>{t(`job.trigger.${h.trigger}`)}</td><td><Pill status={h.status} /><Outcome r={h} /></td>
                   <td><Code code={h.reason_code} showCode={false} /></td></tr>
               ))}
             </tbody></table>

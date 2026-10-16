@@ -1,0 +1,10 @@
+# /etc/caddy/Caddyfile - TLS (automatic Let's Encrypt) + login in front of the app.
+# The app has NO user login of its own: never publish port 8765, always go through this proxy (or a VPN).
+# Password hash: caddy hash-password  (keep the real Caddyfile out of Git).
+forecast.example.com {
+	encode gzip
+	basic_auth {
+		planner REPLACE_WITH_BCRYPT_HASH
+	}
+	reverse_proxy 127.0.0.1:8765
+}

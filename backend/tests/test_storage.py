@@ -33,7 +33,8 @@ def d_drive_dir():
     reset_logging()
     yield root
     reset_logging()      # release the log file handle before deleting
-    shutil.rmtree(root)
+    if root.exists():
+        shutil.rmtree(root)
 
 
 def _cfg(**kw):
@@ -55,7 +56,8 @@ def test_default_location_and_cwd_independence(no_env, tmp_path, monkeypatch):
 def test_configured_d_drive_location_all_files_land_there(no_env, d_drive_dir):
     data, logs, bks, reps = (d_drive_dir / "runtime", d_drive_dir / "logs runtime", d_drive_dir / "backups",
                              d_drive_dir / "reports")
-    assert str(data).upper().startswith("D:")
+    if PROJECT_ROOT.drive.upper() == "D:":      # the real installation; a clone elsewhere checks the same paths
+        assert str(data).upper().startswith("D:")
     _cfg(data_dir=data, logs_dir=logs, backups_dir=bks, reports_dir=reps, allow_create=True)
     from app import settings_service as ss
     from app.api import background

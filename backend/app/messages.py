@@ -142,8 +142,8 @@ CATALOG: dict[str, tuple[str, str]] = {
     "BQ_QUERY_INVALID": ("BigQuery từ chối truy vấn kiểm tra.", "BigQuery rejected the check query."),
     "BQ_VALIDATION_REQUIRED": ("Chưa có kết quả kiểm tra dữ liệu BigQuery đạt cho ánh xạ hiện tại. Chạy 'Kiểm tra dữ liệu toàn kỳ' trước khi đồng bộ/huấn luyện.",
                                "No passing BigQuery data validation for the current mapping. Run 'Validate full period' before syncing/training."),
-    "BQ_DATA_DUPLICATES": ("Nguồn có dòng trùng hoàn toàn và chính sách hiện tại là CHẶN. Hãy kiểm tra nguồn hoặc chọn chính sách xử lý dòng trùng.",
-                           "The source has fully duplicated rows and the current policy is BLOCK. Check the source or choose a duplicate policy."),
+    "BQ_DATA_DUPLICATES": ("Nguồn có dòng trùng hoàn toàn (giống nhau ở MỌI cột đã ánh xạ) — đã chặn, KHÔNG ghi dữ liệu. Tải báo cáo dòng trùng (.xlsx) ở trang BigQuery, xử lý tại nguồn rồi chạy lại kiểm tra.",
+                           "The source has fully duplicated rows (identical in EVERY mapped column) — blocked, nothing was written. Download the duplicate report (.xlsx) on the BigQuery page, fix the source, then run the check again."),
     "BQ_API_DISABLED": ("BigQuery API chưa được bật (hoặc chưa được dùng) trong project. Quản trị Google Cloud cần bật BigQuery API.",
                         "The BigQuery API is not enabled (or never used) in the project. The Google Cloud administrator must enable it."),
     "D0_SCHEDULE_DISABLED": ("Lịch D-0 đang TẮT (mặc định). Bật ở trang Lịch chạy dữ liệu khi luồng D-0 đã sẵn sàng.",
@@ -224,7 +224,10 @@ CATALOG: dict[str, tuple[str, str]] = {
                                "The storage configuration (storage.json) is missing although the data was moved elsewhere. No empty database is created. Run scripts\\repair-storage.ps1 to restore it from the verified migration history."),
     "STORAGE_NOT_WRITABLE": ("Không có quyền ghi vào thư mục dữ liệu đã cấu hình.", "The configured data folder is not writable."),
     "STORAGE_CONFIG_INVALID": ("File cấu hình đường dẫn (storage.json) không hợp lệ.", "The storage path configuration (storage.json) is invalid."),
-    "BQ_MAPPING_INVALID": ("Ánh xạ trường không hợp lệ so với schema bảng.", "Field mapping is invalid for the table schema."),
+    "BQ_MAPPING_INVALID": ("Ánh xạ trường không hợp lệ so với schema nguồn (thiếu trường bắt buộc, cột không còn tồn tại hoặc sai kiểu) — không đọc, không ghi dữ liệu. Xem danh sách trường trong chi tiết và sửa ánh xạ.",
+                           "The field mapping does not match the source schema (required field missing, column gone or wrong type) — nothing is read or written. See the field list in the detail and fix the mapping."),
+    "BQ_AGGREGATE_INVALID": ("Dữ liệu sau tổng hợp ngày × SKU × FC không hợp lệ (ngày sai, thiếu SKU/FC, trùng khóa đầu ra hoặc số lượng không hợp lệ) — không ghi dữ liệu.",
+                             "The aggregated day × SKU × FC rows are invalid (bad date, missing SKU/FC, repeated output key or invalid quantity) — nothing was written."),
 }
 
 

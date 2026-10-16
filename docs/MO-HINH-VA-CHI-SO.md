@@ -310,3 +310,7 @@ model version, SKU, FC) và giá trị số giữ nguyên.
   forecast cũ được giữ.
 - Lịch huấn luyện tự động (07:00) vẫn huấn luyện khi có dữ liệu mới, nhưng chỉ tạo model chờ duyệt; khi dữ liệu không đổi
   so với model đang dùng hoặc model đang chờ duyệt thì bỏ qua (`NO_NEW_DATA`).
+  Lưu ý (kiểm toán 16/10/2026): "dữ liệu không đổi" được so bằng dấu vân tay `COUNT, SUM(qty), MIN/MAX(order_date),
+  MAX(loaded_at)` của cả phạm vi. Với BIGQUERY mỗi lần D-1 ghi lại cửa sổ (`loaded_at` mới) nên dấu vân tay luôn đổi:
+  `NO_NEW_DATA` thực tế chỉ xảy ra với DEMO / Excel, và model chờ duyệt sẽ không duyệt được nữa
+  (`DATA_CHANGED_SINCE_TRAINING`) sau lần D-1 kế tiếp.

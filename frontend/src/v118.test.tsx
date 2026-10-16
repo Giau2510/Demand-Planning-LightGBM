@@ -117,3 +117,57 @@ describe("v1.1.8 data schedules page", () => {
     expect(r.container.querySelector("[data-testid=schedules-page]")).toBeNull();
   });
 });
+
+describe("audit 16/10/2026: job outcome and 'run once now' follow-up on the schedules page", () => {
+  it("a training job that SUCCEEDED as a job but was REJECTED / FAILED is not shown as a plain success", async () => {
+    const ov: any = overview();
+    const at = "2026-10-15T00:00:20+00:00";
+    ov.flows.train.last_run = { id: "J7", trigger: "SCHEDULE", status: "SUCCEEDED", result_status: "REJECTED",
+      reason_code: "QUALITY_GATE_FAILED", created_at: at, finished_at: at, summary: {} };
+    ov.flows.train.history = [ov.flows.train.last_run, { id: "J6", trigger: "MANUAL", status: "SUCCEEDED",
+      result_status: "FAILED", reason_code: "TRAINING_FAILED", created_at: at, summary: {} },
+      { id: "J5", trigger: "SCHEDULE", status: "SUCCEEDED", result_status: "PUBLISHED", reason_code: "FORECAST_PUBLISHED", created_at: at, summary: {} }];
+    mock({ "/api/schedules": ov });
+    await act(async () => { render(wrap(<Schedules />)); });
+    await waitFor(() => expect(screen.getByTestId("flow-train")).toBeTruthy());
+    const card = screen.getByTestId("flow-train");
+    expect(card.querySelector("[data-testid=last-run]")!.textContent).toContain("Hoàn tất — không đạt chất lượng");
+    const outcomes = [...card.querySelectorAll("[data-testid=job-outcome]")].map((e) => e.textContent);
+    expect(outcomes).toEqual(["Hoàn tất — không đạt chất lượng", "Hoàn tất — không đạt chất lượng", "Thất bại"]);   // last run + 2 history rows; PUBLISHED has none
+  });
+
+  it("'run once now' follows the job until it ends, blocks a second click meanwhile, then re-reads the page", async () => {
+    let polls = 0, reads = 0;
+    const calls = mock({
+      "/api/schedules/d0/run": () => ({ id: "J9", job_type: "D0_SYNC", status: "PENDING", already_active: false }),
+      "/api/jobs/J9": () => { polls++; const done = polls >= 2;
+        return { id: "J9", job_type: "D0_SYNC", status: done ? "SUCCEEDED" : "RUNNING", stage: done ? "DONE" : "SYNCING",
+          result: { result: { status: "SUCCEEDED" } } }; },
+      "/api/schedules": () => { reads++; return overview(); },
+    });
+    await act(async () => { render(wrap(<Schedules />)); });
+    await waitFor(() => expect(screen.getByTestId("run-d0")).toBeTruthy());
+    await act(async () => { fireEvent.click(screen.getByTestId("run-d0")); });
+    expect(window.confirm).toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByTestId("flow-d0").textContent).toContain("Đã tạo job: J9"));
+    expect((screen.getByTestId("run-d0") as HTMLButtonElement).disabled).toBe(true);            // job still running
+    const readsBefore = reads;
+    await waitFor(() => expect(polls).toBeGreaterThanOrEqual(2), { timeout: 6000 });
+    await waitFor(() => expect(reads).toBeGreaterThan(readsBefore));                            // page re-read after the end
+    await waitFor(() => expect((screen.getByTestId("run-d0") as HTMLButtonElement).disabled).toBe(false));
+    expect(calls.filter((c) => c.method === "POST").map((c) => c.url)).toEqual(["/api/schedules/d0/run"]);
+  }, 15000);
+
+  it("an already running job is reported as such, not as a new job", async () => {
+    mock({
+      "/api/schedules/d0/run": () => ({ id: "J8", job_type: "D0_SYNC", status: "RUNNING", already_active: true }),
+      "/api/jobs/J8": () => ({ id: "J8", job_type: "D0_SYNC", status: "SUCCEEDED", stage: "DONE", result: { result: { status: "SUCCEEDED" } } }),
+      "/api/schedules": () => overview(),
+    });
+    await act(async () => { render(wrap(<Schedules />)); });
+    await waitFor(() => expect(screen.getByTestId("run-d0")).toBeTruthy());
+    await act(async () => { fireEvent.click(screen.getByTestId("run-d0")); });
+    await waitFor(() => expect(screen.getByTestId("flow-d0").textContent).toContain("đang có job chạy"));
+    expect(screen.getByTestId("flow-d0").textContent).not.toContain("Đã tạo job");
+  });
+});

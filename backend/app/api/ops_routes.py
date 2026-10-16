@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from .. import __version__, backup, db, paths
 from .. import settings_service as ss
 from .. import sync
-from ..bq import connector, oauth
+from ..bq import connector, dup_report, oauth
 from ..data.demand import data_window, resolve_scope
 from ..data.excel_io import dataframe_to_xlsx
 from ..jobs import scheduler as sched_mod
@@ -299,6 +299,8 @@ def bq_status():
             "mapping_hash": connector.mapping_hash(bq), "read_range": {"start": str(start), "end": str(end)},
             "validation": v, "validation_current": bool(v and v.get("mapping_hash") == connector.mapping_hash(bq)),
             "identity": oauth.runtime_identity(), "oauth": oauth.status(),
+            "duplicate_check": connector.dup_state(), "duplicate_reports": dup_report.list_reports(10),
+            "ingest_check": sync.ingest_check_state(),
             "adc_env_set": bool(os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")),
             "adc_default_file_exists": os.path.exists(os.path.join(os.environ.get("APPDATA", ""), "gcloud",
                                                                    "application_default_credentials.json"))}
@@ -349,6 +351,29 @@ def bq_profile(body: ProfileBody | None = None):
 def bq_validate():
     """Full-period read-only validation (dry-run cost check first). Never changes the source or the forecast."""
     return connector.validate_source()
+
+
+@router.post("/bigquery/ingest-check")
+def bq_ingest_check():
+    """Next D-1 load step by step WITHOUT writing demand: sign-in, window, mapping, exact-duplicate gate (report on
+    duplicates), aggregation, output checks, reconciliation, comparison with the stored days (read-only)."""
+    return sync.d1_dry_run()
+
+
+@router.get("/bigquery/duplicate-reports")
+def bq_duplicate_reports():
+    return dup_report.list_reports()
+
+
+@router.get("/bigquery/duplicate-reports/{name}")
+def bq_duplicate_report_file(name: str):
+    """Download one duplicate report (.xlsx, or a .csv fallback) from the reports folder; nothing else is served."""
+    p = dup_report.path_of(name)
+    if p is None:
+        raise AppError("BATCH_NOT_FOUND", 404, detail=name)
+    media = ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if p.suffix == ".xlsx"
+             else "text/csv; charset=utf-8")
+    return Response(p.read_bytes(), media_type=media, headers={"Content-Disposition": f'attachment; filename="{p.name}"'})
 
 
 @router.post("/bigquery/suggest-mapping")

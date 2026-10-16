@@ -124,9 +124,8 @@ ADC của tài khoản Windows khác (ví dụ Administrator) không dùng đư�
 | `PROMOTION_REVIEW_REQUIRED` | Model mới chờ duyệt: trang *Hiệu năng model* → xem so sánh → *Dùng model này* nếu đồng ý |
 | BigQuery `BQ_QUERY_TOO_EXPENSIVE` | Thêm cột partition, giảm số ngày tải lần đầu, hoặc tăng giới hạn bytes (cân nhắc chi phí) |
 | Import báo `MACRO_NOT_ALLOWED` | Lưu lại file dưới dạng *Excel Workbook (.xlsx)* |
-| `STORAGE_NOT_FOUND` khi khởi động | Ổ/thư mục dữ liệu đã cấu hình không có mặt. Cắm lại ổ, hoặc `scripts
+| `STORAGE_NOT_FOUND` khi khởi động | Ổ/thư mục dữ liệu đã cấu hình không có mặt. Cắm lại ổ, hoặc `scripts\rollback-storage.ps1`. Ứng dụng cố ý không tạo database trống. |
 | `STORAGE_CONFIG_MISSING` khi khởi động/cài đặt | `storage.json` (ở `%LOCALAPPDATA%\DemandForecast`) bị mất sau khi đã di chuyển dữ liệu. Chạy `scripts\repair-storage.ps1`, rồi `-Apply` — chỉ khôi phục khi mọi bằng chứng khớp. Xem [LUU-TRU.md](LUU-TRU.md). |
-ollback-storage.ps1`. Ứng dụng cố ý không tạo database trống. |
 | `DATABASE_CONSTRAINT` / `DATA_CONSISTENCY` | Thao tác bị từ chối và đã rollback; không mất dữ liệu. Tạo báo cáo chẩn đoán. Không xóa database. |
 | Lỡ tay xóa/thay lô | Khôi phục bản sao lưu gần nhất (forecast đã publish vẫn còn dù lô bị xóa) |
 

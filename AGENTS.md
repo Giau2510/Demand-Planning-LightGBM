@@ -24,6 +24,8 @@ read-only).
 | Agents, model routing, budgets, checkpoints | [docs/agents/GOVERNANCE.md](docs/agents/GOVERNANCE.md) |
 | Resume state of the current batch | [docs/CHECKPOINT.md](docs/CHECKPOINT.md) |
 | Git / GitHub: what is versioned, commit, push, sync | [docs/GITHUB_WORKFLOW.md](docs/GITHUB_WORKFLOW.md) |
+| Development, QA, release, artifact and backup retention | [docs/PHAT-TRIEN-QA-PHAT-HANH.md](docs/PHAT-TRIEN-QA-PHAT-HANH.md) |
+| VPS deployment (Linux, prepared, not deployed) | [docs/TRIEN-KHAI-VPS.md](docs/TRIEN-KHAI-VPS.md) |
 | Version history | [CHANGELOG.md](CHANGELOG.md) |
 
 ## 2. Inspect before changing
@@ -98,8 +100,12 @@ powershell -ExecutionPolicy Bypass -File scripts\run-tests.ps1               # b
 * Never weaken or delete a test to make it pass; a flaky test is a bug to explain.
 * Label every result by kind: unit / integration with fakes / isolated install / DB copy / real external service.
   Mocked OAuth, fake BigQuery clients, DuckDB transpilation and synthetic data are **not** real integration evidence.
-* Packages: `scripts\build-package.ps1` -> `dist\<name>.zip` + `.sha256` + manifest. Verify contents (no data, no
-  credentials, no `__pycache__`), install in an isolated `LOCALAPPDATA` on a DB copy, test upgrade and rollback.
+* Packages: `scripts\release.ps1` (clean commit -> QA -> `scripts\build-package.ps1` -> verification) ->
+  `dist\<name>.zip` + `.sha256` + manifest; identity = version + commit + source fingerprint (`BUILD-INFO.json`); the
+  same sources are never rebuilt and an existing package is never silently replaced. Linux VPS artifact:
+  `scripts\vps\build-vps-artifact.ps1`. Old artifacts: `scripts\prune-artifacts.ps1` (dry run unless `-Apply`).
+  Verify contents (no data, no credentials, no `__pycache__`), install in an isolated `LOCALAPPDATA` on a DB copy,
+  test upgrade and rollback. Build artifacts only to release, test packaging or deploy.
 
 ## 7. Release and deployment
 

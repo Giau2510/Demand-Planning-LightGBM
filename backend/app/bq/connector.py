@@ -22,8 +22,8 @@ from pathlib import Path
 from .. import db, paths
 from .. import settings_service as ss
 from ..messages import AppError
-from ..timeutil import VN_TZ, now_iso, today_vn
-from . import oauth, sql_guard
+from ..timeutil import VN_TZ, now_iso, now_vn, today_vn
+from . import dup_report, oauth, sql_guard
 
 log = logging.getLogger("df.bq")
 
@@ -582,6 +582,122 @@ def _src_cte(bq, with_refs: bool, start_param="start", end_param="end", distinct
             f"{_partition_filter(bq, start_param, end_param, snap)}")
 
 
+# ------------------------------------------------------------------ exact-duplicate gate (raw rows, BEFORE aggregation)
+DUP_MAX_GROUPS = 100_000        # groups listed in the report; the counts are always complete
+
+
+def dup_columns(bq) -> list[dict]:
+    """Every column read through the mapping (internal + reference fields): the full set the gate compares. A mapped
+    column that is missing from the source stops the run (require_mapping); it is never left out of the comparison."""
+    out = [{"field": f, "alias": f, "column": bq.field_mapping[f].column} for f in _mapped_internal(bq)]
+    return out + [{"field": f, "alias": f"ref_{f}", "column": bq.reference_mapping[f].column} for f in _mapped_refs(bq)]
+
+
+def require_mapping(bq, snap: dict | None) -> dict:
+    """The saved mapping must match the LIVE source (table metadata, or the dry-run schema of the user SQL; no data is
+    read): required fields mapped, every mapped column present with a compatible type. Otherwise BQ_MAPPING_INVALID
+    with the list of fields."""
+    sch = _output_columns(bq, snap)
+    mc = validate_mapping(sch["columns"])
+    if not mc["ok"]:
+        raise AppError("BQ_MAPPING_INVALID", 422, detail=json.dumps(mc["errors"]))
+    return {**sch, "mapping_check": mc}
+
+
+def _dup_sql(bq, snap: dict | None, limit: int = DUP_MAX_GROUPS) -> str:
+    """Exact duplicates = source rows equal in EVERY compared column, found by GROUP BY on the native values (rule:
+    dup_report.RULE_EN): NULL = NULL, numbers by value in their type, dates/times without time-zone conversion, strings
+    exactly. No row is filtered out (a NULL so_code takes part like any value). Groups are listed ordered by every
+    compared column, so their numbering in the report is stable for the same data."""
+    cols = ", ".join(c["alias"] for c in dup_columns(bq))
+    return f"""WITH src AS (
+  {_src_cte(bq, True, snap=snap)}
+), g AS (
+  SELECT {cols}, COUNT(*) AS _n, SUM(order_qty) AS _q FROM src GROUP BY {cols}
+)
+SELECT SUM(_n) AS rows_checked, SUM(_q) AS qty_checked, COUNTIF(_n > 1) AS duplicate_groups,
+  SUM(IF(_n > 1, _n, 0)) AS duplicate_rows, SUM(IF(_n > 1, _n - 1, 0)) AS extra_duplicate_rows,
+  ARRAY_AGG(IF(_n > 1, STRUCT({cols}, _n AS _occurrences), NULL) IGNORE NULLS ORDER BY {cols} LIMIT {int(limit)}) AS _groups
+FROM g"""
+
+
+def _dup_finish(bq, snap: dict | None, start: date, end: date, rows: list[dict], columns: list[dict],
+                context: str, est: int | None) -> dict:
+    """Result of the duplicate query: counts, the groups, the report file when there are duplicates. The result
+    (without the rows) is kept in sync_state 'bq_duplicate_check' for the BigQuery page."""
+    r = rows[0] if rows else {}
+    cols = dup_columns(bq)
+    groups = [{"values": {c["alias"]: g.get(c["alias"]) for c in cols}, "occurrences": int(g.get("_occurrences") or 0)}
+              for g in (r.get("_groups") or [])]
+    used = {c["column"] for c in cols}
+    n_groups = int(r.get("duplicate_groups") or 0)
+    blocked = bool(n_groups) and bq.exact_duplicate_policy == "BLOCK"
+    chk = {"rows_checked": int(r.get("rows_checked") or 0), "qty_checked": _num(r.get("qty_checked")),
+           "duplicate_groups": n_groups, "duplicate_rows": int(r.get("duplicate_rows") or 0),
+           "extra_duplicate_rows": int(r.get("extra_duplicate_rows") or 0), "groups": groups,
+           "truncated": n_groups > len(groups), "columns": cols,
+           "not_compared": [c["name"] for c in columns if c["name"] not in used],
+           "range": {"start": str(start), "end": str(end)}, "context": context, "policy": bq.exact_duplicate_policy,
+           "ingest_status": "BLOCKED" if blocked else ("PASSED" if not n_groups else bq.exact_duplicate_policy),
+           "table": f"{bq.project_id}.{bq.dataset_id}.{bq.source_table}",
+           "source_label": (f"SQL v{snap.get('version_id')} ({(snap.get('sha256') or '')[:12]})" if _is_sql(snap)
+                            else "TABLE"),
+           "checked_at": now_iso(), "checked_at_vn": now_vn().strftime("%d/%m/%Y %H:%M:%S"), "estimated_bytes": est}
+    if n_groups:
+        chk["report"] = dup_report.write(chk)
+    with db.tx() as c:
+        c.execute("INSERT INTO sync_state(name, value_json, updated_at) VALUES ('bq_duplicate_check', ?, ?) "
+                  "ON CONFLICT(name) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at",
+                  (json.dumps(dup_public(chk), default=str), now_iso()))
+    return chk
+
+
+def dup_public(chk: dict) -> dict:
+    return {k: v for k, v in chk.items() if k != "groups"}
+
+
+def dup_state() -> dict | None:
+    with db.read() as c:
+        r = db.one(c, "SELECT value_json FROM sync_state WHERE name='bq_duplicate_check'")
+    return json.loads(r["value_json"]) if r else None
+
+
+def duplicate_check(start: date, end: date, snap: dict | None = None, context: str = "",
+                    columns: list[dict] | None = None) -> dict:
+    """Exact duplicates of the raw source rows of [start, end] (one read-only query, dry-run first). Never blocks by
+    itself; see duplicate_gate."""
+    bq = ss.get("bigquery")
+    _require_config(bq)
+    snap = _snap(snap)
+    if columns is None:
+        columns = require_mapping(bq, snap)["columns"]
+    res = _run(_client(bq), bq, "dup_check", _dup_sql(bq, snap), [("start", "DATE", start), ("end", "DATE", end)])
+    return _dup_finish(bq, snap, start, end, res["rows"], columns, context, res["estimated_bytes"])
+
+
+def _dup_detail(chk: dict) -> str:
+    rep = chk.get("report") or {}
+    where = rep.get("file") or ", ".join(rep.get("files") or []) or f"REPORT FAILED: {rep.get('error')}"
+    if rep.get("format") == "csv":
+        where = f"xlsx failed ({rep.get('xlsx_error')}); CSV: {where}"
+    return (f"groups={chk['duplicate_groups']} rows={chk['duplicate_rows']} extra={chk['extra_duplicate_rows']} "
+            f"range={chk['range']['start']}..{chk['range']['end']} report={where}")
+
+
+def duplicate_gate(start: date, end: date, snap: dict | None = None, context: str = "",
+                   columns: list[dict] | None = None) -> dict | None:
+    """BLOCK policy (default): checked on the raw rows BEFORE any aggregation; duplicates -> report file +
+    BQ_DATA_DUPLICATES, nothing else is read or written. KEEP / DROP_EXACT (explicit user choice) keep their 1.1.5
+    behaviour and are not checked here."""
+    bq = ss.get("bigquery")
+    if bq.exact_duplicate_policy != "BLOCK":
+        return None
+    chk = duplicate_check(start, end, snap, context, columns)
+    if chk["duplicate_groups"]:
+        raise AppError("BQ_DATA_DUPLICATES", 409, detail=_dup_detail(chk), duplicate_check=dup_public(chk))
+    return dup_public(chk)
+
+
 def preview() -> dict:
     """Small sample (mapped + reference columns only, LIMIT preview_rows) + validation of that sample."""
     import pandas as pd
@@ -696,7 +812,7 @@ def _validation_sqls(bq, start: date, end: date, snap: dict | None = None) -> di
     days = (f"{checked}\nSELECT _order_date AS d, CAST(fc_id AS STRING) AS fc_id, COUNT(*) AS n_rows, "
             f"COUNTIF(_reason IS NULL) AS rows_valid, SUM(IF(_reason IS NULL, order_qty, 0)) AS qty_valid "
             f"FROM checked GROUP BY 1, 2")
-    out = {"validate_summary": summary, "validate_days": days}
+    out = {"validate_summary": summary, "validate_days": days, "validate_duplicates": _dup_sql(bq, snap)}
     cats = [f for f in refs if f in REF_CATEGORY]
     if cats:
         parts = [f"SELECT '{f}' AS field, CAST(ref_{f} AS STRING) AS value, COUNT(*) AS n_rows, "
@@ -708,7 +824,7 @@ def _validation_sqls(bq, start: date, end: date, snap: dict | None = None) -> di
 
 
 def _analyse(bq, start: date, end: date, s: dict, days: list[dict], cats: list[dict], null_date: int,
-             drift: dict | None, mapping_check: dict, snap: dict | None = None) -> dict:
+             drift: dict | None, mapping_check: dict, snap: dict | None = None, dup: dict | None = None) -> dict:
     n = int(s.get("n_rows") or 0)
     blocking, warnings = [], []
     if not mapping_check.get("ok", True):
@@ -733,9 +849,14 @@ def _analyse(bq, start: date, end: date, s: dict, days: list[dict], cats: list[d
         share = null_date / total_with_null_date
         (blocking if share > bq.max_null_share else warnings).append(
             {"code": "NULL_DATE", "detail": {"rows": null_date, "share": share}})
-    dup = int(s.get("exact_duplicate_rows") or 0)
-    if dup:
-        item = {"code": "EXACT_DUPLICATES", "detail": {"rows": dup, "policy": bq.exact_duplicate_policy}}
+    # exact duplicates: groups / rows / extra rows of the duplicate query (identical in every mapped column)
+    extra = dup["extra_duplicate_rows"] if dup and dup.get("rows_checked") else int(s.get("exact_duplicate_rows") or 0)
+    if extra:
+        detail = {"rows": extra, "policy": bq.exact_duplicate_policy}
+        if dup and dup.get("rows_checked"):
+            detail.update(groups=dup["duplicate_groups"], rows_in_groups=dup["duplicate_rows"],
+                          report=dup.get("report"))
+        item = {"code": "EXACT_DUPLICATES", "detail": detail}
         (blocking if bq.exact_duplicate_policy == "BLOCK" else warnings).append(item)
     # candidate unique key (configured on the SQL page): duplicates mean the grain is not proven -> block writes
     keys = (snap or {}).get("key_columns") or []
@@ -822,6 +943,7 @@ def _analyse(bq, start: date, end: date, s: dict, days: list[dict], cats: list[d
         "per_day": [{"date": d, "rows": by_day[d], "qty_valid": by_day_qty[d]} for d in sorted(by_day)],
         "fc_gaps": fc_gaps[:30], "categories": categories, "reference_completeness": refs, "outbound_vs_demand": outbound,
         "key_check": {"key_columns": keys, "duplicate_key_rows": dk, "policy": kpol},
+        "duplicate_check": dup_public(dup) if dup else None,
         "blocking_issues": blocking, "warnings": warnings, "passed": not blocking,
         "grain": {"source_rows": "1 dòng nguồn = 1 dòng của bảng/SQL (không đổi)",
                   "target": "SKU × FC × ngày; qty = Σ order_qty của các dòng hợp lệ",
@@ -838,10 +960,8 @@ def _output_columns(bq, snap: dict) -> dict:
 
 
 def _run_validation(bq, snap: dict, start: date, end: date) -> dict:
-    sch = _output_columns(bq, snap)
-    mcheck = validate_mapping(sch["columns"])
-    if not mcheck["ok"]:
-        raise AppError("BQ_MAPPING_INVALID", 422, detail=json.dumps(mcheck["errors"]))
+    sch = require_mapping(bq, snap)
+    mcheck = sch["mapping_check"]
     names = {c["name"] for c in sch["columns"]}
     miss = [k for k in snap.get("key_columns") or [] if k not in names]
     if miss:
@@ -859,8 +979,10 @@ def _run_validation(bq, snap: dict, start: date, end: date) -> dict:
     res = {k: _run(client, bq, k, q, params if "@start" in q else None) for k, q in sqls.items()}
     summary = res["validate_summary"]["rows"][0] if res["validate_summary"]["rows"] else {}
     null_date = int((res["validate_null_date"]["rows"] or [{}])[0].get("n") or 0)
+    dup = _dup_finish(bq, snap, start, end, res["validate_duplicates"]["rows"], sch["columns"],
+                      "validate_source", est["validate_duplicates"])
     out = _analyse(bq, start, end, summary, res["validate_days"]["rows"],
-                   res.get("validate_categories", {}).get("rows", []), null_date, sch.get("drift"), mcheck, snap)
+                   res.get("validate_categories", {}).get("rows", []), null_date, sch.get("drift"), mcheck, snap, dup)
     out.update(checked_at=now_iso(), estimated_bytes=sum(est.values()), estimated_bytes_by_query=est,
                seconds=round(time.monotonic() - t0, 2), table=f"{bq.project_id}.{bq.dataset_id}.{bq.source_table}",
                mapping_warnings=mcheck["warnings"], source=_public(snap), output_columns=sch["columns"],
@@ -969,13 +1091,18 @@ def _key_gate(snap: dict | None, key_dups: str | None, where: str) -> int | None
     return n
 
 
-def fetch_daily(start: date, end: date, snap: dict | None = None) -> dict:
-    """Aggregated SKU × FC × day rows + a full reconciliation of what was read, kept, excluded (by reason)."""
+def fetch_daily(start: date, end: date, snap: dict | None = None, context: str = "", prechecked: bool = False) -> dict:
+    """Aggregated SKU × FC × day rows + a full reconciliation of what was read, kept, excluded (by reason).
+    Order: mapping vs live source, exact-duplicate gate on the RAW rows (BLOCK: report + stop), then the aggregation
+    (`prechecked`: the caller already ran the first two steps on the same window and snapshot)."""
     bq = ss.get("bigquery")
     _require_config(bq)
     snap = _snap(snap)
     floor, _ = read_range(bq, end)
     start = max(start, floor)
+    if not prechecked:
+        cols = require_mapping(bq, snap)["columns"]
+        duplicate_gate(start, end, snap, context, cols)
     sql, params = _daily_sql(bq, start, end, snap)
     res = _run(_client(bq), bq, "daily", sql, params)
     rows = res["rows"]

@@ -268,6 +268,16 @@ def _bq_check() -> int:
 def _pid_alive(pid) -> bool:
     if not pid:
         return False
+    if sys.platform != "win32":
+        # Linux VPS (systemd): signal 0 only checks that the process exists. Never on Windows, where os.kill(pid, 0)
+        # sends CTRL_C_EVENT.
+        try:
+            os.kill(int(pid), 0)
+            return True
+        except PermissionError:          # exists, owned by another user
+            return True
+        except (OSError, ValueError):
+            return False
     try:
         import ctypes
         h = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION

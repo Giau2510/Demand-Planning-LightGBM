@@ -130,6 +130,7 @@ def _job_rows(c, job_type: str, limit: int) -> list[dict]:
                                             "series_days_new", "series_days_updated", "window_start", "window_end",
                                             "snapshot_id", "verdict", "forecast_run_id", "training_run_id")
                         if k in res}
+        r["result_status"] = res.get("status")     # e.g. a training job that SUCCEEDED as a job but REJECTED/FAILED the model
         r["error"] = (r["error"] or "")[:300] or None
     return rows
 

@@ -478,21 +478,24 @@ def test_d1_is_independent_backfill_is_bounded_and_counts_new_updated(client, mo
     assert st["jobs"]["D1_SYNC"]["feed"]["mode"] == "TABLE" and st["jobs"]["D0_SYNC"]["feed"]["mode"] == "TABLE"
 
 
-def test_history_key_not_unique_blocks_validation_and_load(client):
+def test_history_key_repeats_are_summed_by_default_and_block_only_when_chosen(client):
+    """Business rule confirmed 16/10/2026: several order lines of one order x SKU x FC x day are summed (history default
+    SUM_ALL, reported as a warning). BLOCK, when the user explicitly chooses it, still blocks validation and load."""
     fake = _bq_ready()
     fake.responses.update({"validate_summary": [{"n_rows": 10, "rows_valid": 10, "qty_read": 50.0, "qty_valid": 50.0,
                                                  "exact_duplicate_rows": 0, "duplicate_key_rows": 3,
                                                  "min_date": date(2026, 1, 1), "max_date": date.today()}],
                            "validate_days": [], "validate_null_date": [{"n": 0}]})
-    v = connector.validate_source()
-    assert not v["passed"] and "KEY_NOT_UNIQUE" in {b["code"] for b in v["blocking_issues"]}
-    assert v["key_check"]["key_columns"] == ["so_code", "sku_code", "fc_code", "created_date"]
-    sql_sources.set_options("history", key_duplicate_policy="SUM_ALL")
+    assert sql_sources.view("history")["key_duplicate_policy"] == "SUM_ALL"
+    assert sql_sources.view("d0")["key_duplicate_policy"] == "BLOCK"             # D0 feed unchanged
     v = connector.validate_source()
     assert v["passed"] and "KEY_NOT_UNIQUE" in {w["code"] for w in v["warnings"]}
+    assert v["key_check"]["key_columns"] == ["so_code", "sku_code", "fc_code", "created_date"]
+    sql_sources.set_options("history", key_duplicate_policy="BLOCK")
+    v = connector.validate_source()
+    assert not v["passed"] and "KEY_NOT_UNIQUE" in {b["code"] for b in v["blocking_issues"]}
     fake.responses["daily"] = [{"_kind": "TOTAL_READ", "_reason": "0", "qty": 0, "n_rows": 0},
                                {"_kind": "TOTAL_KEPT", "_reason": "4", "qty": 0, "n_rows": 0}]
-    sql_sources.set_options("history", key_duplicate_policy="BLOCK")
     with pytest.raises(AppError) as e:
         connector.fetch_daily(date(2026, 1, 1), date(2026, 1, 2))
     assert e.value.code == "BQ_KEY_NOT_UNIQUE"

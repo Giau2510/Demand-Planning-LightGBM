@@ -183,7 +183,7 @@ Nút **Kiểm tra dữ liệu toàn kỳ**: kết quả gắn với *mã ánh x�
 - ánh xạ sai;
 - cột đã ánh xạ bị đổi hoặc xóa;
 - tỷ lệ thiếu SKU/FC/target/ngày hoặc target âm > `max_null_share` (mặc định 5%);
-- dòng trùng hoàn toàn khi chính sách là `BLOCK`;
+- dòng trùng hoàn toàn khi chính sách là `BLOCK` (kèm số nhóm / số dòng / số dòng dư và file báo cáo `.xlsx`, mục 13);
 - đối chiếu không khớp.
 
 Chế độ sản xuất, đồng bộ D-1 và huấn luyện nguồn BIGQUERY **chỉ chạy khi kết quả kiểm tra của ánh xạ hiện tại là Đạt** (`BQ_VALIDATION_REQUIRED`).
@@ -197,21 +197,27 @@ Chế độ sản xuất, đồng bộ D-1 và huấn luyện nguồn BIGQUERY *
 5. Xem trước: tối đa `preview_rows` dòng của 7 ngày gần nhất.
 6. Kiểm tra dữ liệu (30 ngày).
 7. **Kiểm tra dữ liệu toàn kỳ.**
+7b. **Kiểm tra trùng & thử tổng hợp (không ghi)** — các bước của lần D-1 kế tiếp, không ghi dữ liệu (mục 13).
 8. Kích hoạt chế độ sản xuất.
 9. Chọn nguồn `BIGQUERY` ở góc trên. Đây là thao tác của người dùng; ứng dụng không tự đổi nguồn.
 10. Đồng bộ D-1 (theo lịch, hoặc *Job & Scheduler* → chạy D1_SYNC).
 11. Huấn luyện.
 
 **Lưu ý về đồng bộ:**
-- Lần đồng bộ đầu tiên, hoặc khi mã ánh xạ thay đổi, sẽ **tải lại toàn kỳ** và thay toàn bộ dữ liệu BIGQUERY trong ứng dụng.
+- Lần đồng bộ đầu tiên, hoặc khi mã ánh xạ thay đổi, sẽ **tải lại toàn kỳ**: dữ liệu BIGQUERY từ ngày bắt đầu cửa sổ dữ
+  liệu (`window_start_date`) được thay; dữ liệu lưu trước cửa sổ được giữ nguyên.
 - Các lần sau chỉ đọc lại từ watermark − `late_data_lookback_days` ngày.
+- Nguồn trả về **0 dòng** trong khi ứng dụng đang có dữ liệu cho khoảng đó (bảng đang được dựng lại, view/SQL rỗng, mất
+  quyền): job **không xóa gì**, báo `SOURCE_INCOMPLETE` (lý do `EMPTY_READ`), thử lại rồi *Thất bại* kèm cảnh báo. (Sửa
+  trong mã nguồn sau 1.1.8, kiểm toán 16/10/2026; bản cài 1.1.8 chưa có chốt này.)
 - Ảnh chụp D0: vì `created_date` là ngày, không có giờ, ảnh chụp là tổng *đến lúc đọc* của ngày hôm nay theo dữ liệu hiện có trong bảng; độ mới xem ở `refresh_time`.
 
 ## 7. Lỗi được phân loại
 
 | Mã | Ý nghĩa | Thử lại tự động |
 |---|---|---|
-| `BQ_AUTH_MISSING` / `BQ_AUTH_EXPIRED` | Chưa có hoặc hết hạn credentials | Không |
+| `BQ_AUTH_MISSING` | Chưa có credentials | Job được thử lại theo `max_attempts` của lịch chạy (giãn `retry_base_seconds` × 2^n), rồi *Thất bại* |
+| `BQ_AUTH_EXPIRED` | Credentials hết hạn / bị thu hồi | Không |
 | `BQ_PERMISSION_DENIED` | Thiếu quyền | Không |
 | `BQ_NOT_FOUND` / `BQ_LOCATION_MISMATCH` | Sai project/dataset/table hoặc location | Không |
 | `BQ_TIMEOUT` | Vượt `query_timeout_seconds`; job bị hủy | Không (tránh nhân chi phí) |
@@ -224,7 +230,10 @@ Chế độ sản xuất, đồng bộ D-1 và huấn luyện nguồn BIGQUERY *
 
 BigQuery tính phí theo bytes quét:
 - **Kiểm tra toàn kỳ** chạy 4 truy vấn trên các cột đã ánh xạ của khoảng ngày đọc; tổng ước tính hiển thị trên trang.
-- **Đồng bộ D-1** sau lần đầu chỉ quét vài ngày.
+- **Đồng bộ D-1** sau lần đầu chỉ quét vài ngày **khi bảng nguồn được phân vùng theo cột ngày** (chế độ TABLE có
+  `partition_column`). Kiểm tra thật 16/10/2026: bảng `demand_planing_lightgbm` **không phân vùng**, nên mỗi truy vấn quét
+  toàn bộ các cột được chọn bất kể khoảng ngày (khoảng 0,2–0,7 GB mỗi truy vấn với 8,9 triệu dòng, tăng dần theo thời
+  gian). Ở chế độ SQL lịch sử, bộ lọc phân vùng không được áp dụng.
 
 Ứng dụng không tạo scheduler mới. D-1/D0 chỉ chạy khi nguồn đang dùng là BIGQUERY và chế độ sản xuất đã bật.
 
@@ -303,3 +312,107 @@ Trên DuckDB với dữ liệu tổng hợp, phiên bản 2 cho cùng các dòng
 - **Dữ liệu D0** nằm trong bảng snapshot riêng, không bao giờ được dùng làm dữ liệu huấn luyện lịch sử.
 - **Múi giờ lịch chạy:** `Asia/Ho_Chi_Minh` (múi giờ duy nhất ứng dụng hỗ trợ), hiển thị trên trang.
 
+## 12. Bảng nguồn thật — kiểm tra chỉ đọc ngày 16/10/2026 (11:20, giờ Việt Nam)
+
+Đọc bằng đường xác thực của chính ứng dụng (ADC của tài khoản Windows chạy ứng dụng), trên bản sao DB; chỉ metadata và
+truy vấn tổng hợp (dry-run trước, giới hạn 2 GiB), tổng khoảng 3,3 GB quét. Không có dữ liệu dòng nào được lưu.
+
+| Hạng mục | Kết quả |
+|---|---|
+| Cổng truy cập (`bq-check`) | auth, API + dataset, location `asia-southeast1`, table metadata, query job: **đạt**; schema_mapping: chưa cấu hình ánh xạ (`BQ_MAPPING_INVALID`) |
+| Schema (17 cột, đều NULLABLE) | `fc_code`, `so_code`, `order_status`, `sku_code`, `item_code`, `seller_code`, `sku_system_status`, `seller_class` STRING; `created_date`, `open_date` DATE; `product_id`, `demand_quantity`, `outbound_quantity` INTEGER; `sales_price`, `total_open_hours`, `total_open_days` FLOAT; `refresh_time` **STRING** (dạng `HH:MM:SS DD/MM/YYYY`) |
+| Phân vùng | **không** (bảng thường, `TABLE`) |
+| Dòng / khoảng ngày | 8.885.547 dòng; 01/01/2026 → 14/10/2026; 287 ngày lịch, **không thiếu ngày nào**; mỗi ngày đủ 2 FC |
+| Grain `created_date × sku_code × fc_code` | 1.345.228 tổ hợp; 9.669 SKU; 2 FC; 953.397 `so_code` khác nhau |
+| Giá trị | Không có NULL ở ngày / SKU / FC / `demand_quantity`; không có số âm; không có số lượng 0; tổng `demand_quantity` 41.654.787 (`outbound_quantity` 39.133.202); 693 dòng `so_code` NULL |
+| `order_status` | COMPLETED 8.613.103 dòng; DELIVERED 237.960; DELIVERING 26.197; CONFIRMED 4.383; WAIT_TO_DELIVER 2.582; WAIT_TO_CONFIRM 693; PROCESSING 629; **không có trạng thái hủy** |
+| Trùng khóa (`so_code, sku_code, fc_code, created_date`) | 9.516 nhóm có > 1 dòng (9.769 dòng dư, tối đa 5 dòng/khóa; 427 nghìn đơn vị là tổng số lượng *nằm trong* các nhóm, không phải số lượng bị trùng). Trong mọi nhóm: cùng `item_code`, `seller_code`, `product_id`, `order_status`. 432 nhóm có dòng **giống hệt** (445 dòng dư, 21 nhóm có `so_code` NULL); 9.084 nhóm còn lại **chỉ** khác ở `demand_quantity`, `outbound_quantity` hoặc `sales_price` — đó là các dòng khác nhau của cùng đơn, được **cộng dồn** (quy tắc nghiệp vụ xác nhận 16/10/2026, mục 13) |
+| Độ mới | `refresh_time` giống nhau ở mọi dòng (`11:44:36 15/10/2026`): bảng được làm mới toàn bộ; ngày D có dữ liệu vào khoảng trưa ngày D+1 (cần cân nhắc giờ D-1 01:00 và huấn luyện 07:00) |
+| Ngày thấp bất thường | 13–19/02/2026 (Tết), 01/09/2026 |
+
+## 13. Đưa dữ liệu BigQuery vào ứng dụng: chốt dòng trùng hoàn toàn và tổng hợp (mã nguồn sau 1.1.8, 16/10/2026)
+
+Chưa có trong bản cài 1.1.8; cần một bản phát hành mới (xem `CHANGELOG.md`, mục *Unreleased*).
+
+**Quy tắc nghiệp vụ (đã xác nhận 16/10/2026):**
+- Đầu ra: một dòng cho mỗi `created_date × sku_code × fc_code`, `qty = SUM(demand_quantity)` của mọi dòng hợp lệ.
+- Nhiều dòng cùng `so_code × sku_code × fc_code × created_date` là bình thường và được **cộng dồn**: luồng lịch sử có
+  mặc định `key_duplicate_policy = SUM_ALL` (cảnh báo `KEY_NOT_UNIQUE`, không chặn). Người dùng vẫn có thể chọn `BLOCK`
+  ở trang SQL nguồn. Luồng D0 không đổi.
+- Không loại dòng vì `so_code` NULL, không thêm bộ lọc `order_status`, không tự thêm 0 cho ngày/SKU-FC không có dòng.
+- Chỉ dòng **trùng hoàn toàn** là lỗi dữ liệu: chính sách `exact_duplicate_policy = BLOCK` (mặc định). `KEEP` /
+  `DROP_EXACT` là lựa chọn có sẵn từ 1.1.5, **không** được bật để vượt qua lỗi khi chưa có chính sách được duyệt.
+
+**Thế nào là trùng hoàn toàn:**
+- Bằng nhau ở **mọi cột đã ánh xạ** (trường nội bộ + trường tham chiếu). Với ánh xạ gợi ý của bảng thật là 15 cột:
+  `so_code, created_date, sku_code, fc_code, demand_quantity, product_id, item_code, outbound_quantity, order_status,
+  sales_price, seller_code, sku_system_status, open_date, total_open_hours, total_open_days`.
+  `seller_class` (không có trường tham chiếu) và `refresh_time` (STRING, không ánh xạ được) không được so sánh; báo cáo
+  ghi rõ danh sách này.
+- So bằng BigQuery `GROUP BY` trên giá trị gốc, **không** chuyển sang chuỗi: NULL bằng NULL và khác mọi giá trị
+  (NULL ≠ 0); số so theo giá trị trong đúng kiểu cột; ngày/giờ so theo giá trị, không đổi múi giờ; chuỗi so chính xác
+  (phân biệt hoa thường, giữ khoảng trắng).
+- Một cột đã ánh xạ không còn trong nguồn, hoặc thiếu trường bắt buộc: dừng với `BQ_MAPPING_INVALID` kèm danh sách trường
+  (không âm thầm so ít cột hơn).
+- Số đếm: `duplicate_groups` (số nhóm), `duplicate_rows` (tổng số dòng thuộc các nhóm), `extra_duplicate_rows`
+  (số dòng dư nếu mỗi nhóm giữ 1).
+
+**Thứ tự xử lý của D-1 (`sync.run_d1_sync` → `connector.fetch_daily`):**
+1. Cấu hình + xác thực; chế độ sản xuất và kiểm tra toàn kỳ đạt cho ánh xạ hiện tại.
+2. Phạm vi ngày: tối đa đến **hôm qua theo giờ Việt Nam** (hôm nay không bao giờ được nạp bởi D-1).
+3. Ánh xạ so với schema nguồn hiện tại (metadata, không tốn phí).
+4. **Chốt trùng hoàn toàn trên dữ liệu gốc, trước khi tổng hợp** (truy vấn `dup_check`). Có trùng: ghi báo cáo, báo
+   `BQ_DATA_DUPLICATES`, **không đọc tiếp, không ghi gì**; job *Thất bại* không thử lại.
+5. Tổng hợp ngày × SKU × FC trong BigQuery (truy vấn `daily`) + đối soát số dòng/tổng số lượng đọc = hợp lệ + bị loại.
+6. Kiểm tra dữ liệu sau tổng hợp: đúng một dòng mỗi khóa, ngày hợp lệ, có SKU/FC, số lượng thật (không NULL/NaN/âm);
+   không chuyển gì thành 0 (`BQ_AGGREGATE_INVALID`).
+7. Ghi trong **một giao dịch**: xóa cửa sổ của phạm vi BIGQUERY rồi chèn; đối soát lại số đã ghi; lỗi ở bất kỳ bước nào
+   thì rollback toàn bộ. Chạy lại cùng phạm vi thay đúng các dòng đó (không nhân đôi). Không chạm dữ liệu DEMO/Excel.
+
+**Báo cáo dòng trùng:** `<reports_dir>\bigquery-duplicates\bq-trung-lap_<từ ngày>_<đến ngày>_<YYYYMMDD-HHMMSS>.xlsx`
+(trên máy thật: `D:\Buymed\Lightgbm AI\reports\bigquery-duplicates\`), không bao giờ ghi đè (thêm `-2`, `-3`...).
+- `Summary`: thời điểm, bảng nguồn, phạm vi ngày, số dòng nguồn đã kiểm tra, số nhóm, số dòng thuộc nhóm, số dòng dư,
+  trạng thái `BLOCKED`, các cột được so sánh / không so sánh, quy tắc so sánh.
+- `Duplicate_Rows`: **mọi** dòng của mọi nhóm, `duplicate_group_id` (`DUP-00001`..., theo thứ tự giá trị nên ổn định
+  với cùng dữ liệu) và `duplicate_occurrence` (1..n), tên cột là tên cột nguồn.
+- `Duplicate_Groups`: một dòng mỗi nhóm, số lần xuất hiện và các giá trị để tra cứu.
+- Không ghi được `.xlsx`: ghi 3 file CSV (UTF-8) cùng tên gốc và nêu lỗi; không ghi được gì: nêu lỗi. Dữ liệu vẫn bị chặn.
+- Tải ở trang **BigQuery** (thẻ *Báo cáo dòng trùng gần đây*, hoặc link trong kết quả kiểm tra). Kết quả kiểm tra gần
+  nhất (không có dòng dữ liệu) nằm trong `sync_state.bq_duplicate_check`.
+
+**Nút "Kiểm tra trùng & thử tổng hợp (không ghi)"** (`POST /api/bigquery/ingest-check`, `sync.d1_dry_run`): chạy các bước
+1–6 cho lần D-1 kế tiếp, kiểm tra **ngày hôm qua đã có đủ trong nguồn chưa** (tín hiệu hoàn tất nếu có cấu hình, nếu không
+thì phép kiểm số dòng của D-1 fallback) và so sánh *chỉ đọc* với dữ liệu đã lưu (mới / thay đổi / không đổi / bị bỏ);
+bước ghi luôn `NOT_RUN`. Kết quả: `READY`, `SOURCE_INCOMPLETE` (hôm qua chưa đủ: D-1 lúc này sẽ chờ / thử lại, không
+ghi), `BLOCKED` (dòng trùng) hoặc `FAILED`. Dùng được trước khi bật chế độ sản xuất. Mỗi lần quét khoảng 1,26 GB
+(bảng không phân vùng).
+
+**Giới hạn đã biết:**
+- Chưa có tín hiệu hoàn tất ngày (`completion_table` trống). Sau giờ fallback, D-1 chỉ kiểm tra số dòng của hôm qua
+  ≥ 50 % trung bình 7 ngày trước; bảng nguồn được làm mới toàn bộ vào khoảng trưa ngày D+1 (mục 12), nên một lần D-1
+  chạy sớm có thể nạp hôm qua chưa đủ; lần chạy sau (cửa sổ watermark − 3 ngày) sẽ ghi đè bằng số mới.
+- Kiểm tra toàn kỳ đọc đến **hôm nay** (dữ liệu dở dang của hôm nay có thể làm số trùng khác số của D-1).
+- Một lần D-1 trả về toàn bộ dòng tổng hợp vào bộ nhớ (≈ 1,35 triệu dòng cho 01/01–15/10/2026).
+
+**Kiểm thử thật 16/10/2026 13:23 (bản sao DB cô lập, ADC, chỉ đọc BigQuery):** 01/01–15/10/2026: 8.885.547 dòng nguồn,
+**433 nhóm / 878 dòng / 445 dòng dư** trùng hoàn toàn → `BLOCKED`, báo cáo `.xlsx` đúng 878 dòng / 433 nhóm, không ghi
+gì. Chỉ để đo (bản sao, chính sách tạm `KEEP`): 1.345.228 dòng ngày × SKU × FC, tổng demand 41.654.787 (gồm cả 445 dòng
+trùng), đối soát khớp, 0 dòng bị loại. Ghi thử vào bản sao (giả lập ngày chạy 15/10 10:00 vì lúc 13:30 ngày 16/10 nguồn
+**chưa có dòng nào của 15/10**): lần 1 nạp lại toàn kỳ 01/01–14/10 = 1.345.228 dòng, 41.654.787; chạy lại (11/10–14/10)
+13.120 dòng không đổi, tổng giữ nguyên, không khóa nào lặp, dữ liệu DEMO không đổi. Dry-run cuối (13:39, BLOCK):
+hôm qua `WARNING` (0 dòng; TB 7 ngày 18.817), trùng `BLOCKED`.
+
+**Kiểm thử thật lại 16/10/2026 15:03, sau khi nguồn được sửa (bản sao DB mới, chính sách production `BLOCK`):**
+- Nguồn 01/01–15/10/2026: 8.893.414 dòng, tổng demand 41.722.635. Ngày 15/10 có 18.992 dòng (TB 7 ngày trước 18.772),
+  nên bước kiểm tra ngày đủ dữ liệu `PASSED`.
+- Trùng hoàn toàn: **0 nhóm / 0 dòng** → `READY`.
+- Tổng hợp: 1.347.346 dòng ngày × SKU × FC, tổng 41.722.635 = tổng nguồn, 0 dòng bị loại; 7.211 dòng lặp khóa đơn được
+  cộng (`SUM_ALL`).
+- Ghi thử vào bản sao (kiểm tra toàn kỳ đạt, kích hoạt đạt):
+  - lần 1 nạp lại toàn kỳ: 1.347.346 dòng, 41.722.635;
+  - chạy lại (12/10–15/10): 13.345 dòng không đổi, tổng giữ nguyên;
+  - 0 khóa lặp; 9.661 SKU, 2 FC; dữ liệu DEMO không đổi.
+
+**Trước khi đổi nguồn sang BIGQUERY:** công tắc luồng D-0 không tự tắt khi đổi nguồn. Nếu D-0 đang bật (ví dụ cho DEMO),
+sau khi bật chế độ sản xuất nó sẽ chạy D-0 BigQuery theo lịch, mà D-0 BigQuery chưa được kiểm chứng. Hãy tắt D-0 ở trang
+**Lịch chạy dữ liệu** trước. Huấn luyện tự động trên BIGQUERY chờ luồng D-1 được bật (`TRAIN_WAITS_FOR_D1`).

@@ -91,7 +91,9 @@ Trước khi bắt đầu sửa:
 git pull --ff-only              # lấy thay đổi mới từ GitHub; chỉ tua tới, không tạo merge ngầm
 ```
 
-Máy mới (cần quyền truy cập repository private):
+Máy mới (cần quyền truy cập repository private). Cần cài sẵn: Git, Python **3.14** (lệnh `py -3.14` phải chạy được),
+Node.js ≥ 18 (đã kiểm với Node 24 / npm 11), kết nối Internet (pip, npm; `build-package.ps1` còn tải Python embedded từ
+python.org). npm 11 có thể cảnh báo `allow-scripts` cho `esbuild` — build vẫn chạy (đã kiểm 16/10/2026).
 
 ```powershell
 git clone https://github.com/Giau2510/Demand-Planning-LightGBM.git "D:\Buymed\Lightgbm AI"
@@ -102,6 +104,8 @@ powershell -ExecutionPolicy Bypass -File scripts\setup-dev.ps1   # tạo .venv, 
 ```
 
 Clone chỉ có mã nguồn: không có database, model hay backup. Dữ liệu của máy chạy thật không được chép qua Git.
+`frontend\dist` (giao diện đã build) và `templates\` (mẫu Excel) không nằm trong Git: `setup-dev.ps1` build giao diện,
+`build-package.ps1` sinh lại mẫu Excel. Chạy ứng dụng từ mã nguồn khi chưa build giao diện chỉ thấy thông báo JSON.
 
 ## 4. Xử lý xung đột (cơ bản)
 
@@ -138,9 +142,11 @@ Khôi phục **mã** không khôi phục dữ liệu. Phiên bản chương trì
 
 ## 6. Phát hành và nâng cấp ứng dụng (không mất database, cấu hình)
 
-1. Mã đã commit + push, test đạt.
-2. Build gói: `powershell -ExecutionPolicy Bypass -File scripts\build-package.ps1` → `dist\DemandForecast-<version>-win64-portable.zip`
-   + `.sha256` + manifest. Thư mục `dist/` bị Git bỏ qua: **không commit ZIP, file thực thi hay dữ liệu**.
+1. Mã đã commit + push.
+2. `powershell -ExecutionPolicy Bypass -File scripts\release.ps1`: QA (test + build giao diện) rồi mới build gói
+   `dist\DemandForecast-<version>-win64-portable.zip` + `.sha256` + manifest, ghi commit trong `BUILD-INFO.json`
+   (`docs/PHAT-TRIEN-QA-PHAT-HANH.md`). Thư mục `dist/` bị Git bỏ qua: **không commit ZIP, file thực thi hay dữ liệu**.
+   VPS: `docs/TRIEN-KHAI-VPS.md`.
 3. Nâng cấp máy chạy thật đúng theo `AGENTS.md` mục 7 và `docs/VAN-HANH.md`: `scripts\deploy-upgrade.ps1 -Package <zip>
    -ExpectedSha256 <sha> -CheckOnly`, rồi chạy thật với xác nhận `UPGRADE-<version>` (script tự backup, giữ nguyên DB,
    model, `storage.json`, lịch chạy). Quay về: `rollback-version.ps1 -To <version>`.

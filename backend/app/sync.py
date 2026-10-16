@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import date, datetime, timedelta
 
 import pandas as pd
@@ -54,6 +55,53 @@ def _state_get(c, name: str) -> dict | None:
 
 # ---------------------------------------------------------------- D-1
 MAX_BACKFILL_DAYS = 400
+D1_STEPS = ("auth", "window", "completeness", "mapping", "duplicates", "aggregate", "output_checks", "reconciliation",
+            "compare", "write")
+
+
+def _d1_window(bq, st: dict | None, day: date, mhash: str) -> tuple[date, bool, date]:
+    """Next regular D-1 load: incremental (watermark minus the late-data look-back) when the previous load used the
+    SAME mapping/range/SQL, otherwise a full reload from the read floor. It always ends at `day` (yesterday, Vietnam
+    time): today is never loaded by D-1."""
+    floor = connector.read_range(bq, day)[0]
+    full = not (st and st.get("watermark") and st.get("mapping_hash") == mhash)
+    start = floor if full else max(floor, date.fromisoformat(st["watermark"])
+                                   - timedelta(days=ss.get("data_policy").late_data_lookback_days))
+    return start, full, floor
+
+
+def check_output(rows: list[dict]) -> dict:
+    """The aggregated rows before anything is written: exactly one row per day x SKU x FC, a valid date, a SKU and FC,
+    a real quantity (not NULL / NaN / negative). Nothing is turned into zero: one bad row stops the load."""
+    seen: set = set()
+    bad: list[dict] = []
+    total = 0.0
+    for r in rows:
+        d = r.get("order_date")
+        key = (str(d)[:10] if d is not None else None, r.get("sku_id"), r.get("fc_id"))
+        try:
+            date.fromisoformat(key[0])
+        except (TypeError, ValueError):
+            bad.append({"code": "INVALID_DATE", "key": key})
+            continue
+        if key[1] is None or key[2] is None:
+            bad.append({"code": "NULL_SKU_OR_FC", "key": key})
+            continue
+        if key in seen:
+            bad.append({"code": "DUPLICATE_OUTPUT_KEY", "key": key})
+            continue
+        seen.add(key)
+        try:
+            q = float(r.get("qty"))
+        except (TypeError, ValueError):
+            q = float("nan")
+        if not math.isfinite(q) or q < 0:
+            bad.append({"code": "INVALID_QTY", "key": key, "qty": r.get("qty")})
+            continue
+        total += q
+    if bad:
+        raise AppError("BQ_AGGREGATE_INVALID", 409, detail=json.dumps(bad[:20], default=str), rows_invalid=len(bad))
+    return {"rows": len(rows), "qty": total}
 
 
 def run_d1_sync(job_id: str | None = None, fallback_mode: bool | None = None, backfill_start: str | None = None,
@@ -86,7 +134,6 @@ def run_d1_sync(job_id: str | None = None, fallback_mode: bool | None = None, ba
                 raise Retryable("SOURCE_INCOMPLETE", json.dumps(suff))
             mode = "FALLBACK_TIME_VERIFIED"
     scope_key = bigquery_scope_key(bq)
-    pol = ss.get("data_policy")
     with db.read() as c:
         st = _state_get(c, f"last_d1_sync:{scope_key}")
     mhash = connector.mapping_hash(bq)
@@ -103,9 +150,10 @@ def run_d1_sync(job_id: str | None = None, fallback_mode: bool | None = None, ba
     else:
         end = day
         # incremental only when the previous load used the SAME mapping/range/SQL; otherwise reload the whole period
-        full = not (st and st.get("watermark") and st.get("mapping_hash") == mhash)
-        start = date.fromisoformat(st["watermark"]) - timedelta(days=pol.late_data_lookback_days) if not full else floor
-    res = connector.fetch_daily(start, end, snap)
+        start, full, _ = _d1_window(bq, st, day, mhash)
+    # mapping vs live source, exact-duplicate gate on the raw rows (BLOCK: report, nothing written), aggregation
+    res = connector.fetch_daily(start, end, snap, context=f"D-1 job {job_id or '-'}")
+    check_output(res["rows"])
     loaded = now_iso()
     w0, w1 = (str(floor), str(end)) if full else (res["window"]["start"], str(end))
     # a full reload replaces the MODEL-INPUT part of the scope (from the data window start); rows stored before the
@@ -119,6 +167,11 @@ def run_d1_sync(job_id: str | None = None, fallback_mode: bool | None = None, ba
             q = "SELECT order_date, sku_id, fc_id, qty FROM demand_daily WHERE scope_key=? AND order_date BETWEEN ? AND ?"
             prm = (scope_key, w0, w1)
         before = {(r[0], r[1], r[2]): r[3] for r in c.execute(q, prm)}
+        if not res["rows"] and before:
+            # an empty read (table being rebuilt, a view/SQL returning nothing, a lost permission) never replaces
+            # stored days with nothing: nothing is deleted, the job retries and then fails with an alert
+            raise Retryable("SOURCE_INCOMPLETE", json.dumps({"reason": "EMPTY_READ", "rows_read": res["rows_read"],
+                                                              "window": [w0, w1], "rows_stored": len(before)}))
         if full:
             c.execute("DELETE FROM demand_daily WHERE scope_key=? AND order_date >= ?", (scope_key, keep_before))
         else:
@@ -126,7 +179,7 @@ def run_d1_sync(job_id: str | None = None, fallback_mode: bool | None = None, ba
         c.executemany(
             "INSERT INTO demand_daily(scope_key, data_source, order_date, sku_id, fc_id, qty, n_orders, avg_unit_price, "
             "avg_discount_rate, promo_share, voucher_share, loaded_at) VALUES (?, 'BIGQUERY', ?,?,?,?,?,?,?,?,?,?)",
-            [(scope_key, str(r["order_date"])[:10], r["sku_id"], r["fc_id"], float(r["qty"] or 0), int(r["n_orders"] or 0),
+            [(scope_key, str(r["order_date"])[:10], r["sku_id"], r["fc_id"], float(r["qty"]), int(r["n_orders"] or 0),
               r.get("avg_unit_price"), r.get("avg_discount_rate"), r.get("promo_share"), r.get("voucher_share"), loaded)
              for r in res["rows"]])
         # what was written must equal the valid total read from BigQuery, otherwise nothing is committed
@@ -158,6 +211,104 @@ def run_d1_sync(job_id: str | None = None, fallback_mode: bool | None = None, ba
             _state_set(c, f"last_d1_sync:{scope_key}", info)
         db.audit(c, "D1_SYNC", "scope", scope_key, {k: v for k, v in info.items() if k != "excluded_by_reason"})
     return {"status": "SUCCEEDED", "reason_code": "BACKFILL_DONE" if backfill else None, **info}
+
+
+def d1_dry_run() -> dict:
+    """'Check and aggregate WITHOUT writing' for the next regular D-1 load, step by step (D1_STEPS): sign-in, window,
+    is yesterday complete (completion signal, else the row-count sufficiency check of the D-1 fallback; a WARNING here
+    means a real D-1 would wait / retry and write nothing), mapping vs live source, exact-duplicate gate on the raw rows (duplicates: report file, BLOCKED), BigQuery
+    aggregation to day x SKU x FC, output checks, reconciliation, then a READ-ONLY comparison with the stored days.
+    demand_daily is never written; only this result is kept (sync_state 'bq_ingest_check'). Allowed before production
+    mode is on: every BigQuery query is read-only, dry-run first and capped."""
+    bq = ss.get("bigquery")
+    steps: list[dict] = []
+    out: dict = {"checked_at": now_iso(), "steps": steps, "written": False,
+                 "table": f"{bq.project_id}.{bq.dataset_id}.{bq.source_table}"}
+    day = today_vn() - timedelta(days=1)
+    cur = "auth"
+    try:
+        connector._require_config(bq)
+        ident = connector.verify_auth(bq)
+        steps.append({"step": "auth", "status": "PASSED", "account": ident.get("account"),
+                      "verified": ident.get("verified")})
+        cur = "window"
+        snap = sql_sources.snapshot("history")
+        scope_key, mhash = bigquery_scope_key(bq), connector.mapping_hash(bq)
+        with db.read() as c:
+            st = _state_get(c, f"last_d1_sync:{scope_key}")
+        start, full, floor = _d1_window(bq, st, day, mhash)
+        steps.append({"step": "window", "status": "PASSED", "start": str(start), "end": str(day), "full_reload": full,
+                      "today_excluded": str(today_vn()), "timezone": "Asia/Ho_Chi_Minh", "scope_key": scope_key})
+        cur = "completeness"
+        signal = connector.completion_signal(day)
+        suff = None if signal else connector.sufficiency_check(day)
+        complete = bool(signal) or bool(suff and suff["ok"])
+        steps.append({"step": "completeness", "status": "PASSED" if complete else "WARNING", "day": str(day),
+                      "completion_signal": signal, "sufficiency": suff})
+        cur = "mapping"
+        sch = connector.require_mapping(bq, snap)
+        cols = connector.dup_columns(bq)
+        steps.append({"step": "mapping", "status": "PASSED", "compared_columns": [c["column"] for c in cols],
+                      "not_compared": [c["name"] for c in sch["columns"] if c["name"] not in {x["column"] for x in cols}],
+                      "warnings": sch["mapping_check"]["warnings"]})
+        cur = "duplicates"
+        dup = connector.duplicate_gate(start, day, snap, "d1_dry_run", sch["columns"])
+        steps.append({"step": "duplicates", "status": "PASSED" if dup else "SKIPPED",
+                      **(dup or {"policy": bq.exact_duplicate_policy})})
+        cur = "aggregate"
+        res = connector.fetch_daily(start, day, snap, "d1_dry_run", prechecked=True)
+        steps.append({"step": "aggregate", "status": "PASSED", "rows_aggregated": len(res["rows"]),
+                      "qty_total": res["qty_valid"], "key_duplicate_rows": res["key_duplicate_rows"],
+                      "estimated_bytes": res["estimated_bytes"], "window": res["window"]})
+        cur = "output_checks"
+        oc = check_output(res["rows"])
+        steps.append({"step": "output_checks", "status": "PASSED", **oc})
+        steps.append({"step": "reconciliation", "status": "PASSED", "rows_read": res["rows_read"],
+                      "rows_valid": res["rows_valid"], "rows_excluded": res["rows_error"],
+                      "excluded_by_reason": res["excluded_by_reason"], "qty_read": res["qty_read"],
+                      "qty_valid": res["qty_valid"], "qty_excluded": res["qty_excluded"]})
+        cur = "compare"
+        keep_before = ss.get("data_policy").window_start_date
+        with db.read() as c:
+            if full:
+                q, prm = ("SELECT order_date, sku_id, fc_id, qty FROM demand_daily WHERE scope_key=? AND order_date >= ?",
+                          (scope_key, keep_before))
+            else:
+                q = "SELECT order_date, sku_id, fc_id, qty FROM demand_daily WHERE scope_key=? AND order_date BETWEEN ? AND ?"
+                prm = (scope_key, res["window"]["start"], str(day))
+            before = {(r[0], r[1], r[2]): r[3] for r in c.execute(q, prm)}
+        after = {(str(r["order_date"])[:10], r["sku_id"], r["fc_id"]): float(r["qty"]) for r in res["rows"]}
+        same = set(after) & set(before)
+        steps.append({"step": "compare", "status": "PASSED", "rows_stored_in_window": len(before),
+                      "qty_stored_in_window": float(sum(before.values())),
+                      "series_days_new": len(set(after) - set(before)),
+                      "series_days_updated": sum(1 for k in same if abs(before[k] - after[k]) > 1e-9),
+                      "series_days_unchanged": sum(1 for k in same if abs(before[k] - after[k]) <= 1e-9),
+                      "series_days_removed": len(set(before) - set(after))})
+        steps.append({"step": "write", "status": "NOT_RUN", "reason": "DRY_RUN"})
+        # yesterday not complete in the source: the rest is checked, but a real D-1 now would wait / retry, not write
+        out["status"] = "READY" if complete else "SOURCE_INCOMPLETE"
+    except AppError as e:
+        if e.code == "BQ_SYNC_RECONCILIATION_FAILED":
+            cur = "reconciliation"
+        blocked = e.code == "BQ_DATA_DUPLICATES"
+        steps.append({"step": cur, "status": "BLOCKED" if blocked else "FAILED", "error": e.to_dict()})
+        if blocked:
+            out["duplicate_check"] = e.params.get("duplicate_check")
+        done = {s["step"] for s in steps}
+        steps.extend({"step": s, "status": "NOT_RUN"} for s in D1_STEPS if s not in done)
+        out["status"] = "BLOCKED" if blocked else "FAILED"
+    out["readiness"] = {"active_source": ss.get("general").active_source, "production_enabled": bq.production_enabled,
+                        "validation_current": connector.validation_ok_for_current(),
+                        "d1_schedule_enabled": ss.get("schedule").d1_enabled}
+    with db.tx() as c:
+        _state_set(c, "bq_ingest_check", out)
+    return out
+
+
+def ingest_check_state() -> dict | None:
+    with db.read() as c:
+        return _state_get(c, "bq_ingest_check")
 
 
 # ---------------------------------------------------------------- D0

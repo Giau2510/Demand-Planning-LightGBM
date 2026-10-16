@@ -5,6 +5,57 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.1.9 - 2026-10-16 (audit + BigQuery ingest + storage/release) [demandforecast_audit_v118_20261016.md, demandforecast_bq_ingest_20261016.md, demandforecast_storage_release_20261016.md]
+
+Package `DemandForecast-1.1.9-win64-portable.zip`, built from the release commit (tag `v1.1.9`). Database schema unchanged (3): rollback to 1.1.8 / 1.1.6 needs no restore.
+
+Storage / release / VPS preparation (late afternoon; tooling and docs, no change to forecasting, BigQuery or schedules):
+* `scripts\release.ps1`: clean commit -> QA (`run-tests.ps1`) -> package -> verification (SHA-256, `VERSION`,
+  `BUILD-INFO.json`) -> retention plan. A failed QA builds nothing.
+* `scripts\build-package.ps1`: records version, git commit, dirty flag and a source fingerprint (`BUILD-INFO.json` in the
+  package, manifest); refuses a dirty tree unless `-AllowDirty`; the same sources are not rebuilt ("Up to date"); an
+  existing package of the same version is never silently replaced (`-Force` renames it `...-superseded-<time>`); the
+  staging folder `dist\DemandForecast-<version>\` is removed after zipping (`-KeepFolder`).
+* `scripts\prune-artifacts.ps1`: retention of `dist\` / `release\` (keeps the running version, the `-Keep` rollback
+  version and the newest one); a folder is removed only when every file is identical (SHA-256) in its package; dry run
+  unless `-Apply`; never touches installed versions, data or backups.
+* Cleanup 16/10/2026: project 6,876 MB -> 988 MB; `dist\` keeps 1.1.8 (running) and 1.1.6 (rollback) packages.
+* `scripts\vps\`: Linux VPS kit (artifact build, `install-server.sh`, `deploy.sh` with SHA-256 / schema guard / online
+  backup / health check / automatic switch-back, `rollback.sh`, systemd unit, Caddy example, `app.env.example`).
+  Prepared, NOT run on Linux yet.
+* `app.cli` "is the app running" check also works off Windows (signal 0), so a second `serve` / a `restore` on the
+  running app is refused on Linux too.
+* Docs: `docs/PHAT-TRIEN-QA-PHAT-HANH.md`, `docs/TRIEN-KHAI-VPS.md`; `.gitignore` ignores `*.tar.gz` artifacts.
+
+BigQuery ingest (afternoon):
+* Exact-duplicate gate on the RAW source rows, BEFORE aggregation, in the D-1 sync, the full-period validation and the
+  new dry run: rows equal in every mapped column (BigQuery GROUP BY on native values: NULL = NULL, no text
+  serialisation). Counts `duplicate_groups` / `duplicate_rows` / `extra_duplicate_rows`. With the default policy BLOCK
+  the load stops with `BQ_DATA_DUPLICATES` and nothing is written.
+* Downloadable duplicate report `<reports_dir>/bigquery-duplicates/bq-trung-lap_<start>_<end>_<time>.xlsx` (sheets
+  Summary, Duplicate_Rows with every row + `duplicate_group_id` / `duplicate_occurrence`, Duplicate_Groups); never
+  overwritten; CSV fallback when the workbook cannot be written. API: `GET /api/bigquery/duplicate-reports[/{name}]`.
+* Mapping is checked against the live source before any data query (`BQ_MAPPING_INVALID` with the field list); the
+  aggregated day x SKU x FC rows are checked before writing (`BQ_AGGREGATE_INVALID`, nothing turned into zero).
+* New "Kiểm tra trùng & thử tổng hợp (không ghi)" on the BigQuery page (`POST /api/bigquery/ingest-check`): every
+  step of the next D-1 load, read-only comparison with the stored days, nothing written.
+* Changed default: history feed `sql_sources.history.key_duplicate_policy` BLOCK -> **SUM_ALL** (several lines of one
+  order x SKU x FC x day are summed; business rule confirmed 16/10/2026). D0 feed unchanged. Takes effect only where
+  `sql_sources` was never saved (true on the real DB on 16/10/2026).
+* Opt-in real-BigQuery test on inline rows (`backend/tests/test_bq_real_semantics.py`, `DF_REAL_BQ=1`, 0 bytes).
+
+Audit (morning):
+
+* D-1 sync: a read that returns no rows while the app holds rows for that window no longer deletes them; the job
+  stops before any write with `SOURCE_INCOMPLETE` (reason `EMPTY_READ`), retries, then fails with an alert.
+* Data schedules page: a job that SUCCEEDED while its result was REJECTED / FAILED (e.g. training rejected by the
+  quality gate) shows that outcome; "Run once now" follows the job until it ends, blocks a second click meanwhile,
+  re-reads the page afterwards and says when a job of the flow was already running. API: each job row of
+  `/api/schedules` carries `result_status`.
+* Docs corrected against the code: full reload scope, `BQ_AUTH_MISSING` retry, D-1 cost on an unpartitioned table,
+  training outcome vs job status, D-1 missed days, `NO_NEW_DATA` with BigQuery, cancelled-order rule for BigQuery,
+  broken `STORAGE_NOT_FOUND` row; verified facts of the real source table (docs/BIGQUERY.md section 12).
+
 ## 1.1.8 - built 2026-10-16, deployed 2026-10-16 08:34 (Vietnam time) [demandforecast_v118_schedules_report_20261016.md, docs/TRIEN-KHAI-1.1.8.md]
 
 Package SHA-256 `0DFDEC86042767AB5E8A8545C990BEF5D2E8B87AB465A970F1642D4DB9F15EE0`. After the deployment the user switched

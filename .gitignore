@@ -40,8 +40,10 @@ client_secret*.json
 *.xls
 *.csv
 /templates/
-# packages / build outputs
+# packages / build outputs (scripts/release.ps1, scripts/vps/build-vps-artifact.ps1)
 *.zip
 *.sha256
+*.tar.gz
+*.tgz
 # personal tool settings
 .claude/settings.local.json

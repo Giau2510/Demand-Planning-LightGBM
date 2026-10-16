@@ -39,6 +39,7 @@ export function ValidationView({ v, current }: { v: any; current: boolean }) {
           <tr><td>{t("bq.n_days")}</td><td className="num">{fmtNum(s.n_days)}</td><td>min</td><td>{fmtDate(s.min_date)}</td><td>max</td><td>{fmtDate(s.max_date)}</td></tr>
         </tbody>
       </table>
+      {v.duplicate_check && <div><b className="small">{t("bq.code.EXACT_DUPLICATES")}</b><DupCounts d={v.duplicate_check} /></div>}
       <div>
         <b className="small">{t("bq.exclusions")}</b>
         <table className="tbl small"><tbody>
@@ -69,6 +70,91 @@ export function ValidationView({ v, current }: { v: any; current: boolean }) {
           ))}
         </tbody></table>
       )}
+    </div>
+  );
+}
+
+const STEP_PILL: Record<string, string> = { PASSED: "OK", FAILED: "FAILED", BLOCKED: "FAILED", NOT_RUN: "PENDING", SKIPPED: "SKIPPED", WARNING: "WARNING" };
+const RUN_PILL: Record<string, string> = { READY: "OK", SOURCE_INCOMPLETE: "WARNING", BLOCKED: "FAILED", FAILED: "FAILED" };
+const reportUrl = (name: string) => `/api/bigquery/duplicate-reports/${encodeURIComponent(name)}`;
+
+/** Duplicate report file(s) of a duplicate check: the .xlsx, or the CSV fallback when the workbook could not be written. */
+export function DupReport({ rep }: { rep: any }) {
+  const { t } = useI18n();
+  if (!rep) return null;
+  const files: string[] = rep.file ? [rep.file] : rep.files ?? [];
+  return (
+    <div className="stack small" data-testid="bq-dup-report">
+      {rep.format === "csv" && <div className="alert warn">{t("bq.dup_report_csv")}: {rep.xlsx_error}</div>}
+      {!files.length && <div className="alert bad">{t("bq.dup_report_failed")}: {rep.error ?? rep.xlsx_error}</div>}
+      <div className="row wrap">{files.map((f) => <a key={f} className="btn" href={reportUrl(f)}>{t("bq.dup_report")}: {f}</a>)}</div>
+    </div>
+  );
+}
+
+/** Exact-duplicate counts (identical in every mapped column) + compared columns + report link. */
+export function DupCounts({ d }: { d: any }) {
+  const { t } = useI18n();
+  if (!d) return null;
+  return (
+    <div className="stack" data-testid="bq-dup-check">
+      <table className="tbl small"><tbody>
+        <tr><td>{t("bq.dup_rows_checked")}</td><td className="num">{fmtNum(d.rows_checked)}</td><td>{t("bq.dup_groups")}</td><td className="num">{fmtNum(d.duplicate_groups)}</td></tr>
+        <tr><td>{t("bq.dup_rows")}</td><td className="num">{fmtNum(d.duplicate_rows)}</td><td>{t("bq.dup_extra")}</td><td className="num">{fmtNum(d.extra_duplicate_rows)}</td></tr>
+      </tbody></table>
+      <p className="small muted">{t("bq.dup_compared")} ({d.columns?.length ?? 0}): <span className="mono">{(d.columns ?? []).map((c: any) => c.column).join(", ")}</span>
+        {d.not_compared?.length > 0 && <> · {t("bq.dup_not_compared")}: <span className="mono">{d.not_compared.join(", ")}</span></>}</p>
+      <DupReport rep={d.report} />
+    </div>
+  );
+}
+
+/** Result of "check duplicates & trial aggregation": every step of the next D-1 load, nothing written. */
+export function IngestCheckView({ r }: { r: any }) {
+  const { t, pick } = useI18n();
+  if (!r) return null;
+  const by: Record<string, any> = Object.fromEntries((r.steps ?? []).map((s: any) => [s.step, s]));
+  const w = by.window ?? {}, a = by.aggregate ?? {}, rec = by.reconciliation ?? {}, cmp = by.compare ?? {};
+  const dup = r.duplicate_check ?? (by.duplicates?.status === "PASSED" ? by.duplicates : null);
+  const info = (s: any): string => {
+    switch (["PASSED", "SKIPPED", "WARNING"].includes(s.status) ? s.step : "") {
+      case "auth": return s.account ?? "";
+      case "completeness": return s.completion_signal ? `${fmtDate(s.day)}: ${t("bq.ing.signal")}`
+        : `${fmtDate(s.day)}: ${fmtNum(s.sufficiency?.rows_for_day)} ${t("bq.ing.rows")} (${t("bq.ing.avg7")} ${fmtNum(s.sufficiency?.avg_previous_7d, 0)}; ${t("bq.ing.min_ratio")} ${fmtPct(s.sufficiency?.ratio_required)})`;
+      case "window": return `${fmtDate(s.start)} – ${fmtDate(s.end)}${s.full_reload ? ` · ${t("bq.ing.full")}` : ""}`;
+      case "mapping": return `${s.compared_columns?.length ?? 0} ${t("bq.ing.cols")}`;
+      case "duplicates": return s.status === "SKIPPED" ? `${t("bq.dup_policy")}: ${s.policy}` : `${fmtNum(s.duplicate_groups)} ${t("bq.dup_groups").toLowerCase()} · ${fmtNum(s.rows_checked)} ${t("bq.ing.rows")}`;
+      case "aggregate": return `${fmtNum(s.rows_aggregated)} ${t("bq.ing.rows")} · Σ ${fmtNum(s.qty_total, 2)}`;
+      case "reconciliation": return `${fmtNum(s.rows_read)} = ${fmtNum(s.rows_valid)} + ${fmtNum(s.rows_excluded)}`;
+      default: return "";
+    }
+  };
+  return (
+    <div className="stack" data-testid="bq-ingest-result">
+      <div className="row wrap">
+        <Pill status={RUN_PILL[r.status] ?? "FAILED"} label={t(`bq.ing.${r.status}`)} />
+        <span className="small">{t("bq.last_checked")}: <b>{fmtTime(r.checked_at)}</b> · <span className="mono">{r.table}</span>
+          {w.start && <> · {t("bq.range")}: <b>{fmtDate(w.start)} – {fmtDate(w.end)}</b> ({t("bq.ing.today_excluded")} {fmtDate(w.today_excluded)})</>}</span>
+      </div>
+      <div className={`alert ${r.status === "READY" ? "info" : r.status === "BLOCKED" ? "bad" : "warn"} small`} data-testid="bq-ingest-note">{t(`bq.ing.${r.status}.note`)}</div>
+      <table className="tbl small" data-testid="bq-ingest-steps"><tbody>
+        {(r.steps ?? []).map((s: any) => (
+          <tr key={s.step}>
+            <td>{t(`bq.step.${s.step}`)}</td>
+            <td><Pill status={STEP_PILL[s.status] ?? "PENDING"} label={t(`bq.stepst.${s.status}`)} /></td>
+            <td>{s.error ? <span className="bad-t">{pick(s.error)}{s.error.detail ? <span className="muted"> — {s.error.detail}</span> : null}</span> : info(s)}</td>
+          </tr>
+        ))}
+      </tbody></table>
+      {dup && <DupCounts d={dup} />}
+      {a.status === "PASSED" && (
+        <table className="tbl small" data-testid="bq-ingest-numbers"><tbody>
+          <tr><td>{t("bq.rows_read")}</td><td className="num">{fmtNum(rec.rows_read)}</td><td>{t("bq.rows_excluded")}</td><td className="num">{fmtNum(rec.rows_excluded)}</td></tr>
+          <tr><td>{t("bq.ing.rows_aggregated")}</td><td className="num">{fmtNum(a.rows_aggregated)}</td><td>{t("bq.ing.qty_total")}</td><td className="num">{fmtNum(a.qty_total, 2)}</td></tr>
+          {cmp.status === "PASSED" && <tr><td>{t("bq.ing.compare")}</td><td className="num" colSpan={3}>{fmtNum(cmp.series_days_new)} / {fmtNum(cmp.series_days_updated)} / {fmtNum(cmp.series_days_unchanged)} / {fmtNum(cmp.series_days_removed)}</td></tr>}
+        </tbody></table>
+      )}
+      {r.readiness && <p className="small muted">{t("bq.ing.readiness")}: {t("bq.ing.r.source")} <b>{r.readiness.active_source}</b> · {t("bq.ing.r.production")} <b>{r.readiness.production_enabled ? "✔" : "✘"}</b> · {t("bq.ing.r.validation")} <b>{r.readiness.validation_current ? "✔" : "✘"}</b> · D-1 <b>{r.readiness.d1_schedule_enabled ? "ON" : "OFF"}</b></p>}
     </div>
   );
 }
@@ -154,8 +240,10 @@ export default function BigQuery() {
           <button onClick={() => call("/api/bigquery/preview")} disabled={act.busy || !configured}>{t("bq.preview")}</button>
           <button onClick={() => call("/api/bigquery/profile", { days: 30 })} disabled={act.busy || !configured}>{t("bq.profile")}</button>
           <button className="primary" data-testid="bq-validate" onClick={() => call("/api/bigquery/validate")} disabled={act.busy || !configured}>{t("bq.validate")}</button>
+          <button className="primary" data-testid="bq-ingest-check" onClick={() => call("/api/bigquery/ingest-check")} disabled={act.busy || !configured}>{t("bq.ingest_check")}</button>
         </div>
         <p className="small muted">{t("bq.flow")}</p>
+        <p className="small muted">{t("bq.ingest_check_note")}</p>
         {needCreds && <div className="alert warn" data-testid="bq-no-creds">{t("bq.no_creds")}</div>}
         <table className="tbl">
           <tbody>
@@ -185,7 +273,21 @@ export default function BigQuery() {
         </Card>
       )}
 
-      {out && out.path !== "/api/bigquery/validate" && (
+      {st.data?.ingest_check && (
+        <Card title={t("bq.ingest_title")}>
+          <IngestCheckView r={st.data.ingest_check} />
+        </Card>
+      )}
+
+      {st.data?.duplicate_reports?.length > 0 && (
+        <Card title={t("bq.dup_reports")}>
+          <ul className="small" data-testid="bq-dup-reports">
+            {st.data.duplicate_reports.map((f: any) => <li key={f.name}><a href={reportUrl(f.name)}>{f.name}</a> · {fmtTime(f.modified)} · {fmtBytes(f.size)}</li>)}
+          </ul>
+        </Card>
+      )}
+
+      {out && out.path !== "/api/bigquery/validate" && out.path !== "/api/bigquery/ingest-check" && (
         <Card title={out.path}>
           {out.r.estimated_bytes !== undefined && <p>{t("bq.est_bytes")}: <b>{fmtBytes(out.r.estimated_bytes)}</b></p>}
           {out.r.rows ? (

@@ -219,3 +219,69 @@ Authorized by the user (two pasted batches: controlled deployment; manual D-0 DE
 | Report Part II | DONE | reports/demandforecast_v118_schedules_report_20261016.md (original kept in checkpoints/) |
 
 Open: UI does not auto-refresh after 'Run once now' (display only). Rollback not needed (rollback-version -CheckOnly OK).
+
+---
+
+# Audit 1.1.8 + GitHub post-push (2026-10-16 11:14 - 11:45)
+
+Read-only audit with two read-only reviewers (data/ML; API/UI/ops/security, T2). Source checkpoint before edits:
+`checkpoints/source-1.1.8-before-audit-fixes-20261016-112638.zip`. Nothing committed or pushed; live DB, models,
+settings, schedules and backups untouched (BigQuery checks ran on a DB copy in the scratchpad).
+
+| Step | Status | Evidence |
+|---|---|---|
+| Git local/remote, ignore rules, eol, history secret scan | DONE | HEAD = origin/main d87c315; 31/31 ignored, 11/11 kept; 0 real secrets |
+| Fresh clone (C:) -> npm ci/test/build, new venv + pytest | DONE | frontend 52/52; backend 274 + 1 drive-D test assumption (fixed) |
+| Real BigQuery read-only (app code path, ADC) | DONE | 5/6 gates pass (mapping not saved); profile ~3.3 GB scanned |
+| Safe fixes + tests | DONE | sync empty-read guard, schedules outcome/run follow-up, test_storage drive, docs |
+| Regression | DONE | backend 279, vitest 55, typecheck + build OK |
+| Report | DONE | reports/demandforecast_audit_v118_20261016.md |
+
+Open: business decisions R1 (duplicate keys), R2 (complete day), R3 (D-1 completion/time), R5 (promotion with daily
+data), R13 (gate thresholds); the fixes need a new release before BigQuery production.
+
+# BigQuery ingest: exact-duplicate gate, report, dry run (2026-10-16 13:00 - 13:45)
+
+Source checkpoint before edits: `checkpoints/source-1.1.8-before-bq-ingest-20261016-130203.zip`
+(SHA-256 `1C39EB27DF7BB1C355F4863DE639DFDCB69F89977F14BC77D7B8DD453B08153F`). R1 decided by the business: key repeats
+are summed, only exact duplicates block. Nothing committed/pushed/deployed; live DB, settings, schedules untouched.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Gate + report + dry run + output checks (backend), BigQuery page (frontend) | DONE | `bq/dup_report.py`, `connector.py`, `sync.py`, `BigQuery.tsx` |
+| Tests | DONE | backend 298 passed + 2 opt-in skipped; vitest 61; typecheck + build OK; 4/4 mutants killed |
+| Real BigQuery, inline rows (SQL semantics) | DONE | `test_bq_real_semantics.py` 2/2, 0 bytes |
+| Real BigQuery, real table, DB copy | DONE | 433 groups / 878 rows / 445 extra -> BLOCKED + xlsx; measurement (KEEP, copy) 1,345,228 rows, 41,654,787 |
+| Write on the DB copy (simulated run date 15/10) | DONE | full reload 1,345,228 rows / 41,654,787; re-run 13,120 unchanged, totals identical |
+| Source freshness 16/10 13:30 | FINDING | no row for 15/10 yet: a D-1 now stops with SOURCE_INCOMPLETE |
+| Production write | NOT RUN | needs a release with this code + user actions (docs/BIGQUERY.md section 13) |
+
+# Storage cleanup, release flow, VPS preparation (2026-10-16 13:55 - 15:10)
+
+No source/business change except the Linux branch of `app.cli._pid_alive`. Nothing committed/pushed/deployed.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Size survey | DONE | project 6,876 MB (dist 3,873, release 2,208, .venv 434, backups 209) |
+| Staging / extracted folders vs ZIPs (path + size + CRC32) | DONE | 17 contained -> deleted (4,650 MB); release\1.1.0 = other build |
+| Running 1.1.8 / rollback 1.1.6 recoverable | DONE | ZIP = installed (7,115 / 7,106 files); rollback-version -CheckOnly OK |
+| Old / superseded / never-installed ZIPs + release\1.1.0 | DONE | list `reports\storage_cleanup_plan_20261016.md`, 1,239 MB deleted |
+| After | DONE | 988 MB; DB, models, settings, storage.json, backups, checkpoints, Programs, git unchanged; app 1.1.8 healthy |
+| Release tooling | DONE | release.ps1, build-package.ps1 (identity, no duplicate build, no overwrite), prune-artifacts.ps1 |
+| VPS kit | PREPARED | scripts\vps\*, docs\TRIEN-KHAI-VPS.md; artifact tested on Windows only; Linux NOT tested |
+
+# BigQuery ingest + local release attempt (2026-10-16 15:00 - 15:30)
+
+User confirmed: 15/10 data added and duplicates fixed at the source. Nothing committed/pushed/deployed; live DB, settings,
+schedules untouched (protected-state snapshot identical before/after).
+
+| Step | Status | Evidence |
+|---|---|---|
+| Version | DONE | source bumped to 1.1.9 (`backend/app/__init__.py`, `frontend/package.json`, CHANGELOG heading) |
+| Real BigQuery, fresh DB copy, policy BLOCK | READY | 01/01-15/10: 8,893,414 rows, 0 exact-duplicate groups; 15/10 = 18,992 rows (7-day avg 18,772) |
+| Aggregation + reconciliation | DONE | 1,347,346 day x SKU x FC rows, 41,722,635 = source total, 0 excluded |
+| Write on the DB copy | DONE | full reload 1,347,346 / 41,722,635; re-run 12/10-15/10 13,345 unchanged; 0 repeated keys |
+| QA | DONE | backend 300 passed / 2 skipped; real BQ semantics 2/2; vitest 61/61; typecheck + build OK |
+| Release (`scripts\release.ps1`) | BLOCKED | uncommitted tree; needs the user's commit permission |
+| Local upgrade, production ingest | NOT RUN | need the 1.1.9 package |
+| Pre-commit checkpoint (16:12) | DONE | `checkpoints\source-1.1.9-precommit-20261016-161233.zip` (status, diff, 17 untracked files), SHA-256 `0145A702...3871` |

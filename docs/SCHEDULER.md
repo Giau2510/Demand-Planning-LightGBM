@@ -55,6 +55,12 @@ nhật ký riêng. Không còn công tắc chung cho mọi job.
 - **Retry** exponential backoff: chờ `retry_base_seconds × 2^(lần−1)`, tối đa `retry_max_seconds`, tối đa `max_attempts`
   lần (mặc định 60 s, 1800 s, 4 lần). Hết lượt → *Thất bại* + cảnh báo `RETRIES_EXHAUSTED`.
 - **Timeout** mỗi job (mặc định 3600 s): quá hạn → job bị đánh dấu `TIMEOUT`, huấn luyện bị hủy trước bước publish.
+  D-1 / D-0 không có cơ chế hủy: lần đọc đang chạy có thể chạy nốt sau khi job đã bị đánh dấu `TIMEOUT` (dữ liệu vẫn
+  nhất quán vì mỗi lần ghi là một transaction có đối soát).
+- **Kết quả huấn luyện ≠ trạng thái job:** model *không đạt chất lượng* (`REJECTED`) hoặc *lỗi huấn luyện* (`FAILED`)
+  là kết quả của model; job vẫn ghi *Thành công*, cảnh báo nằm ở trang *Tổng quan*, không thử lại trong cùng ngày
+  (khóa `TRAIN_PUBLISH:<ngày>`). Trang *Job & Scheduler* và (từ mã nguồn sau 1.1.8) trang *Lịch chạy dữ liệu* hiển
+  thị thêm nhãn kết quả.
 - Lịch sử job: trang **Job & Scheduler** (trạng thái, lý do, số lần thử, thời điểm thử lại, lỗi, kết quả).
 
 ## Công đoạn job (tiến trình thật, không có phần trăm)
@@ -85,6 +91,8 @@ không đạt / lỗi, `failed_stage`) và **kết quả publish** được hi�
    1 lượt nên thành *Thất bại*); công đoạn ghi `INTERRUPTED` kèm công đoạn đang dở; khóa cũ được giải phóng. Không
    job nào bị hiển thị "đang chạy" mãi.
 2. Các mốc bị lỡ (kể cả nhiều ngày, tối đa 14 ngày gần nhất) được ghi là **Bị bỏ qua — `MISSED_SLOT_NO_BACKFILL`**.
+   Với D-1, dữ liệu của các ngày bị lỡ vẫn được đọc ở lần D-1 thành công kế tiếp (lần đọc bắt đầu từ watermark −
+   `late_data_lookback_days`).
    **Không tạo snapshot giả** cho mốc đã qua.
 3. D0 (chính sách `LATEST_ONCE`): tối đa **một** lần chạy bù trong ngày, gắn nhãn *Chạy bù*, ghi **thời điểm đọc thực
    tế** (không lùi về giờ của mốc). Chính sách `SKIP`: không chạy bù.
