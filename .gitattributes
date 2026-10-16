@@ -1,0 +1,3 @@
+# Keep every file byte-for-byte as in the working tree (no CRLF/LF conversion): the sources mix CRLF and LF and
+# scripts/build-package.ps1 builds releases from these exact files.
+* -text

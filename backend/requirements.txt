@@ -1,0 +1,13 @@
+# Runtime dependencies (direct). Exact, tested versions for Windows x64 / CPython 3.14.
+# Full transitive lock: requirements.lock.txt (used by the installer and the portable package).
+fastapi==0.143.0
+uvicorn==0.54.0
+pydantic==2.14.1
+python-multipart==0.0.32
+numpy==2.5.4
+pandas==3.0.6
+lightgbm==4.7.0
+openpyxl==3.1.5
+tzdata==2026.5
+google-cloud-bigquery==3.46.1
+google-auth==2.62.0

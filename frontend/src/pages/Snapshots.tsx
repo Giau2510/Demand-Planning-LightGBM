@@ -1,0 +1,87 @@
+import { useState } from "react";
+import { get, post, qs } from "../api";
+import { useI18n } from "../i18n";
+import { Card, Code, DateInput, Empty, ErrorBox, Field, Loading, OkBox, Pill, SourceBadge, Term, fmtDate, fmtNum, fmtTime, useAction, useAsync } from "../components/ui";
+
+export default function Snapshots() {
+  const { t, pick, lang } = useI18n();
+  const [f, setF] = useState({ date_from: "", date_to: "", sku_id: "", fc_id: "", data_source: "" });
+  const [applied, setApplied] = useState(f);
+  const list = useAsync(() => get(`/api/snapshots${qs(applied)}`), [applied]);
+  const [sel, setSel] = useState<string | null>(null);
+  const det = useAsync(() => (sel ? get(`/api/snapshots/${sel}${qs({ sku_id: applied.sku_id, fc_id: applied.fc_id })}`) : Promise.resolve(null)), [sel, applied]);
+  const act = useAction();
+  const take = async () => {
+    const r = await act.run(() => post("/api/jobs/run", { job_type: "D0_SYNC" }));
+    if (r) act.setOk(`${t("job.D0_SYNC")}: ${t(`status.${r.status}`)}`);
+    list.reload();
+  };
+  const d = det.data;
+  return (
+    <div className="stack">
+      <div className="row between">
+        <h2><Term id="snapshot">{t("nav.snapshots")}</Term></h2>
+        <button onClick={take} disabled={act.busy}>{t("snap.take_now")}</button>
+      </div>
+      <p className="small muted">{t("snap.title_help")} {t("common.time_note")}</p>
+      <ErrorBox error={act.error || list.error || det.error} />
+      <OkBox text={act.ok} />
+      <Card>
+        <div className="row wrap">
+          <Field label={t("common.from")}><DateInput value={f.date_from} onChange={(v) => setF({ ...f, date_from: v })} ariaLabel={t("common.from")} /></Field>
+          <Field label={t("common.to")}><DateInput value={f.date_to} onChange={(v) => setF({ ...f, date_to: v })} ariaLabel={t("common.to")} /></Field>
+          <Field label={t("fc.sku")}><input value={f.sku_id} onChange={(e) => setF({ ...f, sku_id: e.target.value })} /></Field>
+          <Field label={t("fc.fc")}><input value={f.fc_id} onChange={(e) => setF({ ...f, fc_id: e.target.value })} /></Field>
+          <Field label={t("common.source")}>
+            <select value={f.data_source} onChange={(e) => setF({ ...f, data_source: e.target.value })}>
+              <option value="">{t("common.all")}</option>
+              <option>DEMO</option><option>BIGQUERY</option>
+            </select>
+          </Field>
+          <button className="primary" onClick={() => setApplied(f)}>{t("common.filter")}</button>
+        </div>
+      </Card>
+      <Card>
+        {list.loading ? <Loading /> : !list.data?.length ? <Empty text={t("snap.empty")} /> : (
+          <div className="scroll">
+            <table className="tbl click">
+              <thead><tr><th>{t("snap.at")}</th><th>{t("snap.order_date")}</th><th>{t("snap.slot")}</th><th>{t("common.source")}</th><th>{t("common.status")}</th><th className="num">{t("snap.read")}</th><th className="num">{t("snap.valid")}</th><th className="num">{t("snap.error")}</th><th>{t("snap.id")}</th></tr></thead>
+              <tbody>
+                {list.data.map((s: any) => (
+                  <tr key={s.id} className={s.id === sel ? "sel" : ""} onClick={() => setSel(s.id)}>
+                    <td>{fmtTime(s.snapshot_at)}</td><td>{fmtDate(s.order_date)}</td>
+                    <td>{fmtTime(s.scheduled_slot)} {s.is_catch_up ? <Pill status="RETRY_WAIT" label={t("snap.catch_up")} /> : null}</td>
+                    <td><SourceBadge source={s.data_source} /></td><td><Pill status={s.sync_status} /></td>
+                    <td className="num">{fmtNum(s.rows_read)}</td><td className="num">{fmtNum(s.rows_valid)}</td><td className="num">{fmtNum(s.rows_error)}</td>
+                    <td className="mono small">{s.id}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+      {d && (
+        <Card title={`${t("snap.id")}: ${d.snapshot.id}`} actions={<a className="btn" href={`/api/snapshots/${d.snapshot.id}/export.xlsx?lang=${lang}`}>{t("fc.export")} ({lang.toUpperCase()})</a>}>
+          <div className="alert warn">{t("snap.warning")} <br /><span className="small">{pick(d.measurement_note)}</span></div>
+          <p className="small">
+            {t("snap.at")}: <b>{fmtTime(d.snapshot.snapshot_at)}</b> · {t("snap.order_date")}: <b>{fmtDate(d.snapshot.order_date)}</b> ·{" "}
+            {d.forecast_run ? <>{t("snap.from_run")}: <span className="mono">{d.forecast_run.id}</span> ({d.forecast_run.model_version})</> : <Code code="NO_DATA" showCode={false} />}
+          </p>
+          <div className="scroll">
+            <table className="tbl">
+              <thead><tr><th>{t("fc.sku")}</th><th>{t("fc.fc")}</th><th className="num">{t("snap.cum")}</th><th className="num">{t("snap.full_fc")}</th><th className="num">{t("snap.eod")}</th></tr></thead>
+              <tbody>
+                {d.values.map((v: any) => (
+                  <tr key={v.sku_id + v.fc_id}><td>{v.sku_id}</td><td>{v.fc_id}</td><td className="num">{fmtNum(v.cumulative_qty)}</td>
+                    <td className="num">{v.full_day_forecast == null ? "—" : fmtNum(v.full_day_forecast, 1)}</td>
+                    <td className="num">{v.end_of_day_actual == null ? t("common.not_available") : fmtNum(v.end_of_day_actual)}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,221 @@
+# Batch checkpoint — Demand Forecasting Web App
+
+Khi tiếp tục phiên mới: đọc file này → `scripts\check-env.ps1` → `scripts\run-tests.ps1` trước khi sửa tiếp.
+Thư mục **không phải git repository** (chưa `git init`, không có commit nào).
+
+| Checkpoint | Trạng thái | Ghi chú |
+|---|---|---|
+| A — Discovery & baseline | DONE | Repo trống lúc bắt đầu. Python 3.14.7, Node 24.18. LightGBM 4.7.0 (wheel pip). |
+| B — Core data & import | DONE | SQLite + migration 0001, settings có lịch sử, validation dùng chung, Excel import/lô độc lập/thay thế/xóa, DEMO. |
+| C — Forecast engine | DONE | Feature không rò rỉ, LightGBM đệ quy, dự phòng, backtest walk-forward, WAPE/MAE/bias/MAPE, quality gate, publish bất biến. |
+| D — UI & admin | DONE | React + TS, 13 trang, song ngữ, glossary, nhãn nguồn. |
+| E — Scheduler & BigQuery | DONE (BigQuery thật: BLOCKED_EXTERNAL_DEPENDENCY) | runner (lock/idempotency/retry/timeout), catch-up, D-1/D0; connector test bằng fake client. |
+| F — Packaging & verification | DONE | Gói portable có Python nhúng: `dist\DemandForecast-1.0.0-win64-portable.zip`; install/upgrade/backup/restore đã chạy thử. |
+
+## Kết quả kiểm thử gần nhất (2026-10-14)
+
+| Bộ test | Lệnh | Kết quả |
+|---|---|---|
+| Backend pytest | `.venv\Scripts\python -m pytest -q backend\tests` | 72 passed |
+| Frontend typecheck | `npx tsc -b` (frontend) | OK |
+| Frontend vitest | `npx vitest run` | 7 passed |
+| Frontend build | `npx vite build` | OK |
+| E2E HTTP (venv, start.ps1) | `python scripts\smoke_test.py --base http://127.0.0.1:8799` | 19 passed |
+| Sau restart | `... --phase after-restart` | 4 passed |
+| E2E trên gói portable (Python nhúng) | như trên, cổng 8797/8798 | 19 + 4 passed |
+| install.ps1 (nâng cấp trên dữ liệu có sẵn) | `scripts\install.ps1 -NoShortcuts -NoStart` | OK: backup trước, dữ liệu giữ nguyên (bản cài thử đã gỡ) |
+| backup/restore, restore từ chối khi app chạy | `backup.ps1`, `restore.ps1` | OK |
+| BigQuery thật | — | BLOCKED_EXTERNAL_DEPENDENCY (chưa có dataset/table/schema/credentials) |
+
+## Còn lại / bước tiếp theo
+
+1. Người dùng cung cấp Dataset ID, bảng, location, schema/grain, quyền (xem `docs\BIGQUERY.md`) → chạy quy trình kích hoạt.
+2. Nghiệp vụ phê duyệt ngưỡng WAPE/bias (hiện là giá trị ví dụ).
+3. (Tùy chọn) `git init` + commit đầu tiên; chưa làm vì repo chưa có quy ước git.
+
+---
+
+# Batch 2 (v1.1.0) — Fix Demo FK error + storage paths + safe migration
+
+| Checkpoint | Trạng thái | Ghi chú |
+|---|---|---|
+| A — Inventory | DONE | Bản cài 1.0.0 tại %LOCALAPPDATA%\Programs\DemandForecast\1.0.0; DB thật %LOCALAPPDATA%\DemandForecast\db\app.db (27.8 MB, schema v1, integrity ok, fk_check rỗng, 1 lô DEMO ACTIVE, 93 157 dòng). App 1.0.0 thực tế ĐANG chạy (kiểm kê báo nhầm — xem INCIDENT). Nguyên nhân FK: demo.py UPDATE replaced_by_batch_id trước khi INSERT lô mới. NO_ACTIVE_DATASET: job catch-up khởi động lúc chưa có dữ liệu → FAILED + alert ERROR. |
+| B — Fix database | DONE | demo.py: parent-first + invariant checks; migration 0002 (1 ACTIVE DEMO, unique index); runner: NO_ACTIVE_DATASET → SKIPPED; error codes/categories. Tests: test_demo_regression.py |
+| C — Path config | DONE | paths.py + storage.json bootstrap, no silent empty DB, diagnostics, storage_migrate.py, scripts migrate/rollback/diagnose. Tests: test_storage.py. 93 backend tests pass. |
+| INCIDENT (resolved) | DONE | 10:09: E2E test chạy nhầm trên DB thật (chỉ cô lập DF_STORAGE_CONFIG). Bản 1.0.0 cũng đang chạy (kiểm kê đầu phiên báo nhầm). Đã dừng 1.0.0, khôi phục backup tự động pre-migration-v1 (03:09:28Z) — mọi bảng giống hệt, thay đổi sau mốc này đều do test. Model test cách ly tại backups\quarantine-test-artifacts-20261014. Chặn tái diễn: smoke_test cần --test-data-dir; serve từ chối instance thứ 2 cùng thư mục dữ liệu. |
+| D — Migration D:\ | DONE | Cài 1.1.0; storage-migrate SUCCEEDED 20261014_102304 → D:\Buymed\Lightgbm AI\data\runtime (logs\runtime, backups\, reports\). Backup xác minh: backups\backup-20261014-102304-pre-storage-migration.zip. Readonly smoke 7/7. DB cũ: %LOCALAPPDATA%\DemandForecast\db.migrated-20261014_102304. |
+| E — UI/launcher/regression | DONE | ErrorBox theo category, DatasetGuide, trang Hệ thống (đường dẫn, chẩn đoán). Gói 1.1.0 build + E2E cô lập 24+4 pass. |
+| F — Report | DONE | reports\demandforecast_fix_storage_report_20261014_102811.md |
+
+## 2026-10-14 12:19 — storage.json investigation
+
+storage.json KHÔNG bị mất (có tại %LOCALAPPDATA%\DemandForecast\storage.json, khớp storage-id.json và lịch sử). Đã sửa lỗ hổng tiềm ẩn khi mất file (STORAGE_CONFIG_MISSING, storage-verify, storage-repair, kiểm tra trước trong install.ps1). 99 backend tests pass. Gói dist 1.1.0 đã build lại; bản cài chưa cập nhật. Báo cáo: reports\storage_json_investigation_20261014_121904.md
+
+## 2026-10-14 upgrade run (installed 1.1.0 -> rebuilt 1.1.0 with storage fixes)
+- [x] CLI storage-repair: dry-run default, --apply to write (+test). install.ps1: abort if program files still in use. Package rebuilt, hash-verified vs source.
+- [x] pre-upgrade checks + verified backup (backups/backup-20261014-135327-cli.zip, ...-142806, ...-144428)
+- [x] upgrade via install.ps1 (3 cycles: initial, +BOM/marker fixes, +in-use guard fix); installed == package
+- [x] post-upgrade checks (verify ok, readonly smoke 7/7, data identical) + isolated scenarios 20/20 + 102 backend / 9 frontend tests
+- [x] report: reports/upgrade_storage_fix_report_20261014_144908.md
+
+## 2026-10-14 batch v1.1.1 (explainability, job status, horizons, intraday, excel i18n, algorithm docs)
+- [x] A inventory (root cause horizon: run 08:06Z has [7]; setting -> [7,15] at 08:10Z)
+- [x] B backend (migration 0003, progress.py, pipeline stages+extend_forecast, explain.py, intraday.py, methods.py, export_i18n.py) — 102 old + 16 new tests pass
+- [x] C frontend (ui.tsx components, Results, ExplainPanel, Dashboard, Jobs, Methodology + algorithms.ts, i18n, css) — tsc ok, 19 vitest pass
+- [x] D docs (MO-HINH-VA-CHI-SO, SCHEDULER, HUONG-DAN-SU-DUNG, VAN-HANH upgrade 1.1.0->1.1.1)
+- [x] E tests 118 backend + 19 frontend, tsc, build; package dist/DemandForecast-1.1.1 (sha256 52A79792…); isolated fresh 24+30, upgrade-on-copy 13, rollback 2, readonly real 7 — NOT installed on running app
+- [x] F report reports/demandforecast_v111_report_20261014_162031.md (THANH CONG CO DIEU KIEN)
+
+## 2026-10-14 batch nghiem thu 1.1.1 tren may that
+- [x] Preflight read-only: 1.1.0 idle (no running job, scheduler inflight empty), storage.json sha256 8D79DBDD..., marker storage_id 6cff0821634b0447, real DB facts saved (schema 2, 1 run 588 rows sum 10395.456, ACTIVE DEMO-20261014080556-5342EB)
+- [x] Pre-install acceptance on DB copy (source, port 8879, browser E2E via Chrome CDP): found + fixed: Excel times/dates not localised (format v3), job finish time missing, rounding rule missing in explain, tooltip closed immediately on touch, Results page reload loop after extension ("Dang tai..."), algorithm page groups/Tweedie/jobs entry/method examples
+- [x] Tests: backend 119, frontend 21, tsc, build; E2E on copy 48/48
+- [x] Rebuild package 1.1.1 sha256 9F53FF65...8C5B (old build1 zip renamed *-build1-superseded*, never installed); isolated fresh 24+30, upgrade 13
+- [x] Backup backups/backup-20261014-173421-manual.zip verified -> installed 1.1.1 17:35 (schema 3, storage unchanged) -> E2E real 46/46 -> 5a no double count (real read-only 9/9, test, copy) -> report reports/demandforecast_v111_acceptance_20261014_174000.md
+- [ ] Not yet observed: scheduler 1.1.1 automatic slot (D0 18:00) on the real machine
+
+## 2026-10-14 batch fix 1.1.2 (number/date formats, dated history, method names in Excel)
+- [x] Root causes + fixes (formatters, DateInput, explain history in_calc, export_i18n v4, snapshot/error-report i18n, method registry labels)
+- [x] Tests: backend 126, frontend 31, tsc, build; E2E on DB copy 75/75 (1st run aborted: copy inherited MANUAL_IMPORT source set via UI at 18:29 VN; script fixed fail-fast)
+- [x] Package dist/DemandForecast-1.1.2 sha256 1093BDA1...AB57; isolated fresh 24+30, upgrade 13
+- [x] Installed 1.1.2 on real 22:36 (backup backups/backup-20261014-223619-manual.zip verified; no migration); read-only E2E real 50/50
+- [x] Report reports/demandforecast_v112_fix_report_20261014_224500.md
+
+## 2026-10-15 batch 1.1.3 (forecast explainability, history export, quality metrics, training explanation)
+- [x] Verified from code: tweedie/log link, TreeSHAP pred_contrib, clip>=0, round 4 at publish; no validation/early stopping; one shared model
+- [x] feature_catalog.py (33 features), explain chain + history weekday/used_by + quality sums, training_explain.py, history/backtest-points Excel
+- [x] Tests: backend 137, frontend 36, tsc, build; E2E copy 86/86; package 1.1.3 sha256 5EA4A328...64BE; iso fresh 24+30, upgrade 13
+- [x] Installed 1.1.3 on real 2026-10-15 00:11 (backup backups/backup-20261015-001048-manual.zip verified; no migration); read-only E2E real 60/60
+- [x] Report reports/demandforecast_v113_explainability_report_20261015_001500.md
+
+## 2026-10-15 batch 1.1.4 (auditable TreeSHAP trace)
+- [x] Preflight: real 1.1.3, source DEMO, schema 3, no jobs; pre-change backup backups/backup-20261015-003833-manual.zip verified
+- [x] Verified against LightGBM v4.7.0 source (tree.cpp/tree.h downloaded to scratchpad lgb_src): base value = sum of tree ExpectedValue (leaf_count/root count, bagged), not the plain training mean
+- [x] ml/treeshap_trace.py (exact port, bit-identical to pred_contrib on the real model), ml/shap_audit.py (reconciliation, cache, limits), API shap-trace(+tree, xlsx, csv), UI ShapTrace.tsx (levels A/B/C)
+- [x] Example traced: FCR-20261014111845-8B81D1 DEMO-SKU-001 FC-HCM 14/10/2026 zero_share_28 +0.8394 / roll_mean_14 +0.3276 / roll_mean_7 +0.2008 VERIFIED
+- [x] Full tests (backend 151, frontend 39, tsc, build), E2E copy 99/0, iso fresh 24+33 / upgrade 16, all PASS
+- [x] Package dist\DemandForecast-1.1.4-win64-portable.zip SHA256 D4E66387EACB867DAFFBD74C06B36F0F9F6494F91959FD81B0038E87DB4538F7, extracted release\DemandForecast-1.1.4
+- [x] Backup backups\backup-20261015-012210-manual.zip (verified), installed 1.1.4 at 01:22 15/10 (pid 27956), no migration, storage.json/source/data unchanged
+- [x] Read-only E2E on real 1.1.4: 73/0; report reports\demandforecast_v114_treeshap_audit_report_20261015_013000.md
+- Rollback: 1.1.4\Stop.bat then %LOCALAPPDATA%\Programs\DemandForecast\1.1.3\Start.bat (schema 3, no DB restore)
+
+## 2026-10-15 batch 1.1.5 (BigQuery demand_planing_lightgbm + feature registry)
+- [x] Phase A (read-only): real app 1.1.4 pid 27956, source DEMO, schema 3, storage.json 8D79DBDD...E047, storage_id 6cff0821634b0447, no jobs; facts scratchpad facts115_start.json
+- [x] BigQuery settings on real app (saved by user via UI 15/10 09:19/11:10 VN): gold_buymed_vn2.demand_planing_lightgbm, asia-southeast1, partition created_date, mapping EMPTY, production off
+- [x] BLOCKER: no Google credentials on this machine (no ADC file, no gcloud, no GOOGLE_APPLICATION_CREDENTIALS); user's own auth check 14/10 23:16 -> BQ_AUTH_MISSING. Real BigQuery NOT verifiable here.
+- Plan (no DB migration; new settings keys are top-level so 1.1.4 ignores them on rollback):
+  - [x] settings: reference_mapping (product_id,item_code,outbound_qty,order_status,sales_price,price_after_discount,seller_code,sku_status,open_date,open_hours,open_days), history_start_date=2026-01-01, exact_duplicate_policy BLOCK|KEEP|DROP_EXACT, max_retries
+  - [x] connector: suggested mapping preset (no auto-save), order_date must be DATE/DATETIME, full-range validate_source (reasons, sums reconciliation, duplicates, missing days, categories, reference completeness, outbound vs demand), error codes (AUTH_EXPIRED, TIMEOUT, QUOTA, UNAVAILABLE, SCHEMA_CHANGED, LOCATION), bounded retry, daily sql with reasons + duplicate policy + history floor; d1 sync reconciles inserted sum
+  - [x] feature registry (ml/feature_registry.py) + data-availability gating of PRICE/DISCOUNT/PROMOTION (feature_discount None = legacy follows price), feature_set_version + lineage in training_runs.feature_config_json; BIGQUERY training requires validation for current mapping hash
+  - [x] UI: BigQuery validation card, Mapping reference fields + suggestion, Features page, lineage card
+  - [x] tests, docs, package 1.1.5, iso fresh/upgrade + rollback-to-1.1.4 test, backup, install, read-only E2E, report
+- [x] SQL logic executed: scratchpad sqlh (sqlglot->DuckDB, synthetic rows) 27/27 + app post-processing 18/18
+- [x] Tests: backend 183 (32 new test_v115_bigquery_features.py), frontend 42 (3 new v115.test.tsx), tsc, build; log logs/development/tests_20261015_114959.log
+- [x] Docs: BIGQUERY.md rewritten, MO-HINH-VA-CHI-SO.md registry + lineage, HUONG-DAN; version 1.1.5
+- [x] E2E copy 113/0; package dist/DemandForecast-1.1.5-win64-portable.zip SHA256 C122B0757654D8EEA19315BC4F30E2C9066016D70F3F5EBB378E35113076AA56
+- [x] iso fresh 24+37, upgrade 20, rollback prep 3 + rollback-to-1.1.4 on same data 7 (no DB restore)
+- [x] Backup backups/backup-20261015-121828-manual.zip verified; installed 1.1.5 12:18 15/10 (pid 17220), no migration, storage/source/data/model unchanged
+- [x] Read-only E2E real 82/0; report reports/demandforecast_v115_bigquery_feature_registry_report_20261015_122500.md
+- [ ] OPEN: real BigQuery verification needs Google credentials on this machine (gcloud auth application-default login), then: auth -> connection -> schema -> suggest mapping -> validate full period
+- Rollback: 1.1.5\Stop.bat then %LOCALAPPDATA%\Programs\DemandForecast\1.1.4\Start.bat (schema 3, no DB restore)
+
+## 2026-10-15 batch 1.1.6 (Google OAuth in app, SQL editor history/D0, independent sync jobs) - NOT installed on the real app (per request)
+- [x] Preflight: real 1.1.5 pid 17220 (owner LOG-PC\Giau Vo), source DEMO, schema 3, storage.json 8D79DBDD...E047, storage_id 6cff0821634b0447; not a git repo
+- [x] Root cause of "no Google credentials": backend runs as Giau Vo -> looks for ADC in C:\Users\Giau Vo\AppData\Roaming\gcloud (absent); ADC exists only in the Administrator profile (no access from Giau Vo); gcloud not on PATH
+- [x] Backup backups/backup-20261015-121828-manual.zip restore drill with app restore_backup() into isolated folder: integrity ok, schema 3, no migration, model sha match, only audit_log differs
+- [x] Source checkpoint checkpoints/source-1.1.5-before-1.1.6-20261015-133452.zip (+ manifest)
+- [x] Code: bq/oauth.py (loopback + state + PKCE, Credential Manager), bq/secret_store.py, bq/sql_guard.py, bq/sql_sources.py, connector (table/SQL relation, key gate, D0 SQL path, dry-run validation), sync (snapshot, backfill, new/updated, D0 retry idempotent), api/bq_routes.py, UI GoogleAuth + SqlSources pages
+- [x] Tests: backend 214, frontend 45, tsc, build (logs/development/tests_20261015_135912.log); D0 SQL DuckDB logic 10/10; E2E copy 122/0
+- [x] Package dist/DemandForecast-1.1.6-win64-portable.zip SHA256 E2CFB67D3BBF3D0B7E4E873160A2295E21E0295FD8C40ED870504C5CAD66B3FF (first build interrupted at session end: orphan process stopped, outputs removed, clean rebuild); iso fresh 24+43, upgrade 26, rollback prep 4 + rollback-to-1.1.5 7
+- [x] Report reports/demandforecast_v116_oauth_sql_scheduler_report_20261015_145500.md - status BLOCKED (no Google creds for Giau Vo, no OAuth client); diff checkpoints/diff-1.1.5-to-1.1.6.patch
+- [ ] OPEN (user/IT): OAuth Desktop client + IAM, or gcloud ADC login as Giau Vo; then validate history + dry-run D0 v1; decide when to install 1.1.6
+
+
+## 2026-10-15 batch "1.1.5 -> 1.1.6 production readiness" (no install, no stop of 1.1.5, no real-DB migration)
+- [x] State: 1.1.5 pid 17220 (Giau Vo) healthy; no Git; still no Google creds for Giau Vo; 1.1.6 build1 zip E2CFB67D...B3FF
+- [x] A: live DB copy ok (schema 3, 20 tables, fk 0, no missing migration); 20 backups verified (zip, sqlite, model load); new official backup backup-20261015-153315-manual.zip (SHA 59F18021...) restore drill ok; installer review: 3 issues (app left stopped on abort, current.txt before migrate, no guard data-inside-program-dir)
+- [x] B: access gates (auth/API+dataset/location/table/query job/schema), BQ_API_DISABLED, UI gates + states, D0 schedule switch default OFF
+- [x] C: real BigQuery BLOCKED_EXTERNAL_SETUP (no creds for Giau Vo, no OAuth client)
+- [x] D: proposed D0 SQL v2 seeded inactive (DuckDB compare 5/5); installer fixes + deploy-upgrade.ps1 + rollback-version.ps1 + docs/TRIEN-KHAI-1.1.6.md
+- [x] E: tests backend 224 / frontend 46 / tsc / build (logs/development/tests_20261015_154325.log); E2E copy 125/0; build script fixes (pycache after -B verification, deploy scripts packaged, manifest + .sha256); build1 kept as superseded; build2/3 discarded (missing/old deploy scripts)
+- [x] iso build3: fresh 24+43, upgrade 26 + prep 4 + rollback 7; deploy scenario with source scripts 12/12 (found+fixed: Compress-Archive backslash entry names)
+- [x] F: build4 dist/DemandForecast-1.1.6-win64-portable.zip SHA256 A2E0345CEB654A281557BA1DA825E31E4DFD0A1DCA6C851166B9C144B3A19561 (+manifest, .sha256); packaged deploy scenario 12/12; real deploy -CheckOnly PRECHECK OK (nothing changed)
+- [x] Report reports/demandforecast_v116_production_readiness_report_20261015_171500.md - status READY_FOR_EXTERNAL_SETUP (real OAuth/BigQuery BLOCKED_EXTERNAL_SETUP); 1.1.6 NOT installed
+
+---
+
+# Batch 1.1.6 deployment + data architecture + engineering foundation (2026-10-15 17:47-18:20)
+
+| Phase | Status | Evidence |
+|---|---|---|
+| A - Inventory | DONE | 1.1.5 running (pid 17220), storage.json 8D79DBDD...E047, 20 backups, package SHA A2E0345C...9561 = expected, package == source (drift 0) |
+| B - Backup & deploy safety | DONE | real `deploy-upgrade.ps1 -CheckOnly` OK; backup-20261015-180114-manual.zip restored in isolation: integrity ok, schema 3, model hashes equal |
+| C - Data architecture | DONE | docs/data/DATA-MODEL.md, docs/data/DATA-DICTIONARY.md (from PRAGMA of a DB copy) |
+| D - Validation + non-breaking fixes | DONE (source only) | `app.cli data-check`; `rowid DESC` tie-break in 23 queries; checkpoint `checkpoints/source-1.1.6-before-unreleased-20261015-175329.zip` |
+| E - Engineering foundation | DONE | AGENTS.md, CLAUDE.md, CHANGELOG.md, docs/agents/GOVERNANCE.md, .claude/settings.json (deny verified live), .claude/agents/* |
+| F - Deploy 1.1.6 | DONE | 18:01:39-18:05:42, exit 0; log `logs/runtime/deploy-20261015-180140.log`; 1.1.6 pid 36892; DB unchanged except 2 audit rows (backups) |
+| G - OAuth / BigQuery real | BLOCKED_EXTERNAL_SETUP | real access check on a DB copy: gate `auth` FAIL BQ_AUTH_MISSING (no OAuth client, no ADC for LOG-PC\Giau Vo) |
+| H - D0 SQL | BLOCKED_EXTERNAL_SETUP (logic only) | v1 verbatim + v2 proposal, none active, schedule OFF; DuckDB logic 10/10 + 5/5 (synthetic) |
+| I - Regression / rollback | DONE | see report; `rollback-version.ps1 -To 1.1.5 -CheckOnly` OK; read-only E2E on the real app 90/0 |
+| J - Report | DONE | reports/demandforecast_v116_deployment_data_architecture_report_20261015_182000.md |
+
+Next step: Google Cloud admin creates the OAuth Desktop client + IAM (see the report), then the user signs in and runs
+"Kiem tra quyen BigQuery". Unreleased source changes go into the next package (1.1.7) after review.
+
+---
+
+# Batch 1.1.7 - 2026 data window, tie-break review, backtest span, incumbent protection, OAuth completion (started 2026-10-15 22:20)
+
+Source checkpoint before any change: `checkpoints/source-1.1.6plus-before-1.1.7-20261015-222605.zip`
+(backend/app, backend/tests, frontend/src, scripts, docs, root docs). Live install 1.1.6 is NOT touched by this batch.
+
+| Work item | Status |
+|---|---|
+| W1 data window 2026-01-01 .. yesterday (VN) in pipeline, quality report, panel rebuild, BigQuery read range | DONE |
+| W2 newest-first tie-break: per-table review + regression tests | DONE |
+| W3 backtest span 6-12 months (adaptive folds) | DONE |
+| W4 incumbent protection (candidate review, comparison, manual promotion) | DONE |
+| W5 OAuth/BigQuery: real auth gate, error classes, client JSON import, bq-check CLI, in-app remediation | DONE (code); real Google access BLOCKED (no OAuth client/IAM) |
+| W6 D0 v2 review (no activation) | DONE (no SQL change; review in report) |
+| W7 version 1.1.7, package, isolated install/upgrade/rollback | DONE: dist\DemandForecast-1.1.7-win64-portable.zip SHA-256 7D05CE491058BF8F26CB57627F7EDEC26285A8065B7582C7877AEE7A04C2F45B; isolated 1.1.6->1.1.7->1.1.6 on a live-DB copy 20/20 |
+| W8 docs, report | DONE: reports/demandforecast_v117_release_report_20261015.md (status CODE READY - GOOGLE ACCESS BLOCKED) |
+
+Batch closed 2026-10-15 23:25. Tests: backend 253/0/0, frontend 48/0, typecheck+build OK. Live install still 1.1.6 (untouched). Next: Google admin (OAuth Desktop client + IAM), then the user installs 1.1.7 with deploy-upgrade.ps1.
+
+---
+
+# Batch 1.1.8 - separate D-1 / D-0 / training schedules (2026-10-15 23:59 - 2026-10-16 01:00)
+
+Source checkpoint before any change: `checkpoints/source-1.1.7-before-1.1.8-20261016-000339.zip`. Live install 1.1.6 untouched.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Audit scheduler/UI/API (10 questions) | DONE | report section 1: jobs already separate, ONE global switch, UI scattered, enabling D0 mid-day caused a catch-up run |
+| Backend: per-flow switches, flows.py, schedule API, runner/scheduler gates, enable time | DONE | backend 275/0/0 |
+| Frontend: page /schedules (3 cards), links from Config/Jobs/SQL | DONE | frontend 52/0, typecheck + build OK |
+| E2E on a DB copy with the scheduler running | DONE | 17/17, 0 jobs created, restart keeps the saved state |
+| Package 1.1.8 + isolated 1.1.6 -> 1.1.8 -> 1.1.6 | DONE | SHA-256 0DFDEC86042767AB5E8A8545C990BEF5D2E8B87AB465A970F1642D4DB9F15EE0; 25/25 |
+| Report | DONE | reports/demandforecast_v118_schedules_report_20261016.md |
+
+Next: the user installs 1.1.8 when convenient (deploy-upgrade.ps1, UPGRADE-1.1.8); D-1 / D-0 stay OFF until switched on
+on the Data schedules page.
+
+---
+
+# Deployment 1.1.8 + D-0 DEMO test (2026-10-16 08:29 - 10:05)
+
+Authorized by the user (two pasted batches: controlled deployment; manual D-0 DEMO run on test data).
+
+| Step | Status | Evidence |
+|---|---|---|
+| Prechecks (read-only), deploy-upgrade -CheckOnly | DONE | PRECHECK OK 08:31:15; no job in flight; next slot 10:00 |
+| Deploy 1.1.6 -> 1.1.8 | DONE | exit 0, logs\runtime\deploy-20261016-083136.log; backups backup-20261016-083136-manual.zip, backup-20261016-083328-cli.zip (verified) |
+| Post-checks: DB, storage, counts, models, backups, UI | DONE | only audit_log +1; UI 15/15 |
+| D-0 DEMO switched on via the UI | DONE | 09:16:47, times 08-18 every 2 h unchanged, UI 14/14 |
+| Restart keeps the configuration | DONE | pid 18608, no job at startup |
+| Manual D-0 run via 'Run once now' | DONE | JOB-20261016022310-A7374B -> SNP-20261016022310-BE0AA7 (151 lines, 53 keys), source check 20/20 |
+| Isolated dedupe + 1.1.8 tests | DONE | 26/26 |
+| First scheduled D-0 slot after the upgrade (10:00) | DONE | JOB-20261016030003-935A2C -> SNP-20261016030004-13CC83 (209 lines, 59 keys), source check 20/20; next 12:00 |
+| Report Part II | DONE | reports/demandforecast_v118_schedules_report_20261016.md (original kept in checkpoints/) |
+
+Open: UI does not auto-refresh after 'Run once now' (display only). Rollback not needed (rollback-version -CheckOnly OK).

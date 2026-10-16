@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(//d/Buymed/Lightgbm AI/data/runtime/**)",
+      "Write(//d/Buymed/Lightgbm AI/data/runtime/**)",
+      "Edit(//d/Buymed/Lightgbm AI/backups/**)",
+      "Write(//d/Buymed/Lightgbm AI/backups/**)",
+      "Edit(~/AppData/Local/DemandForecast/**)",
+      "Write(~/AppData/Local/DemandForecast/**)",
+      "Edit(~/AppData/Local/Programs/DemandForecast/**)",
+      "Write(~/AppData/Local/Programs/DemandForecast/**)",
+      "Read(~/AppData/Roaming/gcloud/**)",
+      "Read(//**/application_default_credentials.json)",
+      "Read(//**/client_secret*.json)"
+    ],
+    "ask": [
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "PowerShell(git commit *)",
+      "PowerShell(git push *)"
+    ]
+  }
+}

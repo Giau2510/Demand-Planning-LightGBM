@@ -1,0 +1,292 @@
+"""D-1 history sync (BigQuery -> demand_daily) and D0 intraday snapshots.
+
+Snapshots are written ONLY after a successful read. A failed sync leaves no snapshot (the failure is
+visible in the job history). Snapshots carry the real read time (`snapshot_at`); a catch-up run after a
+restart is flagged `is_catch_up` and is never back-dated to the missed slot time.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from datetime import date, datetime, timedelta
+
+import pandas as pd
+
+from . import db
+from . import settings_service as ss
+from .bq import connector, sql_sources
+from .data.demand import active_demo_batch, bigquery_scope_key, resolve_scope
+from .messages import AppError
+from .timeutil import now_iso, now_utc, now_vn, today_vn
+
+log = logging.getLogger("df.sync")
+
+
+class NotApplicable(Exception):
+    pass
+
+
+class Retryable(Exception):
+    def __init__(self, code: str, detail: str | None = None):
+        super().__init__(f"{code}: {detail or ''}")
+        self.code = code
+
+
+class Wait(Exception):
+    """Not an error: the job should be re-checked later without consuming a retry attempt."""
+
+    def __init__(self, code: str, seconds: int):
+        super().__init__(code)
+        self.code = code
+        self.seconds = seconds
+
+
+def _state_set(c, name: str, value: dict) -> None:
+    c.execute("INSERT INTO sync_state(name, value_json, updated_at) VALUES (?,?,?) ON CONFLICT(name) DO UPDATE "
+              "SET value_json=excluded.value_json, updated_at=excluded.updated_at",
+              (name, json.dumps(value, default=str), now_iso()))
+
+
+def _state_get(c, name: str) -> dict | None:
+    r = db.one(c, "SELECT value_json FROM sync_state WHERE name=?", (name,))
+    return json.loads(r["value_json"]) if r else None
+
+
+# ---------------------------------------------------------------- D-1
+MAX_BACKFILL_DAYS = 400
+
+
+def run_d1_sync(job_id: str | None = None, fallback_mode: bool | None = None, backfill_start: str | None = None,
+                backfill_end: str | None = None) -> dict:
+    """Daily history load (D-1 and older). Never touches today's data (D0 is a separate job and table).
+    A backfill (explicit user request) re-reads exactly [backfill_start, backfill_end], bounded by the read range."""
+    g = ss.get("general")
+    if g.active_source != "BIGQUERY":
+        raise NotApplicable(g.active_source)
+    bq = ss.get("bigquery")
+    if not bq.production_enabled:
+        raise AppError("SOURCE_NOT_READY", 409)
+    if not connector.validation_ok_for_current():
+        raise AppError("BQ_VALIDATION_REQUIRED", 409, mapping_hash=connector.mapping_hash(bq))
+    snap = sql_sources.snapshot("history")     # the SQL text used from start to end of THIS job
+    sched = ss.get("schedule")
+    day = today_vn() - timedelta(days=1)
+    backfill = bool(backfill_start or backfill_end)
+    mode = "BACKFILL" if backfill else "SIGNAL"
+    if not backfill:
+        signal = connector.completion_signal(day)
+        now = now_vn()
+        fb_h, fb_m = (int(x) for x in sched.d1_fallback_time.split(":"))
+        after_fallback = (now.hour, now.minute) >= (fb_h, fb_m) if fallback_mode is None else fallback_mode
+        if not signal:
+            if not after_fallback:
+                raise Wait("WAITING_FOR_SIGNAL", sched.d1_poll_interval_minutes * 60)
+            suff = connector.sufficiency_check(day)
+            if not suff["ok"]:
+                raise Retryable("SOURCE_INCOMPLETE", json.dumps(suff))
+            mode = "FALLBACK_TIME_VERIFIED"
+    scope_key = bigquery_scope_key(bq)
+    pol = ss.get("data_policy")
+    with db.read() as c:
+        st = _state_get(c, f"last_d1_sync:{scope_key}")
+    mhash = connector.mapping_hash(bq)
+    floor = connector.read_range(bq, day)[0]
+    if backfill:
+        start = max(date.fromisoformat(backfill_start or str(floor)), floor)
+        end = min(date.fromisoformat(backfill_end or str(day)), day)
+        if end < start or (end - start).days + 1 > MAX_BACKFILL_DAYS:
+            raise AppError("VALIDATION_ERROR", 422, detail=f"backfill window {start}..{end} (max {MAX_BACKFILL_DAYS} days, "
+                                                           f"from {floor} to {day})")
+        if not (st and st.get("mapping_hash") == mhash):
+            raise AppError("VALIDATION_ERROR", 422, detail="run a normal D-1 sync with the current mapping first")
+        full = False
+    else:
+        end = day
+        # incremental only when the previous load used the SAME mapping/range/SQL; otherwise reload the whole period
+        full = not (st and st.get("watermark") and st.get("mapping_hash") == mhash)
+        start = date.fromisoformat(st["watermark"]) - timedelta(days=pol.late_data_lookback_days) if not full else floor
+    res = connector.fetch_daily(start, end, snap)
+    loaded = now_iso()
+    w0, w1 = (str(floor), str(end)) if full else (res["window"]["start"], str(end))
+    # a full reload replaces the MODEL-INPUT part of the scope (from the data window start); rows stored before the
+    # window are history that is no longer used and is kept untouched
+    keep_before = ss.get("data_policy").window_start_date
+    with db.tx() as c:
+        if full:
+            q, prm = ("SELECT order_date, sku_id, fc_id, qty FROM demand_daily WHERE scope_key=? AND order_date >= ?",
+                      (scope_key, keep_before))
+        else:
+            q = "SELECT order_date, sku_id, fc_id, qty FROM demand_daily WHERE scope_key=? AND order_date BETWEEN ? AND ?"
+            prm = (scope_key, w0, w1)
+        before = {(r[0], r[1], r[2]): r[3] for r in c.execute(q, prm)}
+        if full:
+            c.execute("DELETE FROM demand_daily WHERE scope_key=? AND order_date >= ?", (scope_key, keep_before))
+        else:
+            c.execute("DELETE FROM demand_daily WHERE scope_key=? AND order_date BETWEEN ? AND ?", (scope_key, w0, w1))
+        c.executemany(
+            "INSERT INTO demand_daily(scope_key, data_source, order_date, sku_id, fc_id, qty, n_orders, avg_unit_price, "
+            "avg_discount_rate, promo_share, voucher_share, loaded_at) VALUES (?, 'BIGQUERY', ?,?,?,?,?,?,?,?,?,?)",
+            [(scope_key, str(r["order_date"])[:10], r["sku_id"], r["fc_id"], float(r["qty"] or 0), int(r["n_orders"] or 0),
+              r.get("avg_unit_price"), r.get("avg_discount_rate"), r.get("promo_share"), r.get("voucher_share"), loaded)
+             for r in res["rows"]])
+        # what was written must equal the valid total read from BigQuery, otherwise nothing is committed
+        w = c.execute("SELECT COUNT(*), COALESCE(SUM(qty), 0) FROM demand_daily WHERE scope_key=? AND order_date "
+                      "BETWEEN ? AND ?", (scope_key, res["window"]["start"], str(end))).fetchone()
+        if w[0] != len(res["rows"]) or abs(float(w[1]) - res["qty_valid"]) > 1e-6 * max(1.0, abs(res["qty_valid"])):
+            raise AppError("BQ_SYNC_RECONCILIATION_FAILED", 409,
+                           detail=f"written {w[0]} rows / {w[1]} qty; read {len(res['rows'])} rows / {res['qty_valid']} qty")
+        after = {(str(r["order_date"])[:10], r["sku_id"], r["fc_id"]): float(r["qty"] or 0) for r in res["rows"]}
+        same = set(after) & set(before)
+        info = {"synced_at": loaded, "watermark": str(day) if not backfill else (st or {}).get("watermark"),
+                "window_start": res["window"]["start"], "window_end": str(end), "mode": mode, "backfill": backfill,
+                "rows_read": res["rows_read"], "rows_valid": res["rows_valid"], "rows_error": res["rows_error"],
+                "excluded_by_reason": res["excluded_by_reason"], "rows_dropped_duplicates": res["rows_dropped_duplicates"],
+                "exact_duplicate_rows": res["exact_duplicate_rows"], "key_duplicate_rows": res.get("key_duplicate_rows"),
+                "qty_read": res["qty_read"], "qty_valid": res["qty_valid"], "qty_excluded": res["qty_excluded"],
+                "series_days_written": int(w[0]), "series_days_new": len(set(after) - set(before)),
+                "series_days_updated": sum(1 for k in same if abs(before[k] - after[k]) > 1e-9),
+                "series_days_unchanged": sum(1 for k in same if abs(before[k] - after[k]) <= 1e-9),
+                "series_days_removed": len(set(before) - set(after)),
+                "mapping_hash": mhash, "full_reload": full, "duplicate_policy": bq.exact_duplicate_policy,
+                "read_floor": str(floor), "window_start_date": keep_before,
+                "rows_kept_before_window": c.execute("SELECT COUNT(*) FROM demand_daily WHERE scope_key=? AND "
+                                                     "order_date < ?", (scope_key, keep_before)).fetchone()[0],
+                "sql_source": sql_sources.public_snapshot(snap),
+                "source_batch_id": res["source_batch_id"], "max_source_updated_at": res["max_source_updated_at"],
+                "estimated_bytes": res["estimated_bytes"], "job_id": job_id}
+        if not backfill:
+            _state_set(c, f"last_d1_sync:{scope_key}", info)
+        db.audit(c, "D1_SYNC", "scope", scope_key, {k: v for k, v in info.items() if k != "excluded_by_reason"})
+    return {"status": "SUCCEEDED", "reason_code": "BACKFILL_DONE" if backfill else None, **info}
+
+
+# ---------------------------------------------------------------- D0
+def run_d0_snapshot(job_id: str | None = None, scheduled_slot: str | None = None, is_catch_up: bool = False) -> dict:
+    if scheduled_slot and not ss.get("schedule").d0_enabled:
+        # scheduled D-0 runs stay OFF until the user turns the D-0 flow on (manual runs remain possible)
+        raise AppError("D0_SCHEDULE_DISABLED", 409)
+    g = ss.get("general")
+    src = g.active_source
+    if src == "MANUAL_IMPORT":
+        raise NotApplicable("MANUAL_IMPORT is static history; there is no live intraday source")
+    day = today_vn()
+    read_at = now_utc()
+    extra: dict = {}
+    if src == "DEMO":
+        from .data.demo import demo_intraday_lines
+        with db.read() as c:
+            b = active_demo_batch(c)
+        if not b:
+            raise AppError("NO_ACTIVE_DATASET", 409)
+        scope_key = b["id"]
+        lines = demo_intraday_lines(day)
+        lines = lines[lines["created_at"] <= pd.Timestamp(read_at)]
+        agg = lines.groupby(["sku_id", "fc_id"], as_index=False)["order_qty"].sum()
+        rows = [{"sku_id": r.sku_id, "fc_id": r.fc_id, "cumulative_qty": float(r.order_qty), "source_updated_at": None}
+                for r in agg.itertuples()]
+        stats = {"rows_read": len(lines), "rows_valid": len(lines), "rows_error": 0, "source_updated_max": None,
+                 "source_batch_id": f"DEMO-B{day:%Y%m%d}"}
+    else:
+        bq = ss.get("bigquery")
+        if not bq.production_enabled:
+            raise AppError("SOURCE_NOT_READY", 409)
+        scope_key = bigquery_scope_key(bq)
+        snap = sql_sources.snapshot("d0")          # the D0 SQL used from start to end of THIS job
+        res = connector.fetch_d0(day, read_at, snap)
+        rows = [{"sku_id": r["sku_id"], "fc_id": r["fc_id"], "cumulative_qty": float(r["cumulative_qty"] or 0),
+                 "source_updated_at": str(r["source_updated_at"]) if r.get("source_updated_at") else None}
+                for r in res["rows"]]
+        ups = [r["source_updated_at"] for r in rows if r["source_updated_at"]]
+        sqlid = f"D0SQL-v{snap['version_id']}-{snap['sha256'][:12]}" if snap.get("mode") == "SQL" else None
+        stats = {"rows_read": res["rows_read"], "rows_valid": res["rows_valid"], "rows_error": res["rows_error"],
+                 "source_updated_max": max(ups) if ups else None, "source_batch_id": sqlid}
+        extra = {"sql_source": sql_sources.public_snapshot(snap), "excluded_by_reason": res.get("excluded_by_reason"),
+                 "key_duplicate_rows": res.get("key_duplicate_rows"), "dates_in_output": res.get("dates_in_output"),
+                 "warnings": res.get("warnings")}
+    sid = db.new_id("SNP")
+    with db.tx() as c:
+        if job_id:     # a retried / re-entered job never writes a second snapshot
+            prev = db.one(c, "SELECT id, rows_read, rows_valid, rows_error FROM d0_snapshots WHERE job_id=?", (job_id,))
+            if prev:
+                return {"status": "SUCCEEDED", "snapshot_id": prev["id"], "already_written": True,
+                        "rows_read": prev["rows_read"], "rows_valid": prev["rows_valid"], "rows_error": prev["rows_error"]}
+        c.execute("INSERT INTO d0_snapshots(id, data_source, scope_key, order_date, snapshot_at, scheduled_slot, "
+                  "is_catch_up, sync_status, rows_read, rows_valid, rows_error, source_updated_max, source_batch_id, "
+                  "job_id, created_at) VALUES (?,?,?,?,?,?,?, 'SUCCEEDED', ?,?,?,?,?,?,?)",
+                  (sid, src, scope_key, str(day), read_at.isoformat(timespec="seconds"), scheduled_slot,
+                   int(is_catch_up), stats["rows_read"], stats["rows_valid"], stats["rows_error"],
+                   stats["source_updated_max"], stats["source_batch_id"], job_id, now_iso()))
+        c.executemany("INSERT INTO d0_snapshot_values(snapshot_id, sku_id, fc_id, cumulative_qty, source_updated_at) "
+                      "VALUES (?,?,?,?,?)",
+                      [(sid, r["sku_id"], r["fc_id"], r["cumulative_qty"], r["source_updated_at"]) for r in rows])
+        db.audit(c, "D0_SNAPSHOT", "d0_snapshot", sid, {"slot": scheduled_slot, "catch_up": is_catch_up,
+                                                         "rows": len(rows)})
+    log.info("d0 snapshot", extra={"ctx": {"snapshot_id": sid, "job_id": job_id, "rows": len(rows)}})
+    return {"status": "SUCCEEDED", "snapshot_id": sid, "series": len(rows), "series_rows_new": len(rows), **stats, **extra}
+
+
+def list_snapshots(filters: dict, limit: int = 200) -> list[dict]:
+    sql = "SELECT * FROM d0_snapshots WHERE 1=1"
+    params: list = []
+    for k, col in (("order_date", "order_date"), ("data_source", "data_source")):
+        if filters.get(k):
+            sql += f" AND {col}=?"
+            params.append(filters[k])
+    if filters.get("date_from"):
+        sql += " AND order_date>=?"
+        params.append(filters["date_from"])
+    if filters.get("date_to"):
+        sql += " AND order_date<=?"
+        params.append(filters["date_to"])
+    if filters.get("sku_id") or filters.get("fc_id"):
+        sub = "SELECT 1 FROM d0_snapshot_values v WHERE v.snapshot_id=d0_snapshots.id"
+        if filters.get("sku_id"):
+            sub += " AND v.sku_id=?"
+            params.append(filters["sku_id"])
+        if filters.get("fc_id"):
+            sub += " AND v.fc_id=?"
+            params.append(filters["fc_id"])
+        sql += f" AND EXISTS ({sub})"
+    sql += " ORDER BY snapshot_at DESC, rowid DESC LIMIT ?"
+    params.append(limit)
+    with db.read() as c:
+        return db.rows(c, sql, params)
+
+
+def snapshot_detail(sid: str, sku_id: str | None = None, fc_id: str | None = None) -> dict:
+    with db.read() as c:
+        s = db.one(c, "SELECT * FROM d0_snapshots WHERE id=?", (sid,))
+        if not s:
+            raise AppError("BATCH_NOT_FOUND", 404, detail=sid)
+        sql = "SELECT sku_id, fc_id, cumulative_qty, source_updated_at FROM d0_snapshot_values WHERE snapshot_id=?"
+        params: list = [sid]
+        if sku_id:
+            sql += " AND sku_id=?"
+            params.append(sku_id)
+        if fc_id:
+            sql += " AND fc_id=?"
+            params.append(fc_id)
+        vals = db.rows(c, sql + " ORDER BY sku_id, fc_id", params)
+        # full-day forecast available for that date: latest published run of the same scope created before the snapshot
+        fr = db.one(c, "SELECT id, model_version, created_at, forecast_origin FROM forecast_runs WHERE scope_key=? "
+                       "AND forecast_origin<=? AND created_at<=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                    (s["scope_key"], s["order_date"], s["snapshot_at"]))
+        fmap = {}
+        if fr:
+            fmap = {(r["sku_id"], r["fc_id"]): r["yhat"] for r in db.rows(
+                c, "SELECT sku_id, fc_id, yhat FROM forecast_values WHERE run_id=? AND target_date=?",
+                (fr["id"], s["order_date"]))}
+        eod = {}
+        if s["order_date"] < str(today_vn()):
+            eod = {(r["sku_id"], r["fc_id"]): r["qty"] for r in db.rows(
+                c, "SELECT sku_id, fc_id, qty FROM demand_daily WHERE scope_key=? AND order_date=?",
+                (s["scope_key"], s["order_date"]))}
+    for v in vals:
+        k = (v["sku_id"], v["fc_id"])
+        v["full_day_forecast"] = fmap.get(k)
+        v["end_of_day_actual"] = eod.get(k)
+    return {"snapshot": s, "values": vals, "forecast_run": fr,
+            "measurement_note": {"vi": f"Thực tế lũy kế đến {s['snapshot_at']} (UTC) — KHÔNG phải số cả ngày; "
+                                       "dự báo là cho cả ngày.",
+                                 "en": f"Intraday cumulative actual up to {s['snapshot_at']} (UTC) — NOT a full-day "
+                                       "figure; the forecast is for the full day."}}
