@@ -1,0 +1,48 @@
+PASS 1.1.9 running isolated  [1.1.9]
+PASS deploy -CheckOnly passes, nothing changed  [0]
+PASS deploy refuses a wrong SHA256 (exit 3)  [3]
+PASS deploy without the right confirmation keeps 1.1.9 running  [1]
+PASS deploy upgrades to 1.2.0 (exit 0)  [0 1.2.0]
+PASS after upgrade: schema 3, integrity ok, demand and forecast runs identical  [3 42737355.0]
+PASS settings unchanged by the upgrade (only the new key bigquery.d0_table_id appears)  [lakehouse-prod-394907.gold_buymed_vn2.demand_planing_lightgbm_D0]
+PASS schedules unchanged: D-1 off (poll 03:00), D-0 off, training on 09:00  [d1=03:00 train=09:00]
+PASS data-check (1.2.0 CLI) on the upgraded copy: no FAIL  [WARN]
+== D-1 / D-0 source tables (real BigQuery metadata, read-only) ==
+PASS D-0 table check on the real table  [PASSED rows=9329 cols=12 ]
+PASS D-1 table check on the real table  [PASSED rows=8893414 cols=17]
+PASS the D-1 table cannot change while production is on
+== price ON (owner decision 17/10): the production API sequence on the copy (real BigQuery, read-only) ==
+PASS the copy already holds the price load of 17/10 00:3x (mapping unit_price <- sales_price)
+PASS POST /api/bigquery/mapping saves unit_price <- sales_price and switches production mode off  [warnings={"field":"unit_price","code":"COLUMN_USED_TWICE","column":"sales_price","fields":["unit_price","sales_price"]}]
+PASS full-period validation with the price mapping (real BigQuery)  [bytes=3489574092 5s blocking= warnings=["KEY_NOT_UNIQUE","MISSING_DAYS","TARGET_OUTLIER"]]
+PASS production mode on again (activation requirements met)  [{"connection":true,"schema":true,"profile":true,"mapping":true,"validation":true,"location_set":true}]
+PASS D-1 dry run (READ_ONLY_TEST): mapping, duplicates, aggregation, reconciliation pass; nothing written  [{"mapping":"PASSED","duplicates":"PASSED","aggregate":"PASSED","reconciliation":"PASSED","compare":"PASSED","output_checks":"PASSED","write":"NOT_RUN","window":"PASSED","auth":"PASSED","completeness":"WARNING"}]
+PASS registry: price coverage >= 0.99, used (DATA_OK), price features in the next training  [coverage=0.99982261423569]
+PASS D-0 table check again with the price mapping (sales_price exists in the D-0 table)  [PASSED ]
+== D-0 manual run on the COPY only (COPY_PIPELINE_TEST; production D-0 settings and schedule untouched) ==
+PASS D-0 snapshot from the real D-0 table into the copy  [SUCCEEDED  series=0 ]
+PASS manual runs changed no schedule (D-0 off, D-1 off 03:00, training on 09:00)
+== DIRECT training on the copy (real data, price ON), gate exception, explanation ==
+PASS model settings saved explicitly: DIRECT, price group ON
+PASS training job finishes: REJECTED by the standard gate (not published)  [SUCCEEDED QUALITY_GATE_FAILED 804s]
+PASS rejected run keeps its model file and is eligible for an exception  [MV-20261017-022215-E15C wape=0.808117 bias=0.071829 folds=7]
+PASS the run really trained with the price: switch on, used, price_last + price_rel_28 in the model  [reason=DATA_OK n_features=31]
+PASS release with exception publishes this run  [FCR-20261016192426-8BE34E]
+PASS standard quality gate unchanged  [0.6 / 0.2]
+PASS forecast run: n_series x 15 values, horizons 7/15  [series=17137 methods={"FALLBACK_INACTIVE_ZERO":2952,"FALLBACK_INTERMITTENT":9691,"FALLBACK_NEW_SERIES":207,"LIGHTGBM":4287}]
+PASS explanation of a DIRECT value reproduces the published number, no recursion  [MEDX.06fa836076e3 BD 2026-10-16]
+PASS explanation: price_last is an ACTUAL input of the published value  [value=21260.0 missing=False used_in_trees=True]
+== restart of 1.2.0: settings, forecast and explanation survive ==
+PASS after restart: price ON + DIRECT kept, same forecast run in use, explanation reproduces the published value  [1.2.0]
+== rollback to 1.1.9, then restore the pre-release backup ==
+PASS rollback -CheckOnly: schema compatible  [0]
+PASS rollback to 1.1.9 without DB restore (exit 0)  [0 1.1.9]
+PASS 1.1.9 still displays the DIRECT forecast run
+PASS 1.1.9 does not give a wrong explanation of the DIRECT model (not OK)  [HTTP error]
+FAIL restore of the pre-release backup (1.1.9 restore.ps1)  [1]
+FAIL after restore: integrity ok, the exception release is gone, data equals the pre-release state  [runs=5 accepted=3]
+RESULT release-rehearsal-120p: 35 passed, 2 failed
+-- 17/10/2026 02:31, the two FAIL lines re-run by hand in the same isolated environment: the script had passed a
+-- bare backup file name, which restore.ps1 looks up in <data dir>\backups only (documented; the backups folder of this
+-- installation is configured elsewhere). restore.ps1 -File <full path> -> exit 0, integrity ok, demand sum 42737355.0,
+-- accepted trainings 2, the exception release FCR-20261016192426-8BE34E gone = pre-release state. Script fixed.

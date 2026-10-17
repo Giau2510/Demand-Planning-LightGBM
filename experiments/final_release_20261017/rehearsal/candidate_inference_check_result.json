@@ -1,0 +1,37 @@
+{
+ "forecast_run": "FCR-20261016192426-8BE34E",
+ "training_run": "TRN-20261016191030-54E15C",
+ "model_version": "MV-20261017-022215-E15C",
+ "status": "ACCEPTED",
+ "model_sha256_matches": true,
+ "features_consistent": true,
+ "price_features": [
+  "price_last",
+  "price_rel_28"
+ ],
+ "feature_groups": {
+  "historical_demand": {
+   "switch_on": true,
+   "used": true
+  },
+  "price": {
+   "switch_on": true,
+   "used": true
+  }
+ },
+ "gate_exception": "THIS_TRAINING_RUN_ONLY",
+ "published_values": 257055,
+ "expected_values": 257055,
+ "nan_inf_negative": 0,
+ "max_abs_diff_reproduced_vs_published": 0.0,
+ "reload_identical": true,
+ "lgbm_series": 4287,
+ "lgbm_series_moved_by_price_plus10pct": 4140,
+ "fallback_series_moved": 0,
+ "methods": {
+  "FALLBACK_INACTIVE_ZERO": 2952,
+  "FALLBACK_INTERMITTENT": 9691,
+  "FALLBACK_NEW_SERIES": 207,
+  "LIGHTGBM": 4287
+ }
+}

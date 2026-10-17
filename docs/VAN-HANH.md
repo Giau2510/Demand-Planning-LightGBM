@@ -26,9 +26,14 @@ bằng PowerShell: `powershell -ExecutionPolicy Bypass -File scripts\<tên>.ps1`
 
 ```powershell
 scripts\stop.ps1
-scripts\restore.ps1 -File backup-20261014-070000-manual.zip   # tên file trong thư mục backups, hoặc đường dẫn đầy đủ
+scripts\restore.ps1 -File "D:\Buymed\Lightgbm AI\backups\backup-20261014-070000-manual.zip"   # nên dùng đường dẫn đầy đủ
 scripts\start.ps1
 ```
+
+**Dùng đường dẫn đầy đủ.** Nếu chỉ đưa tên file, `restore.ps1` tìm trong `<thư mục dữ liệu>\backups`. Máy này cấu hình
+thư mục backup riêng trong `storage.json` (`D:\Buymed\Lightgbm AI\backups`), khác `data\runtime\backups`. Khi đó script
+báo "not found" và **không thay đổi gì**. Hành vi này được xác nhận trong buổi diễn tập 1.2.0 ngày 17/10/2026; khôi
+phục bằng đường dẫn đầy đủ thì thành công.
 
 `restore` từ chối chạy khi ứng dụng đang chạy, kiểm tra `PRAGMA integrity_check`, tạo bản sao lưu an toàn
 `…-pre-restore.zip` của DB hiện tại trước khi thay, rồi chạy migration nếu cần.
@@ -86,7 +91,7 @@ Chi tiết: [TRIEN-KHAI-1.1.6.md](TRIEN-KHAI-1.1.6.md).
   thích* hay *kéo dài* được model đó: nó báo lỗi số feature, không trả số sai.
 - Muốn bỏ hẳn model DIRECT đã phát hành thì làm theo thứ tự:
   1. dừng ứng dụng;
-  2. `scripts\restore.ps1 -File <bản sao lưu tạo ngay trước khi phát hành>`;
+  2. `scripts\restore.ps1 -File <đường dẫn đầy đủ của bản sao lưu tạo ngay trước khi phát hành>`;
   3. chạy lại D-1 thủ công nếu dữ liệu đã được nạp thêm sau thời điểm sao lưu.
 
 ## Gỡ cài đặt (giữ nguyên dữ liệu)

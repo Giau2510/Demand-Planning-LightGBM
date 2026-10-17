@@ -1,0 +1,2581 @@
+{
+ "generated_for": "E0 error analysis, release config (DIRECT, price ON) vs demand only",
+ "scope_key": "BIGQUERY:lakehouse-prod-394907.gold_buymed_vn2.demand_planing_lightgbm",
+ "panel": [
+  "2026-01-01",
+  "2026-10-15",
+  17137
+ ],
+ "coverage": {
+  "rows": 1347346,
+  "avg_unit_price": 0.99982261423569,
+  "avg_discount_rate": 0.0,
+  "promo_share": 0.0
+ },
+ "folds": [
+  {
+   "fold": 6,
+   "origin": "2026-03-20",
+   "last_target": "2026-04-18"
+  },
+  {
+   "fold": 7,
+   "origin": "2026-04-19",
+   "last_target": "2026-05-18"
+  },
+  {
+   "fold": 8,
+   "origin": "2026-05-19",
+   "last_target": "2026-06-17"
+  },
+  {
+   "fold": 9,
+   "origin": "2026-06-18",
+   "last_target": "2026-07-17"
+  },
+  {
+   "fold": 10,
+   "origin": "2026-07-18",
+   "last_target": "2026-08-16"
+  },
+  {
+   "fold": 11,
+   "origin": "2026-08-17",
+   "last_target": "2026-09-15"
+  },
+  {
+   "fold": 12,
+   "origin": "2026-09-16",
+   "last_target": "2026-10-15"
+  }
+ ],
+ "n_points": 3353298,
+ "analysis_convention": {
+  "min_points": 5000,
+  "min_units": 5000
+ },
+ "runs": {
+  "demand_price": {
+   "seconds": 580.1,
+   "features": [
+    "sku_code",
+    "fc_code",
+    "series_age",
+    "lag_1",
+    "lag_2",
+    "lag_3",
+    "lag_4",
+    "lag_5",
+    "lag_6",
+    "lag_7",
+    "lag_14",
+    "lag_21",
+    "lag_28",
+    "roll_mean_7",
+    "roll_mean_14",
+    "roll_mean_28",
+    "roll_mean_56",
+    "roll_std_7",
+    "roll_std_28",
+    "zero_share_28",
+    "days_since_last_sale",
+    "roll_max_28",
+    "price_last",
+    "price_rel_28",
+    "dow",
+    "dom",
+    "month",
+    "weekofyear",
+    "is_weekend",
+    "days_to_month_end",
+    "horizon"
+   ],
+   "price_decision": {
+    "switch": "feature_price",
+    "switch_on": true,
+    "data_column": "avg_unit_price",
+    "coverage": 0.99982261423569,
+    "min_coverage": 0.5,
+    "used": true,
+    "reason": "DATA_OK",
+    "features": [
+     "price_last",
+     "price_rel_28"
+    ]
+   },
+   "pooled_wape": 0.8081166777058982,
+   "parity_with_price_backtest": true,
+   "smoke": false
+  },
+  "demand_only": {
+   "seconds": 560.5,
+   "features": [
+    "sku_code",
+    "fc_code",
+    "series_age",
+    "lag_1",
+    "lag_2",
+    "lag_3",
+    "lag_4",
+    "lag_5",
+    "lag_6",
+    "lag_7",
+    "lag_14",
+    "lag_21",
+    "lag_28",
+    "roll_mean_7",
+    "roll_mean_14",
+    "roll_mean_28",
+    "roll_mean_56",
+    "roll_std_7",
+    "roll_std_28",
+    "zero_share_28",
+    "days_since_last_sale",
+    "roll_max_28",
+    "dow",
+    "dom",
+    "month",
+    "weekofyear",
+    "is_weekend",
+    "days_to_month_end",
+    "horizon"
+   ],
+   "price_decision": {
+    "switch": "feature_price",
+    "switch_on": false,
+    "data_column": "avg_unit_price",
+    "coverage": 0.99982261423569,
+    "min_coverage": 0.5,
+    "used": false,
+    "reason": "TOGGLE_OFF",
+    "features": [
+     "price_last",
+     "price_rel_28"
+    ]
+   },
+   "pooled_wape": 0.8059526863489456,
+   "parity_with_price_backtest": true,
+   "smoke": false
+  }
+ },
+ "groups": {
+  "all": [
+   {
+    "group": "ALL",
+    "n_points": 3353298,
+    "sum_actual": 28016486.0,
+    "share_of_points": 1.0,
+    "share_of_abs_error": 1.0,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8081166777058982,
+     "bias": 0.07182937897144202,
+     "mae": 6.75173801651801
+    },
+    "demand_only": {
+     "wape": 0.8059526863489456,
+     "bias": 0.06897645150141395,
+     "mae": 6.73365807445614
+    },
+    "baseline": {
+     "wape": 0.8390370437128948,
+     "bias": 0.11876034271426106,
+     "mae": 7.010074734981414
+    },
+    "over_forecast_share": 0.6397615123976456,
+    "under_forecast_share": 0.1629556931713197,
+    "delta_wape_price_minus_demand": 0.002163991356952666
+   }
+  ],
+  "fc": [
+   {
+    "group": "BD",
+    "n_points": 1683885,
+    "sum_actual": 19622355.0,
+    "share_of_points": 0.502157875619763,
+    "share_of_abs_error": 0.6445883089941425,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.7437363841759564,
+     "bias": 0.05422543500355719,
+     "mae": 8.666779118952304
+    },
+    "demand_only": {
+     "wape": 0.7417707057978258,
+     "bias": 0.0516846273921478,
+     "mae": 8.64387301850512
+    },
+    "baseline": {
+     "wape": 0.7771480233166396,
+     "bias": 0.10833801449467846,
+     "mae": 9.056125804949493
+    },
+    "over_forecast_share": 0.6429435501830588,
+    "under_forecast_share": 0.19052488738839055,
+    "delta_wape_price_minus_demand": 0.001965678378130664
+   },
+   {
+    "group": "HN",
+    "n_points": 1669413,
+    "sum_actual": 8394131.0,
+    "share_of_points": 0.497842124380237,
+    "share_of_abs_error": 0.3554116910058574,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.9586138494379952,
+     "bias": 0.1129808499144074,
+     "mae": 4.820095584853363
+    },
+    "demand_only": {
+     "wape": 0.9559862761246072,
+     "bias": 0.109398302348104,
+     "mae": 4.806883638735367
+    },
+    "baseline": {
+     "wape": 0.9837105458082945,
+     "bias": 0.1431238681645033,
+     "mae": 4.946286621462948
+    },
+    "over_forecast_share": 0.6365518897959942,
+    "under_forecast_share": 0.13514750394300273,
+    "delta_wape_price_minus_demand": 0.002627573313388032
+   }
+  ],
+  "horizon_bucket": [
+   {
+    "group": "1-7",
+    "n_points": 774699,
+    "sum_actual": 6834875.0,
+    "share_of_points": 0.23102599291801684,
+    "share_of_abs_error": 0.21182592076207,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.701675412634303,
+     "bias": 0.028634789140929654,
+     "mae": 6.190615627397069
+    },
+    "demand_only": {
+     "wape": 0.7030989552291439,
+     "bias": 0.02774180795119333,
+     "mae": 6.203175002964757
+    },
+    "baseline": {
+     "wape": 0.7494303093511995,
+     "bias": 0.07003241636004116,
+     "mae": 6.6119389409651745
+    },
+    "over_forecast_share": 0.6450531109501884,
+    "under_forecast_share": 0.162394684903427,
+    "delta_wape_price_minus_demand": -0.0014235425948408986
+   },
+   {
+    "group": "8-15",
+    "n_points": 891156,
+    "sum_actual": 7207494.0,
+    "share_of_points": 0.2657550864850067,
+    "share_of_abs_error": 0.2664006828432652,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8368329583117957,
+     "bias": 0.09558964050851353,
+     "mae": 6.768139950844205
+    },
+    "demand_only": {
+     "wape": 0.837115736281155,
+     "bias": 0.09528400575540145,
+     "mae": 6.770427003299093
+    },
+    "baseline": {
+     "wape": 0.866594362148388,
+     "bias": 0.15967199247558347,
+     "mae": 7.008844316391669
+    },
+    "over_forecast_share": 0.6443955940374075,
+    "under_forecast_share": 0.16025140379462183,
+    "delta_wape_price_minus_demand": -0.00028277796935927135
+   },
+   {
+    "group": "16-30",
+    "n_points": 1687443,
+    "sum_actual": 13974117.0,
+    "share_of_points": 0.5032189205969765,
+    "share_of_abs_error": 0.5217733963946647,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8453669970954448,
+     "bias": 0.08070132985756584,
+     "mae": 7.0006852529836
+    },
+    "demand_only": {
+     "wape": 0.840186327020435,
+     "bias": 0.07557594504329733,
+     "mae": 6.957782891382891
+    },
+    "baseline": {
+     "wape": 0.8686511954507457,
+     "bias": 0.12149245204578196,
+     "mae": 7.193507239900007
+    },
+    "over_forecast_share": 0.6348848524068664,
+    "under_forecast_share": 0.16464141307291566,
+    "delta_wape_price_minus_demand": 0.0051806700750097745
+   }
+  ],
+  "horizon_day": [
+   {
+    "group": "1",
+    "n_points": 110354,
+    "sum_actual": 938179.0,
+    "share_of_points": 0.032909094270774625,
+    "share_of_abs_error": 0.026892390027454336,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.6489801686389958,
+     "bias": 0.05099172241736319,
+     "mae": 5.5173311853993905
+    },
+    "demand_only": {
+     "wape": 0.6532795330351553,
+     "bias": 0.054101811630827105,
+     "mae": 5.55388240592447
+    },
+    "baseline": {
+     "wape": 0.7327370370111052,
+     "bias": 0.11363728666595246,
+     "mae": 6.22939359376227
+    },
+    "over_forecast_share": 0.64556789966834,
+    "under_forecast_share": 0.16280334197219856,
+    "delta_wape_price_minus_demand": -0.004299364396159522
+   },
+   {
+    "group": "2",
+    "n_points": 110466,
+    "sum_actual": 984047.0,
+    "share_of_points": 0.032942494225088256,
+    "share_of_abs_error": 0.03005039826078709,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.6913884539638951,
+     "bias": -0.019841380890179863,
+     "mae": 6.15898768813761
+    },
+    "demand_only": {
+     "wape": 0.6927787652894754,
+     "bias": -0.02385996063344069,
+     "mae": 6.171372781188894
+    },
+    "baseline": {
+     "wape": 0.7500873839615544,
+     "bias": 0.06172887673757097,
+     "mae": 6.68188619054927
+    },
+    "over_forecast_share": 0.6404504553437257,
+    "under_forecast_share": 0.16798834030380388,
+    "delta_wape_price_minus_demand": -0.0013903113255802069
+   },
+   {
+    "group": "3",
+    "n_points": 110568,
+    "sum_actual": 914367.0,
+    "share_of_points": 0.032972912040623886,
+    "share_of_abs_error": 0.029055900430896307,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.7194515077050875,
+     "bias": 0.08597635204991459,
+     "mae": 5.949666420173809
+    },
+    "demand_only": {
+     "wape": 0.7289442190719105,
+     "bias": 0.0983895127873943,
+     "mae": 6.028168536648267
+    },
+    "baseline": {
+     "wape": 0.7658368804048045,
+     "bias": 0.14263869536737067,
+     "mae": 6.3332607158047525
+    },
+    "over_forecast_share": 0.6486053831126547,
+    "under_forecast_share": 0.15909666449605672,
+    "delta_wape_price_minus_demand": -0.009492711366823059
+   },
+   {
+    "group": "4",
+    "n_points": 110671,
+    "sum_actual": 958390.0,
+    "share_of_points": 0.033003628070037316,
+    "share_of_abs_error": 0.028424200646951746,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.6714809849801168,
+     "bias": 0.020184478858898874,
+     "mae": 5.814898764763074
+    },
+    "demand_only": {
+     "wape": 0.6732270387653406,
+     "bias": 0.019881151782357817,
+     "mae": 5.830019261435379
+    },
+    "baseline": {
+     "wape": 0.7253962047492389,
+     "bias": 0.09015235547843427,
+     "mae": 6.281794405667457
+    },
+    "over_forecast_share": 0.6400863821597347,
+    "under_forecast_share": 0.16777656296590795,
+    "delta_wape_price_minus_demand": -0.0017460537852238556
+   },
+   {
+    "group": "5",
+    "n_points": 110776,
+    "sum_actual": 1100996.0,
+    "share_of_points": 0.033034940527206354,
+    "share_of_abs_error": 0.0340763523000012,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.7007370663081829,
+     "bias": -0.05755185021656091,
+     "mae": 6.964583547492635
+    },
+    "demand_only": {
+     "wape": 0.698087565990341,
+     "bias": -0.06190619629329114,
+     "mae": 6.938250323220748
+    },
+    "baseline": {
+     "wape": 0.7241555145206214,
+     "bias": -0.051049126457338063,
+     "mae": 7.197338095482289
+    },
+    "over_forecast_share": 0.6423683830432585,
+    "under_forecast_share": 0.1644941142485737,
+    "delta_wape_price_minus_demand": 0.0026495003178418353
+   },
+   {
+    "group": "6",
+    "n_points": 110880,
+    "sum_actual": 985889.0,
+    "share_of_points": 0.033065954770497584,
+    "share_of_abs_error": 0.032100111820939844,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.7371676298698734,
+     "bias": 0.04602742580386236,
+     "mae": 6.554522523852629
+    },
+    "demand_only": {
+     "wape": 0.7339304262212594,
+     "bias": 0.0358762043369897,
+     "mae": 6.525738942792669
+    },
+    "baseline": {
+     "wape": 0.7691664720065403,
+     "bias": 0.05974518020484698,
+     "mae": 6.839040078644084
+    },
+    "over_forecast_share": 0.6459145021645022,
+    "under_forecast_share": 0.16079545454545455,
+    "delta_wape_price_minus_demand": 0.0032372036486140177
+   },
+   {
+    "group": "7",
+    "n_points": 110984,
+    "sum_actual": 953007.0,
+    "share_of_points": 0.033096969013788814,
+    "share_of_abs_error": 0.03122656727503944,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.7418496337328184,
+     "bias": 0.0917396985740253,
+     "mae": 6.3701785292908175
+    },
+    "demand_only": {
+     "wape": 0.7419371680661316,
+     "bias": 0.0903502569748628,
+     "mae": 6.370930176666906
+    },
+    "baseline": {
+     "wape": 0.7823963693609772,
+     "bias": 0.09631001237868832,
+     "mae": 6.718348741941152
+    },
+    "over_forecast_share": 0.6523552944568587,
+    "under_forecast_share": 0.15384199524255748,
+    "delta_wape_price_minus_demand": -8.753433331321059e-05
+   },
+   {
+    "group": "8",
+    "n_points": 111082,
+    "sum_actual": 924424.0,
+    "share_of_points": 0.033126193973813244,
+    "share_of_abs_error": 0.03332861291875873,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8162698573469116,
+     "bias": 0.1248861489248478,
+     "mae": 6.792994784105988
+    },
+    "demand_only": {
+     "wape": 0.8157979216579544,
+     "bias": 0.12997006339304293,
+     "mae": 6.789067337018895
+    },
+    "baseline": {
+     "wape": 0.8307521132519476,
+     "bias": 0.13020769253824718,
+     "mae": 6.913516065076416
+    },
+    "over_forecast_share": 0.653976341801552,
+    "under_forecast_share": 0.15223888658828613,
+    "delta_wape_price_minus_demand": 0.0004719356889572035
+   },
+   {
+    "group": "9",
+    "n_points": 111167,
+    "sum_actual": 899249.0,
+    "share_of_points": 0.03315154215342627,
+    "share_of_abs_error": 0.032663162226179564,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8223676096240115,
+     "bias": 0.15707031277745945,
+     "mae": 6.652273161880618
+    },
+    "demand_only": {
+     "wape": 0.8258201465597936,
+     "bias": 0.1657673950430758,
+     "mae": 6.680201327496
+    },
+    "baseline": {
+     "wape": 0.820979682074961,
+     "bias": 0.16184851578036408,
+     "mae": 6.641045977009604
+    },
+    "over_forecast_share": 0.6470445365980911,
+    "under_forecast_share": 0.15897703455162054,
+    "delta_wape_price_minus_demand": -0.00345253693578218
+   },
+   {
+    "group": "10",
+    "n_points": 111240,
+    "sum_actual": 946456.0,
+    "share_of_points": 0.03317331176650569,
+    "share_of_abs_error": 0.033448630311726624,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8001393737749951,
+     "bias": 0.114585007778576,
+     "mae": 6.807773383185785
+    },
+    "demand_only": {
+     "wape": 0.8056516617886335,
+     "bias": 0.12480542480784934,
+     "mae": 6.854673221950942
+    },
+    "baseline": {
+     "wape": 0.8018974054658079,
+     "bias": 0.103898243517899,
+     "mae": 6.8227311289783055
+    },
+    "over_forecast_share": 0.6445792880258899,
+    "under_forecast_share": 0.16089536138079827,
+    "delta_wape_price_minus_demand": -0.0055122880136383445
+   },
+   {
+    "group": "11",
+    "n_points": 111332,
+    "sum_actual": 954661.0,
+    "share_of_points": 0.03320074744326332,
+    "share_of_abs_error": 0.034101425661550305,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8087440282419118,
+     "bias": 0.09543765804261997,
+     "mae": 6.934900861795816
+    },
+    "demand_only": {
+     "wape": 0.8154881187531607,
+     "bias": 0.10907744672484805,
+     "mae": 6.992730777647138
+    },
+    "baseline": {
+     "wape": 0.8173035973946324,
+     "bias": 0.09441059807300876,
+     "mae": 7.008298329252661
+    },
+    "over_forecast_share": 0.6461574390112457,
+    "under_forecast_share": 0.1589569934969281,
+    "delta_wape_price_minus_demand": -0.0067440905112489125
+   },
+   {
+    "group": "12",
+    "n_points": 111451,
+    "sum_actual": 1100703.0,
+    "share_of_points": 0.03323623489472156,
+    "share_of_abs_error": 0.042705143255454665,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8784109988926998,
+     "bias": -0.023993215137041585,
+     "mae": 8.675288886723235
+    },
+    "demand_only": {
+     "wape": 0.8807988761998007,
+     "bias": -0.024782415127359247,
+     "mae": 8.69887183990946
+    },
+    "baseline": {
+     "wape": 0.8559240911778717,
+     "bias": -0.05079652188921387,
+     "mae": 8.453205578521116
+    },
+    "over_forecast_share": 0.6444266987285893,
+    "under_forecast_share": 0.16008828992113125,
+    "delta_wape_price_minus_demand": -0.002387877307100883
+   },
+   {
+    "group": "13",
+    "n_points": 111540,
+    "sum_actual": 781395.0,
+    "share_of_points": 0.033262775929845785,
+    "share_of_abs_error": 0.030299269538313134,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8779085179868655,
+     "bias": 0.12759761124298638,
+     "mae": 6.150200165073936
+    },
+    "demand_only": {
+     "wape": 0.8730434306916841,
+     "bias": 0.09790907113777543,
+     "mae": 6.116117729292886
+    },
+    "baseline": {
+     "wape": 0.9817796596478073,
+     "bias": 0.3370844655609218,
+     "mae": 6.877870872785533
+    },
+    "over_forecast_share": 0.6450152411690874,
+    "under_forecast_share": 0.1590460821230052,
+    "delta_wape_price_minus_demand": 0.004865087295181425
+   },
+   {
+    "group": "14",
+    "n_points": 111627,
+    "sum_actual": 793601.0,
+    "share_of_points": 0.033288720537214406,
+    "share_of_abs_error": 0.028947822356910898,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8258504782999099,
+     "bias": 0.06639516964465943,
+     "mae": 5.871301436294864
+    },
+    "demand_only": {
+     "wape": 0.8178518941166518,
+     "bias": 0.05221595136073313,
+     "mae": 5.814436301458151
+    },
+    "baseline": {
+     "wape": 0.9413236259493925,
+     "bias": 0.3165194045458318,
+     "mae": 6.692246238607719
+    },
+    "over_forecast_share": 0.6330547269029895,
+    "under_forecast_share": 0.17010221541383358,
+    "delta_wape_price_minus_demand": 0.00799858418325805
+   },
+   {
+    "group": "15",
+    "n_points": 111717,
+    "sum_actual": 807005.0,
+    "share_of_points": 0.033315559786216434,
+    "share_of_abs_error": 0.030906616574371274,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8670875910221257,
+     "bias": 0.1322450327205462,
+     "mae": 6.263541102901176
+    },
+    "demand_only": {
+     "wape": 0.8611832114085358,
+     "bias": 0.12964510874350418,
+     "mae": 6.2208899050524575
+    },
+    "baseline": {
+     "wape": 0.9222018855051283,
+     "bias": 0.2946525931896043,
+     "mae": 6.661667719434518
+    },
+    "over_forecast_share": 0.6409767537617372,
+    "under_forecast_share": 0.16165847632858024,
+    "delta_wape_price_minus_demand": 0.005904379613589916
+   },
+   {
+    "group": "16",
+    "n_points": 111793,
+    "sum_actual": 910309.0,
+    "share_of_points": 0.03333822404092926,
+    "share_of_abs_error": 0.03381626390556897,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8410552377953867,
+     "bias": 0.028380068954353906,
+     "mae": 6.848551809704371
+    },
+    "demand_only": {
+     "wape": 0.8403930472736763,
+     "bias": 0.021480525807918278,
+     "mae": 6.843159719040128
+    },
+    "baseline": {
+     "wape": 0.8889258752858888,
+     "bias": 0.14773238094644414,
+     "mae": 7.238353247570261
+    },
+    "over_forecast_share": 0.6409524746629932,
+    "under_forecast_share": 0.16131600368538282,
+    "delta_wape_price_minus_demand": 0.0006621905217104596
+   },
+   {
+    "group": "17",
+    "n_points": 111882,
+    "sum_actual": 898123.0,
+    "share_of_points": 0.03336476507605349,
+    "share_of_abs_error": 0.03435646655540452,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8660847778658233,
+     "bias": 0.09714548895295785,
+     "mae": 6.952420040320934
+    },
+    "demand_only": {
+     "wape": 0.8617662393001634,
+     "bias": 0.0885933955771091,
+     "mae": 6.9177533485188025
+    },
+    "baseline": {
+     "wape": 0.8955540185555831,
+     "bias": 0.16330515527046588,
+     "mae": 7.188981800532668
+    },
+    "over_forecast_share": 0.6429988738134821,
+    "under_forecast_share": 0.15884592695876013,
+    "delta_wape_price_minus_demand": 0.004318538565659891
+   },
+   {
+    "group": "18",
+    "n_points": 111977,
+    "sum_actual": 988347.0,
+    "share_of_points": 0.033393095394444516,
+    "share_of_abs_error": 0.03733732402510061,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8553059093019502,
+     "bias": 0.025483378593339163,
+     "mae": 7.549220192904387
+    },
+    "demand_only": {
+     "wape": 0.8531565934130816,
+     "bias": 0.02248976295579784,
+     "mae": 7.530249601525662
+    },
+    "baseline": {
+     "wape": 0.8644766631937474,
+     "bias": 0.05710961430244299,
+     "mae": 7.630164378734478
+    },
+    "over_forecast_share": 0.637586290041705,
+    "under_forecast_share": 0.1643373192709217,
+    "delta_wape_price_minus_demand": 0.002149315888868575
+   },
+   {
+    "group": "19",
+    "n_points": 112070,
+    "sum_actual": 1019352.0,
+    "share_of_points": 0.033420829285079945,
+    "share_of_abs_error": 0.03651091393212709,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8109353960114143,
+     "bias": 0.018094616991986924,
+     "mae": 7.376002657223407
+    },
+    "demand_only": {
+     "wape": 0.803484764762675,
+     "bias": 0.007577346555049337,
+     "mae": 7.308234156601788
+    },
+    "baseline": {
+     "wape": 0.8047702243006549,
+     "bias": 0.024956164275909225,
+     "mae": 7.319926275375401
+    },
+    "over_forecast_share": 0.6256000713839565,
+    "under_forecast_share": 0.1764611403587044,
+    "delta_wape_price_minus_demand": 0.007450631248739237
+   },
+   {
+    "group": "20",
+    "n_points": 112200,
+    "sum_actual": 959645.0,
+    "share_of_points": 0.03345959708919398,
+    "share_of_abs_error": 0.03403242848582207,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8029159178728644,
+     "bias": 0.06866291879391041,
+     "mae": 6.86732839578525
+    },
+    "demand_only": {
+     "wape": 0.7992733926754599,
+     "bias": 0.06843231376064603,
+     "mae": 6.836173929715168
+    },
+    "baseline": {
+     "wape": 0.8232596450811248,
+     "bias": 0.08872668118624764,
+     "mae": 7.0413280044908735
+    },
+    "over_forecast_share": 0.6271657754010695,
+    "under_forecast_share": 0.17441176470588235,
+    "delta_wape_price_minus_demand": 0.003642525197404489
+   },
+   {
+    "group": "21",
+    "n_points": 112308,
+    "sum_actual": 939088.0,
+    "share_of_points": 0.03349180418799642,
+    "share_of_abs_error": 0.03509982241840501,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8462259915606463,
+     "bias": 0.10591109123102178,
+     "mae": 7.075904423217439
+    },
+    "demand_only": {
+     "wape": 0.8390343389790069,
+     "bias": 0.09775639451464192,
+     "mae": 7.01576984117888
+    },
+    "baseline": {
+     "wape": 0.8625225593876299,
+     "bias": 0.11255932986788951,
+     "mae": 7.212171753127209
+    },
+    "over_forecast_share": 0.6384496206859708,
+    "under_forecast_share": 0.16197421376927734,
+    "delta_wape_price_minus_demand": 0.007191652581639341
+   },
+   {
+    "group": "22",
+    "n_points": 112421,
+    "sum_actual": 924683.0,
+    "share_of_points": 0.03352550235618785,
+    "share_of_abs_error": 0.03461158855436798,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8474545021638914,
+     "bias": 0.12100286836031283,
+     "mae": 6.970466117757479
+    },
+    "demand_only": {
+     "wape": 0.8433191513490499,
+     "bias": 0.11813926748743256,
+     "mae": 6.936452111499573
+    },
+    "baseline": {
+     "wape": 0.8495709171547884,
+     "bias": 0.12989112589609264,
+     "mae": 6.987874012750654
+    },
+    "over_forecast_share": 0.6328355022638119,
+    "under_forecast_share": 0.16710401081648446,
+    "delta_wape_price_minus_demand": 0.00413535081484151
+   },
+   {
+    "group": "23",
+    "n_points": 112513,
+    "sum_actual": 908394.0,
+    "share_of_points": 0.03355293803294548,
+    "share_of_abs_error": 0.034516368119567604,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8602775058397266,
+     "bias": 0.12550914497887902,
+     "mae": 6.945605615704609
+    },
+    "demand_only": {
+     "wape": 0.854079480583165,
+     "bias": 0.11895789133432172,
+     "mae": 6.895564740828736
+    },
+    "baseline": {
+     "wape": 0.8792634909621176,
+     "bias": 0.15015193403630653,
+     "mae": 7.098892391181836
+    },
+    "over_forecast_share": 0.6388772852914775,
+    "under_forecast_share": 0.16082586012283026,
+    "delta_wape_price_minus_demand": 0.006198025256561657
+   },
+   {
+    "group": "24",
+    "n_points": 112609,
+    "sum_actual": 914591.0,
+    "share_of_points": 0.033581566565214306,
+    "share_of_abs_error": 0.03382385179149939,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8373053601811811,
+     "bias": 0.12581616103889828,
+     "mae": 6.800450644917072
+    },
+    "demand_only": {
+     "wape": 0.8315725381682445,
+     "bias": 0.12059970550584348,
+     "mae": 6.753889646971671
+    },
+    "baseline": {
+     "wape": 0.8498842795069332,
+     "bias": 0.14235884233168336,
+     "mae": 6.902614472009569
+    },
+    "over_forecast_share": 0.6347272420499249,
+    "under_forecast_share": 0.16455167881785648,
+    "delta_wape_price_minus_demand": 0.005732822012936567
+   },
+   {
+    "group": "25",
+    "n_points": 112713,
+    "sum_actual": 956233.0,
+    "share_of_points": 0.033612580808505536,
+    "share_of_abs_error": 0.035410341819746914,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8384055102547022,
+     "bias": 0.060518431518576506,
+     "mae": 7.112853142826335
+    },
+    "demand_only": {
+     "wape": 0.8314262967448447,
+     "bias": 0.054614771304495956,
+     "mae": 7.053642987190591
+    },
+    "baseline": {
+     "wape": 0.8650273836259149,
+     "bias": 0.0926114409008858,
+     "mae": 7.338707426177632
+    },
+    "over_forecast_share": 0.6359248711328773,
+    "under_forecast_share": 0.16253670827677374,
+    "delta_wape_price_minus_demand": 0.006979213509857529
+   },
+   {
+    "group": "26",
+    "n_points": 112801,
+    "sum_actual": 939532.0,
+    "share_of_points": 0.033638823629751964,
+    "share_of_abs_error": 0.03513383902651386,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8466458087920894,
+     "bias": 0.08686044397232619,
+     "mae": 7.051806544499156
+    },
+    "demand_only": {
+     "wape": 0.836481656199428,
+     "bias": 0.07007957052335229,
+     "mae": 6.96714819383127
+    },
+    "baseline": {
+     "wape": 0.8580588852519849,
+     "bias": 0.11203356135499004,
+     "mae": 7.146867320135175
+    },
+    "over_forecast_share": 0.6340723929752395,
+    "under_forecast_share": 0.16475031249722963,
+    "delta_wape_price_minus_demand": 0.010164152592661346
+   },
+   {
+    "group": "27",
+    "n_points": 112906,
+    "sum_actual": 865252.0,
+    "share_of_points": 0.033670136086920995,
+    "share_of_abs_error": 0.03254067393013777,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8514745338315902,
+     "bias": 0.13841140978623184,
+     "mae": 6.525251477750086
+    },
+    "demand_only": {
+     "wape": 0.8400783819936893,
+     "bias": 0.13114439267450462,
+     "mae": 6.437917384167393
+    },
+    "baseline": {
+     "wape": 0.8953694518791678,
+     "bias": 0.2074992209980175,
+     "mae": 6.86163896495628
+    },
+    "over_forecast_share": 0.6360069438293802,
+    "under_forecast_share": 0.1613111792110251,
+    "delta_wape_price_minus_demand": 0.01139615183790088
+   },
+   {
+    "group": "28",
+    "n_points": 113007,
+    "sum_actual": 961392.0,
+    "share_of_points": 0.033700255688578824,
+    "share_of_abs_error": 0.03494002218351582,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8228305440742401,
+     "bias": 0.009386100910243849,
+     "mae": 7.000121252919039
+    },
+    "demand_only": {
+     "wape": 0.8193417561843138,
+     "bias": 0.01084740646751792,
+     "mae": 6.970440854651038
+    },
+    "baseline": {
+     "wape": 0.8758514376707514,
+     "bias": 0.08674829410581389,
+     "mae": 7.451189442823533
+    },
+    "over_forecast_share": 0.6244391940322281,
+    "under_forecast_share": 0.1728476997000186,
+    "delta_wape_price_minus_demand": 0.003488787889926237
+   },
+   {
+    "group": "29",
+    "n_points": 113071,
+    "sum_actual": 894010.0,
+    "share_of_points": 0.03371934137675805,
+    "share_of_abs_error": 0.034626700804348945,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.876912922309564,
+     "bias": 0.12852342487341553,
+     "mae": 6.933421670224667
+    },
+    "demand_only": {
+     "wape": 0.8743091939976747,
+     "bias": 0.13226089800107413,
+     "mae": 6.912834966754174
+    },
+    "baseline": {
+     "wape": 0.8997321406894067,
+     "bias": 0.16865707986149664,
+     "mae": 7.1138446736805765
+    },
+    "over_forecast_share": 0.6376612924622582,
+    "under_forecast_share": 0.15851102404683784,
+    "delta_wape_price_minus_demand": 0.002603728311889264
+   },
+   {
+    "group": "30",
+    "n_points": 113172,
+    "sum_actual": 895166.0,
+    "share_of_points": 0.03374946097841588,
+    "share_of_abs_error": 0.03501679084253817,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8856466735004628,
+     "bias": 0.09107647559342583,
+     "mae": 7.00527330197147
+    },
+    "demand_only": {
+     "wape": 0.883990354433978,
+     "bias": 0.09132292464495154,
+     "mae": 6.9921721770159255
+    },
+    "baseline": {
+     "wape": 0.9319881632146743,
+     "bias": 0.16714789878857844,
+     "mae": 7.371824445200466
+    },
+    "over_forecast_share": 0.6360407167850705,
+    "under_forecast_share": 0.15988937192945252,
+    "delta_wape_price_minus_demand": 0.0016563190664847793
+   }
+  ],
+  "fc_x_horizon": [
+   {
+    "group": "BD 1-7",
+    "n_points": 389133,
+    "sum_actual": 4733326.0,
+    "share_of_points": 0.11604486091006526,
+    "share_of_abs_error": 0.13393760785684988,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.6406544594210319,
+     "bias": 0.02467203520129492,
+     "mae": 7.7927762739051065
+    },
+    "demand_only": {
+     "wape": 0.6430790445959679,
+     "bias": 0.02633372263920207,
+     "mae": 7.822268380839596
+    },
+    "baseline": {
+     "wape": 0.6923799709504518,
+     "bias": 0.07209612481701098,
+     "mae": 8.421953723737175
+    },
+    "over_forecast_share": 0.6486625395430354,
+    "under_forecast_share": 0.18873495694274195,
+    "delta_wape_price_minus_demand": -0.0024245851749359337
+   },
+   {
+    "group": "BD 8-15",
+    "n_points": 447402,
+    "sum_actual": 5094732.0,
+    "share_of_points": 0.1334214853556111,
+    "share_of_abs_error": 0.17163627355243943,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.7627381435955227,
+     "bias": 0.06764608938013751,
+     "mae": 8.685581262034377
+    },
+    "demand_only": {
+     "wape": 0.7636563877492933,
+     "bias": 0.06748477983214325,
+     "mae": 8.696037647732314
+    },
+    "baseline": {
+     "wape": 0.7944582408723936,
+     "bias": 0.13833672273816597,
+     "mae": 9.04678973816901
+    },
+    "over_forecast_share": 0.6467762772629537,
+    "under_forecast_share": 0.18860666693488182,
+    "delta_wape_price_minus_demand": -0.0009182441537706199
+   },
+   {
+    "group": "BD 16-30",
+    "n_points": 847350,
+    "sum_actual": 9794297.0,
+    "share_of_points": 0.2526915293540866,
+    "share_of_abs_error": 0.33901442758485323,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.7836689574684921,
+     "bias": 0.06152674906000628,
+     "mae": 9.058224487079459
+    },
+    "demand_only": {
+     "wape": 0.7780814406846667,
+     "bias": 0.055717234770678255,
+     "mae": 8.993639842159094
+    },
+    "baseline": {
+     "wape": 0.8091098789685537,
+     "bias": 0.11024823835798152,
+     "mae": 9.35228944385681
+    },
+    "over_forecast_share": 0.638293503274916,
+    "under_forecast_share": 0.19235970968312976,
+    "delta_wape_price_minus_demand": 0.005587516783825408
+   },
+   {
+    "group": "HN 1-7",
+    "n_points": 385566,
+    "sum_actual": 2101549.0,
+    "share_of_points": 0.11498113200795157,
+    "share_of_abs_error": 0.0778883129052201,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8391131142482834,
+     "bias": 0.03756011339179222,
+     "mae": 4.573632856982632
+    },
+    "demand_only": {
+     "wape": 0.8382820052164096,
+     "bias": 0.030913243315044633,
+     "mae": 4.56910285082331
+    },
+    "baseline": {
+     "wape": 0.8779249816434264,
+     "bias": 0.06538431874452273,
+     "mae": 4.78517910616538
+    },
+    "over_forecast_share": 0.6414102903264292,
+    "under_forecast_share": 0.13581073019923956,
+    "delta_wape_price_minus_demand": 0.0008311090318737779
+   },
+   {
+    "group": "HN 8-15",
+    "n_points": 443754,
+    "sum_actual": 2112762.0,
+    "share_of_points": 0.1323336011293956,
+    "share_of_abs_error": 0.09476440929082575,
+    "enough_sample": true,
+    "price": {
+     "wape": 1.0155058157226482,
+     "bias": 0.16297295397561176,
+     "mae": 4.834935793790734
+    },
+    "demand_only": {
+     "wape": 1.0142562252072282,
+     "bias": 0.16231929221286998,
+     "mae": 4.828986354785025
+    },
+    "baseline": {
+     "wape": 1.040544009775849,
+     "bias": 0.21112004079330854,
+     "mae": 4.954145412057226
+    },
+    "over_forecast_share": 0.6419953397603176,
+    "under_forecast_share": 0.1316630385303569,
+    "delta_wape_price_minus_demand": 0.0012495905154199516
+   },
+   {
+    "group": "HN 16-30",
+    "n_points": 840093,
+    "sum_actual": 4179820.0,
+    "share_of_points": 0.25052739124288986,
+    "share_of_abs_error": 0.18275896880981155,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.9899399510561766,
+     "bias": 0.1256318625555756,
+     "mae": 4.925372317378705
+    },
+    "demand_only": {
+     "wape": 0.9857126180864992,
+     "bias": 0.12210955329604058,
+     "mae": 4.904339537801542
+    },
+    "baseline": {
+     "wape": 1.0081704420684434,
+     "bias": 0.14784027764348348,
+     "mae": 5.016076764318381
+    },
+    "over_forecast_share": 0.6314467564900552,
+    "under_forecast_share": 0.1366836766881762,
+    "delta_wape_price_minus_demand": 0.0042273329696773665
+   }
+  ],
+  "target_month": [
+   {
+    "group": "2026-03",
+    "n_points": 171995,
+    "sum_actual": 2492001.0,
+    "share_of_points": 0.05129129591226309,
+    "share_of_abs_error": 0.07901488789173164,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.7178743700521417,
+     "bias": 0.07053237882892398,
+     "mae": 10.401137521697185
+    },
+    "demand_only": {
+     "wape": 0.7161518401668111,
+     "bias": 0.07167098283782188,
+     "mae": 10.376180132256946
+    },
+    "baseline": {
+     "wape": 0.693937027193746,
+     "bias": -0.07668829564485917,
+     "mae": 10.054314170201703
+    },
+    "over_forecast_share": 0.7127358353440507,
+    "under_forecast_share": 0.18577284223378587,
+    "delta_wape_price_minus_demand": 0.0017225298853306148
+   },
+   {
+    "group": "2026-04",
+    "n_points": 443197,
+    "sum_actual": 4451855.0,
+    "share_of_points": 0.13216749599946082,
+    "share_of_abs_error": 0.17647254279903635,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8974781107971065,
+     "bias": 0.2907169406124282,
+     "mae": 9.015048420775981
+    },
+    "demand_only": {
+     "wape": 0.8839380751194332,
+     "bias": 0.27211533858192344,
+     "mae": 8.879040560768292
+    },
+    "baseline": {
+     "wape": 0.8809020088524401,
+     "bias": 0.24511426967658076,
+     "mae": 8.84854367836375
+    },
+    "over_forecast_share": 0.7038675803310943,
+    "under_forecast_share": 0.16412340336238737,
+    "delta_wape_price_minus_demand": 0.013540035677673257
+   },
+   {
+    "group": "2026-05",
+    "n_points": 473127,
+    "sum_actual": 4895073.0,
+    "share_of_points": 0.1410930373620239,
+    "share_of_abs_error": 0.1502308524137001,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.6948446065770411,
+     "bias": -0.06416938811885496,
+     "mae": 7.189010715623704
+    },
+    "demand_only": {
+     "wape": 0.6955734680210638,
+     "bias": -0.06143120635862592,
+     "mae": 7.196551671805398
+    },
+    "baseline": {
+     "wape": 0.7402270623574065,
+     "bias": 0.05114684971548661,
+     "mae": 7.658547296635063
+    },
+    "over_forecast_share": 0.6331133078433486,
+    "under_forecast_share": 0.19222111610624631,
+    "delta_wape_price_minus_demand": -0.0007288614440227326
+   },
+   {
+    "group": "2026-06",
+    "n_points": 473452,
+    "sum_actual": 4792683.0,
+    "share_of_points": 0.14118995687230898,
+    "share_of_abs_error": 0.1551789101536077,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.7330637176284089,
+     "bias": -0.03977525362680752,
+     "mae": 7.4206931587457134
+    },
+    "demand_only": {
+     "wape": 0.7280226269263508,
+     "bias": -0.045674018867055216,
+     "mae": 7.369662959888783
+    },
+    "baseline": {
+     "wape": 0.7417119049355017,
+     "bias": -0.006636422935559082,
+     "mae": 7.508237451065779
+    },
+    "over_forecast_share": 0.6053031775132431,
+    "under_forecast_share": 0.18959049703032196,
+    "delta_wape_price_minus_demand": 0.00504109070205816
+   },
+   {
+    "group": "2026-07",
+    "n_points": 508074,
+    "sum_actual": 4211796.0,
+    "share_of_points": 0.15151471774951109,
+    "share_of_abs_error": 0.14586246765817001,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.7840864720042141,
+     "bias": 0.08966657696637675,
+     "mae": 6.499864717425928
+    },
+    "demand_only": {
+     "wape": 0.7870381177454232,
+     "bias": 0.09535946690877346,
+     "mae": 6.524333062049431
+    },
+    "baseline": {
+     "wape": 0.823358508156523,
+     "bias": 0.15370346995636003,
+     "mae": 6.82541927203441
+    },
+    "over_forecast_share": 0.6029849982482867,
+    "under_forecast_share": 0.1810189066946941,
+    "delta_wape_price_minus_demand": -0.002951645741209097
+   },
+   {
+    "group": "2026-08",
+    "n_points": 519474,
+    "sum_actual": 3393105.0,
+    "share_of_points": 0.15491435595643452,
+    "share_of_abs_error": 0.1376477764375084,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.9184587019641159,
+     "bias": 0.17351891566560232,
+     "mae": 5.999196906732487
+    },
+    "demand_only": {
+     "wape": 0.9215977849330345,
+     "bias": 0.176303214356938,
+     "mae": 6.019700797432025
+    },
+    "baseline": {
+     "wape": 0.9751986494035474,
+     "bias": 0.24757645430615316,
+     "mae": 6.369811411705733
+    },
+    "over_forecast_share": 0.6451891721241102,
+    "under_forecast_share": 0.14113892129346223,
+    "delta_wape_price_minus_demand": -0.0031390829689185162
+   },
+   {
+    "group": "2026-09",
+    "n_points": 507662,
+    "sum_actual": 2573283.0,
+    "share_of_points": 0.15139185363185736,
+    "share_of_abs_error": 0.11154554420631482,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.9814143592713058,
+     "bias": 0.07746264825376718,
+     "mae": 4.974681750197461
+    },
+    "demand_only": {
+     "wape": 0.983557095621717,
+     "bias": 0.06985406047594832,
+     "mae": 4.985543045752368
+    },
+    "baseline": {
+     "wape": 1.081619788600878,
+     "bias": 0.23812083947035714,
+     "mae": 5.4826120814050165
+    },
+    "over_forecast_share": 0.6513723698051066,
+    "under_forecast_share": 0.11408574996749805,
+    "delta_wape_price_minus_demand": -0.0021427363504111785
+   },
+   {
+    "group": "2026-10",
+    "n_points": 256317,
+    "sum_actual": 1206690.0,
+    "share_of_points": 0.07643728651614023,
+    "share_of_abs_error": 0.0440470184399309,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8264346825144144,
+     "bias": -0.0982888390752342,
+     "mae": 3.890691866100644
+    },
+    "demand_only": {
+     "wape": 0.8230693385062287,
+     "bias": -0.09740469888695813,
+     "mae": 3.874848488715462
+    },
+    "baseline": {
+     "wape": 0.9261624500648558,
+     "bias": 0.089838679883549,
+     "mae": 4.360190572099239
+    },
+    "over_forecast_share": 0.5947713183284761,
+    "under_forecast_share": 0.1476101858245844,
+    "delta_wape_price_minus_demand": 0.0033653440081857777
+   }
+  ],
+  "fold": [
+   {
+    "group": "6",
+    "n_points": 435871,
+    "sum_actual": 5174104.0,
+    "share_of_points": 0.1299827811306958,
+    "share_of_abs_error": 0.1946688627455176,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8518224270038612,
+     "bias": 0.2169021945563717,
+     "mae": 10.111748262330796
+    },
+    "demand_only": {
+     "wape": 0.8333731969050955,
+     "bias": 0.19620341322904622,
+     "mae": 9.892742558232692
+    },
+    "baseline": {
+     "wape": 0.8242655507778234,
+     "bias": 0.11173533164617251,
+     "mae": 9.784628211883192
+    },
+    "over_forecast_share": 0.7161224307191807,
+    "under_forecast_share": 0.1725923495713181,
+    "delta_wape_price_minus_demand": 0.018449230098765756
+   },
+   {
+    "group": "7",
+    "n_points": 451933,
+    "sum_actual": 4637090.0,
+    "share_of_points": 0.13477269243592427,
+    "share_of_abs_error": 0.1507861046179334,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.7362130797815858,
+     "bias": 0.0375088688786246,
+     "mae": 7.5539655438403335
+    },
+    "demand_only": {
+     "wape": 0.7455725791058126,
+     "bias": 0.045341848156878896,
+     "mae": 7.6499993380562445
+    },
+    "baseline": {
+     "wape": 0.7843718069546866,
+     "bias": 0.12771568547513745,
+     "mae": 8.048101515736862
+    },
+    "over_forecast_share": 0.6596707919094202,
+    "under_forecast_share": 0.18299172664974675,
+    "delta_wape_price_minus_demand": -0.009359499324226861
+   },
+   {
+    "group": "8",
+    "n_points": 466386,
+    "sum_actual": 4917073.0,
+    "share_of_points": 0.13908277761177204,
+    "share_of_abs_error": 0.1558310821452847,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.7175219029285056,
+     "bias": -0.08115205370892987,
+     "mae": 7.564780194513505
+    },
+    "demand_only": {
+     "wape": 0.7113125496684678,
+     "bias": -0.08384694503244787,
+     "mae": 7.499315443722543
+    },
+    "baseline": {
+     "wape": 0.7089230361312686,
+     "bias": -0.05767152705181455,
+     "mae": 7.474122979761582
+    },
+    "over_forecast_share": 0.6129472153966886,
+    "under_forecast_share": 0.1895061172505178,
+    "delta_wape_price_minus_demand": 0.006209353260037798
+   },
+   {
+    "group": "9",
+    "n_points": 484388,
+    "sum_actual": 4413596.0,
+    "share_of_points": 0.1444512238399331,
+    "share_of_abs_error": 0.14728929547879777,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.7555554449342566,
+     "bias": 0.039251360039769624,
+     "mae": 6.884391210228278
+    },
+    "demand_only": {
+     "wape": 0.7563883660900133,
+     "bias": 0.04144447130386453,
+     "mae": 6.891980534244073
+    },
+    "baseline": {
+     "wape": 0.7957100501506029,
+     "bias": 0.11642503167968422,
+     "mae": 7.2502677492103444
+    },
+    "over_forecast_share": 0.5899093288851086,
+    "under_forecast_share": 0.19319842770671444,
+    "delta_wape_price_minus_demand": -0.0008329211557566163
+   },
+   {
+    "group": "10",
+    "n_points": 498510,
+    "sum_actual": 3684366.0,
+    "share_of_points": 0.148662600222229,
+    "share_of_abs_error": 0.13335552950774945,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8194755387450302,
+     "bias": 0.16351489832432736,
+     "mae": 6.0565441270664016
+    },
+    "demand_only": {
+     "wape": 0.8230215662417125,
+     "bias": 0.16677822188411973,
+     "mae": 6.082751952674397
+    },
+    "baseline": {
+     "wape": 0.8621435384388892,
+     "bias": 0.20215053627732016,
+     "mae": 6.371892921193028
+    },
+    "over_forecast_share": 0.6247016108001846,
+    "under_forecast_share": 0.16191851718119998,
+    "delta_wape_price_minus_demand": -0.0035460274966823135
+   },
+   {
+    "group": "11",
+    "n_points": 505446,
+    "sum_actual": 2639117.0,
+    "share_of_points": 0.15073101167865188,
+    "share_of_abs_error": 0.12838954192042604,
+    "enough_sample": true,
+    "price": {
+     "wape": 1.1014346563352773,
+     "bias": 0.2770528605676725,
+     "mae": 5.750990068026233
+    },
+    "demand_only": {
+     "wape": 1.1057202817999605,
+     "bias": 0.28060000631049914,
+     "mae": 5.773366873895661
+    },
+    "baseline": {
+     "wape": 1.1834255453103444,
+     "bias": 0.4178514037279285,
+     "mae": 6.179094255099061
+    },
+    "over_forecast_share": 0.677963620248256,
+    "under_forecast_share": 0.10952901002283132,
+    "delta_wape_price_minus_demand": -0.0042856254646832515
+   },
+   {
+    "group": "12",
+    "n_points": 510764,
+    "sum_actual": 2551140.0,
+    "share_of_points": 0.1523169130807939,
+    "share_of_abs_error": 0.08967958358429098,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.7958789585413332,
+     "bias": -0.15351272078009173,
+     "mae": 3.9752187826337346
+    },
+    "demand_only": {
+     "wape": 0.793491985106355,
+     "bias": -0.16408318178326983,
+     "mae": 3.9632964400079618
+    },
+    "baseline": {
+     "wape": 0.9044628728568932,
+     "bias": 0.0309880575967446,
+     "mae": 4.51756860988663
+    },
+    "over_forecast_share": 0.6056378288211385,
+    "under_forecast_share": 0.1379619550320696,
+    "delta_wape_price_minus_demand": 0.002386973434978179
+   }
+  ],
+  "method": [
+   {
+    "group": "LIGHTGBM",
+    "n_points": 1566570,
+    "sum_actual": 27012714.0,
+    "share_of_points": 0.4671729145456205,
+    "share_of_abs_error": 0.9361153176334045,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.7846010109512068,
+     "bias": 0.08414081383692985,
+     "mae": 13.5290492687437
+    },
+    "demand_only": {
+     "wape": 0.7823566073138609,
+     "bias": 0.08118187374216347,
+     "mae": 13.490348518980724
+    },
+    "baseline": {
+     "wape": 0.8166703543481679,
+     "bias": 0.13281569665941115,
+     "mae": 14.082028070425016
+    },
+    "over_forecast_share": 0.7371186732798407,
+    "under_forecast_share": 0.26288132672015935,
+    "delta_wape_price_minus_demand": 0.002244403637345904
+   },
+   {
+    "group": "FALLBACK",
+    "n_points": 1786728,
+    "sum_actual": 1003772.0,
+    "share_of_points": 0.5328270854543795,
+    "share_of_abs_error": 0.06388468236659534,
+    "enough_sample": true,
+    "price": {
+     "wape": 1.4409516049242141,
+     "bias": -0.25948616773742517,
+     "mae": 0.8095171029826522
+    },
+    "demand_only": {
+     "wape": 1.4409516049242141,
+     "bias": -0.25948616773742517,
+     "mae": 0.8095171029826522
+    },
+    "baseline": {
+     "wape": 1.4409516049242141,
+     "bias": -0.25948616773742517,
+     "mae": 0.8095171029826522
+    },
+    "over_forecast_share": 0.5544005578912963,
+    "under_forecast_share": 0.07534274942800472,
+    "delta_wape_price_minus_demand": 0.0
+   }
+  ],
+  "demand_class_zero_share_28": [
+   {
+    "group": "regular (<30% zero days)",
+    "n_points": 611340,
+    "sum_actual": 24069068.0,
+    "share_of_points": 0.18231007205443717,
+    "share_of_abs_error": 0.7670633922150449,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.7215388419108523,
+     "bias": 0.09936051868855159,
+     "mae": 28.407706759893927
+    },
+    "demand_only": {
+     "wape": 0.7191898143515032,
+     "bias": 0.0958617772794062,
+     "mae": 28.315223192550313
+    },
+    "baseline": {
+     "wape": 0.7513244488739748,
+     "bias": 0.15198153812378393,
+     "mae": 29.5803959335398
+    },
+    "over_forecast_share": 0.6788104818922367,
+    "under_forecast_share": 0.3208345601465633,
+    "delta_wape_price_minus_demand": 0.0023490275593490706
+   },
+   {
+    "group": "intermittent (30-70%)",
+    "n_points": 628020,
+    "sum_actual": 2454489.0,
+    "share_of_points": 0.1872842795361462,
+    "share_of_abs_error": 0.13736138120648694,
+    "enough_sample": true,
+    "price": {
+     "wape": 1.267042817076235,
+     "bias": 0.020765098159248343,
+     "mae": 4.951980282542962
+    },
+    "demand_only": {
+     "wape": 1.2628786365168942,
+     "bias": 0.019727266591622186,
+     "mae": 4.935705426046488
+    },
+    "baseline": {
+     "wape": 1.3146598030238619,
+     "bias": 0.048713382366890406,
+     "mae": 5.138081629986681
+    },
+    "over_forecast_share": 0.7496910926403618,
+    "under_forecast_share": 0.25005891532116814,
+    "delta_wape_price_minus_demand": 0.004164180559340647
+   },
+   {
+    "group": "rare (>=70%)",
+    "n_points": 2067540,
+    "sum_actual": 1365392.0,
+    "share_of_points": 0.6165691209072381,
+    "share_of_abs_error": 0.08994211355779548,
+    "enough_sample": true,
+    "price": {
+     "wape": 1.4913976936129847,
+     "bias": -0.22157665747544644,
+     "mae": 0.9849108020534647
+    },
+    "demand_only": {
+     "wape": 1.495889008840097,
+     "bias": -0.2165745858837949,
+     "mae": 0.9878768418304833
+    },
+    "baseline": {
+     "wape": 1.5151951332578795,
+     "bias": -0.23644195806696916,
+     "mae": 1.0006264997964938
+    },
+    "over_forecast_share": 0.6091809590140941,
+    "under_forecast_share": 0.08866865937297465,
+    "delta_wape_price_minus_demand": -0.004491315227112214
+   },
+   {
+    "group": "no history",
+    "n_points": 46398,
+    "sum_actual": 127537.0,
+    "share_of_points": 0.013836527502178453,
+    "share_of_abs_error": 0.005633113020672516,
+    "enough_sample": true,
+    "price": {
+     "wape": 1.0,
+     "bias": -1.0,
+     "mae": 2.748760722444933
+    },
+    "demand_only": {
+     "wape": 1.0,
+     "bias": -1.0,
+     "mae": 2.748760722444933
+    },
+    "baseline": {
+     "wape": 1.0,
+     "bias": -1.0,
+     "mae": 2.748760722444933
+    },
+    "over_forecast_share": 0.0,
+    "under_forecast_share": 0.21406095090305616,
+    "delta_wape_price_minus_demand": 0.0
+   }
+  ],
+  "volume_class_mean_56d": [
+   {
+    "group": "<1/day",
+    "n_points": 1873470,
+    "sum_actual": 654016.0,
+    "share_of_points": 0.5586947536425334,
+    "share_of_abs_error": 0.041864074326866924,
+    "enough_sample": true,
+    "price": {
+     "wape": 1.4492418003342342,
+     "bias": -0.31622986345709975,
+     "mae": 0.5059207381422679
+    },
+    "demand_only": {
+     "wape": 1.449999216289761,
+     "bias": -0.3154976860787367,
+     "mae": 0.5061851470485059
+    },
+    "baseline": {
+     "wape": 1.4350919897379675,
+     "bias": -0.3406883098496825,
+     "mae": 0.500981132743234
+    },
+    "over_forecast_share": 0.5847368786262924,
+    "under_forecast_share": 0.08815673589649153,
+    "delta_wape_price_minus_demand": -0.0007574159555268078
+   },
+   {
+    "group": "1-5/day",
+    "n_points": 774150,
+    "sum_actual": 1648187.0,
+    "share_of_points": 0.23086227349910446,
+    "share_of_abs_error": 0.09702990734517486,
+    "enough_sample": true,
+    "price": {
+     "wape": 1.3328671503277174,
+     "bias": 0.0718705663464237,
+     "mae": 2.8377114382189363
+    },
+    "demand_only": {
+     "wape": 1.3312945364465747,
+     "bias": 0.06694066350140038,
+     "mae": 2.8343632992860175
+    },
+    "baseline": {
+     "wape": 1.3061266143992483,
+     "bias": 0.02693129430909155,
+     "mae": 2.7807800893972145
+    },
+    "over_forecast_share": 0.7595246399276626,
+    "under_forecast_share": 0.22709681586255895,
+    "delta_wape_price_minus_demand": 0.0015726138811427148
+   },
+   {
+    "group": "5-20/day",
+    "n_points": 406770,
+    "sum_actual": 3419020.0,
+    "share_of_points": 0.12130445907282919,
+    "share_of_abs_error": 0.1555780488883512,
+    "enough_sample": true,
+    "price": {
+     "wape": 1.0302305203468254,
+     "bias": 0.1302109614542864,
+     "mae": 8.659386763222958
+    },
+    "demand_only": {
+     "wape": 1.0271111710979548,
+     "bias": 0.12095732022522979,
+     "mae": 8.633167726743196
+    },
+    "baseline": {
+     "wape": 1.0257273030777274,
+     "bias": 0.11630549216710993,
+     "mae": 8.621535914076288
+    },
+    "over_forecast_share": 0.716476141308356,
+    "under_forecast_share": 0.27941342773557537,
+    "delta_wape_price_minus_demand": 0.0031193492488705843
+   },
+   {
+    "group": ">=20/day",
+    "n_points": 252510,
+    "sum_actual": 22167726.0,
+    "share_of_points": 0.07530198628335448,
+    "share_of_abs_error": 0.6998948564189345,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.7148244343354397,
+     "bias": 0.08043735140693313,
+     "mae": 62.75407785217623
+    },
+    "demand_only": {
+     "wape": 0.7126651818940318,
+     "bias": 0.0786038718687999,
+     "mae": 62.564518165486746
+    },
+    "baseline": {
+     "wape": 0.7570030591287339,
+     "bias": 0.14595820390694728,
+     "mae": 66.45691812572798
+    },
+    "over_forecast_share": 0.6748128786978733,
+    "under_forecast_share": 0.32428022652568217,
+    "delta_wape_price_minus_demand": 0.0021592524414079106
+   },
+   {
+    "group": "no history",
+    "n_points": 46398,
+    "sum_actual": 127537.0,
+    "share_of_points": 0.013836527502178453,
+    "share_of_abs_error": 0.005633113020672516,
+    "enough_sample": true,
+    "price": {
+     "wape": 1.0,
+     "bias": -1.0,
+     "mae": 2.748760722444933
+    },
+    "demand_only": {
+     "wape": 1.0,
+     "bias": -1.0,
+     "mae": 2.748760722444933
+    },
+    "baseline": {
+     "wape": 1.0,
+     "bias": -1.0,
+     "mae": 2.748760722444933
+    },
+    "over_forecast_share": 0.0,
+    "under_forecast_share": 0.21406095090305616,
+    "delta_wape_price_minus_demand": 0.0
+   }
+  ],
+  "price_vs_28d_mean_at_origin": [
+   {
+    "group": "<0.97 (cheaper)",
+    "n_points": 284370,
+    "sum_actual": 1876979.0,
+    "share_of_points": 0.08480308043007212,
+    "share_of_abs_error": 0.07469685665366978,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.901012145025676,
+     "bias": 0.1207696802293478,
+     "mae": 5.947114234828386
+    },
+    "demand_only": {
+     "wape": 0.8926785794864276,
+     "bias": 0.10340121755171894,
+     "mae": 5.892108687434876
+    },
+    "baseline": {
+     "wape": 0.9224441734921335,
+     "bias": 0.08116993580860524,
+     "mae": 6.0885759479449
+    },
+    "over_forecast_share": 0.8461054260294687,
+    "under_forecast_share": 0.15362731652424658,
+    "delta_wape_price_minus_demand": 0.008333565539248355
+   },
+   {
+    "group": "0.97-0.99",
+    "n_points": 273600,
+    "sum_actual": 2691372.0,
+    "share_of_points": 0.08159131696616287,
+    "share_of_abs_error": 0.10514677821702391,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.884524715290174,
+     "bias": 0.11037321039150258,
+     "mae": 8.700968757455943
+    },
+    "demand_only": {
+     "wape": 0.881995138965167,
+     "bias": 0.11103236822305919,
+     "mae": 8.676085603607309
+    },
+    "baseline": {
+     "wape": 0.932983270821211,
+     "bias": 0.15996696375597091,
+     "mae": 9.177650042239124
+    },
+    "over_forecast_share": 0.8097331871345029,
+    "under_forecast_share": 0.19021929824561404,
+    "delta_wape_price_minus_demand": 0.0025295763250069436
+   },
+   {
+    "group": "0.99-1.01 (stable)",
+    "n_points": 2269800,
+    "sum_actual": 18839298.0,
+    "share_of_points": 0.6768858598311275,
+    "share_of_abs_error": 0.6332596029913948,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.7610352983191544,
+     "bias": 0.06380813288993419,
+     "mae": 6.316578893978963
+    },
+    "demand_only": {
+     "wape": 0.7582170473169931,
+     "bias": 0.05792201694300399,
+     "mae": 6.2931874628094695
+    },
+    "baseline": {
+     "wape": 0.7823012489645647,
+     "bias": 0.10436905552307009,
+     "mae": 6.493085890834269
+    },
+    "over_forecast_share": 0.5725292977354833,
+    "under_forecast_share": 0.1521508502951802,
+    "delta_wape_price_minus_demand": 0.002818251002161265
+   },
+   {
+    "group": "1.01-1.03",
+    "n_points": 284700,
+    "sum_actual": 2482444.0,
+    "share_of_points": 0.08490149100974623,
+    "share_of_abs_error": 0.1033934305151701,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.9429772539958259,
+     "bias": 0.12257816063995776,
+     "mae": 8.222297949836367
+    },
+    "demand_only": {
+     "wape": 0.9383253824911563,
+     "bias": 0.11813188290186827,
+     "mae": 8.181735917853445
+    },
+    "baseline": {
+     "wape": 0.9899903815990918,
+     "bias": 0.21010003708725192,
+     "mae": 8.632229304033634
+    },
+    "over_forecast_share": 0.7934527572883737,
+    "under_forecast_share": 0.20637864418686336,
+    "delta_wape_price_minus_demand": 0.0046518715046696135
+   },
+   {
+    "group": ">=1.03 (dearer)",
+    "n_points": 194430,
+    "sum_actual": 1998856.0,
+    "share_of_points": 0.05798172426071289,
+    "share_of_abs_error": 0.07787021860206884,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.882018344715102,
+     "bias": 0.05493763381070432,
+     "mae": 9.067672995133723
+    },
+    "demand_only": {
+     "wape": 0.8952581207785837,
+     "bias": 0.09137103678406855,
+     "mae": 9.203785764887089
+    },
+    "baseline": {
+     "wape": 0.9712141129305903,
+     "bias": 0.19215906070406003,
+     "mae": 9.9846585244869
+    },
+    "over_forecast_share": 0.8112842668312503,
+    "under_forecast_share": 0.18859229542766034,
+    "delta_wape_price_minus_demand": -0.0132397760634817
+   },
+   {
+    "group": "no price",
+    "n_points": 46398,
+    "sum_actual": 127537.0,
+    "share_of_points": 0.013836527502178453,
+    "share_of_abs_error": 0.005633113020672516,
+    "enough_sample": true,
+    "price": {
+     "wape": 1.0,
+     "bias": -1.0,
+     "mae": 2.748760722444933
+    },
+    "demand_only": {
+     "wape": 1.0,
+     "bias": -1.0,
+     "mae": 2.748760722444933
+    },
+    "baseline": {
+     "wape": 1.0,
+     "bias": -1.0,
+     "mae": 2.748760722444933
+    },
+    "over_forecast_share": 0.0,
+    "under_forecast_share": 0.21406095090305616,
+    "delta_wape_price_minus_demand": 0.0
+   }
+  ],
+  "price_change_frequency_28d": [
+   {
+    "group": "no change",
+    "n_points": 1279290,
+    "sum_actual": 9231094.0,
+    "share_of_points": 0.38150203173114944,
+    "share_of_abs_error": 0.2706998413540465,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.6639304084053228,
+     "bias": 0.03690190833275317,
+     "mae": 4.790785521224996
+    },
+    "demand_only": {
+     "wape": 0.6610244903545694,
+     "bias": 0.029103809172963974,
+     "mae": 4.76981701315974
+    },
+    "baseline": {
+     "wape": 0.6843059729022346,
+     "bias": 0.08548346135739752,
+     "mae": 4.93781141150324
+    },
+    "over_forecast_share": 0.4100219653088823,
+    "under_forecast_share": 0.1016735845664392,
+    "delta_wape_price_minus_demand": 0.0029059180507533533
+   },
+   {
+    "group": "<25% of days",
+    "n_points": 1665420,
+    "sum_actual": 13545308.0,
+    "share_of_points": 0.4966513563661804,
+    "share_of_abs_error": 0.5132182414983719,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.85782941033807,
+     "bias": 0.08355800562533944,
+     "mae": 6.976956908460053
+    },
+    "demand_only": {
+     "wape": 0.8574814950902017,
+     "bias": 0.08600133740929064,
+     "mae": 6.974127220339175
+    },
+    "baseline": {
+     "wape": 0.888475387329994,
+     "bias": 0.1243723816878113,
+     "mae": 7.226208867315192
+    },
+    "over_forecast_share": 0.8161718965786409,
+    "under_forecast_share": 0.18370921449244035,
+    "delta_wape_price_minus_demand": 0.0003479152478683689
+   },
+   {
+    "group": "25-50%",
+    "n_points": 317340,
+    "sum_actual": 4179490.0,
+    "share_of_points": 0.09463519198114811,
+    "share_of_abs_error": 0.17323166502707324,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.938408042944232,
+     "bias": 0.1512333394025949,
+     "mae": 12.359195283938325
+    },
+    "demand_only": {
+     "wape": 0.9351644079497706,
+     "bias": 0.14545709358124123,
+     "mae": 12.316475362015462
+    },
+    "baseline": {
+     "wape": 1.0030116507036786,
+     "bias": 0.22585190077767578,
+     "mae": 13.210049675425466
+    },
+    "over_forecast_share": 0.7237347954874898,
+    "under_forecast_share": 0.2761612151005231,
+    "delta_wape_price_minus_demand": 0.003243634994461342
+   },
+   {
+    "group": ">=50%",
+    "n_points": 41160,
+    "sum_actual": 923872.0,
+    "share_of_points": 0.012274483210260466,
+    "share_of_abs_error": 0.03603585360826941,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8831017413379225,
+     "bias": 0.01981514103941225,
+     "mae": 19.821986685455517
+    },
+    "demand_only": {
+     "wape": 0.866288512167532,
+     "bias": 0.0015247977130203568,
+     "mae": 19.444599132974783
+    },
+    "baseline": {
+     "wape": 0.8756027807295133,
+     "bias": 0.021621647086978193,
+     "mae": 19.653665992180194
+    },
+    "over_forecast_share": 0.6947035957240039,
+    "under_forecast_share": 0.30471331389698736,
+    "delta_wape_price_minus_demand": 0.01681322917039052
+   },
+   {
+    "group": "no price",
+    "n_points": 50088,
+    "sum_actual": 136722.0,
+    "share_of_points": 0.01493693671126157,
+    "share_of_abs_error": 0.0068143985122387785,
+    "enough_sample": true,
+    "price": {
+     "wape": 1.1284358040403153,
+     "bias": -0.8077851406503709,
+     "mae": 3.080218814885801
+    },
+    "demand_only": {
+     "wape": 1.1284358040403153,
+     "bias": -0.8077851406503709,
+     "mae": 3.080218814885801
+    },
+    "baseline": {
+     "wape": 1.1284358040403153,
+     "bias": -0.8077851406503709,
+     "mae": 3.080218814885801
+    },
+    "over_forecast_share": 0.06470611723366874,
+    "under_forecast_share": 0.20438029068838845,
+    "delta_wape_price_minus_demand": 0.0
+   }
+  ],
+  "EXPOST_price_on_target_day_vs_origin": [
+   {
+    "group": "dropped >3%",
+    "n_points": 290584,
+    "sum_actual": 2824502.0,
+    "share_of_points": 0.08665618146672321,
+    "share_of_abs_error": 0.10994795758573066,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.8813187541244134,
+     "bias": -0.31145552990277714,
+     "mae": 8.566495690271708
+    },
+    "demand_only": {
+     "wape": 0.8781584027491023,
+     "bias": -0.30718261613132924,
+     "mae": 8.535776797351694
+    },
+    "baseline": {
+     "wape": 0.8929608886035121,
+     "bias": -0.2718286008634581,
+     "mae": 8.67965825985738
+    },
+    "over_forecast_share": 0.6377192137213336,
+    "under_forecast_share": 0.23837513421248244,
+    "delta_wape_price_minus_demand": 0.003160351375311121
+   },
+   {
+    "group": "within +-3%",
+    "n_points": 2775049,
+    "sum_actual": 22951839.0,
+    "share_of_points": 0.8275581233758527,
+    "share_of_abs_error": 0.7724690945145771,
+    "enough_sample": true,
+    "price": {
+     "wape": 0.7619936571439204,
+     "bias": 0.08530152293502978,
+     "mae": 6.302287180438421
+    },
+    "demand_only": {
+     "wape": 0.76126557734332,
+     "bias": 0.0827062235763511,
+     "mae": 6.296265387539437
+    },
+    "baseline": {
+     "wape": 0.7953084554767985,
+     "bias": 0.13268914690671377,
+     "mae": 6.577826779073864
+    },
+    "over_forecast_share": 0.6443378116926944,
+    "under_forecast_share": 0.14913033968048853,
+    "delta_wape_price_minus_demand": 0.0007280798006004119
+   },
+   {
+    "group": "rose >3%",
+    "n_points": 241267,
+    "sum_actual": 2112608.0,
+    "share_of_points": 0.07194916765524567,
+    "share_of_abs_error": 0.11194983487901952,
+    "enough_sample": true,
+    "price": {
+     "wape": 1.199754173923146,
+     "bias": 0.5026127594915573,
+     "mae": 10.505416264401802
+    },
+    "demand_only": {
+     "wape": 1.1831915913648203,
+     "bias": 0.48726160916970745,
+     "mae": 10.360389201382908
+    },
+    "baseline": {
+     "wape": 1.2323020396775746,
+     "bias": 0.5571809672949725,
+     "mae": 10.790415379803957
+    },
+    "over_forecast_share": 0.7126171420045012,
+    "under_forecast_share": 0.2213108299104312,
+    "delta_wape_price_minus_demand": 0.016562582558325767
+   },
+   {
+    "group": "no price",
+    "n_points": 46398,
+    "sum_actual": 127537.0,
+    "share_of_points": 0.013836527502178453,
+    "share_of_abs_error": 0.005633113020672516,
+    "enough_sample": true,
+    "price": {
+     "wape": 1.0,
+     "bias": -1.0,
+     "mae": 2.748760722444933
+    },
+    "demand_only": {
+     "wape": 1.0,
+     "bias": -1.0,
+     "mae": 2.748760722444933
+    },
+    "baseline": {
+     "wape": 1.0,
+     "bias": -1.0,
+     "mae": 2.748760722444933
+    },
+    "over_forecast_share": 0.0,
+    "under_forecast_share": 0.21406095090305616,
+    "delta_wape_price_minus_demand": 0.0
+   }
+  ]
+ },
+ "sku": {
+  "n_skus": 9661,
+  "share_of_abs_error_top_1pct_skus": 0.404500586970684,
+  "share_of_abs_error_top_10pct_skus": 0.7536504518056568,
+  "skus_for_50pct_of_abs_error": 191,
+  "skus_with_zero_actual_but_forecast": 111,
+  "top25": [
+   {
+    "sku": "MEDX.DMTS-SAN-ALP-001",
+    "n_points": 420,
+    "sum_actual": 723778.0,
+    "share_of_abs_error": 0.02013277845377955,
+    "wape_price": 0.6297759454201938,
+    "wape_demand_only": 0.6379667920663858,
+    "bias_price": -0.13512200268070118
+   },
+   {
+    "sku": "MEDX.2110dcfad25e",
+    "n_points": 420,
+    "sum_actual": 442429.0,
+    "share_of_abs_error": 0.019439851775218203,
+    "wape_price": 0.9948030207805753,
+    "wape_demand_only": 1.0218426056680339,
+    "bias_price": -0.3102832398879102
+   },
+   {
+    "sku": "MEDX.DMTS-PHA-GYN-001",
+    "n_points": 420,
+    "sum_actual": 318361.0,
+    "share_of_abs_error": 0.01746907379530283,
+    "wape_price": 1.242332227471172,
+    "wape_demand_only": 1.1186687532499078,
+    "bias_price": 0.44682625137194953
+   },
+   {
+    "sku": "MEDX.GHKGEQ1P",
+    "n_points": 420,
+    "sum_actual": 326946.0,
+    "share_of_abs_error": 0.012983618689592833,
+    "wape_price": 0.8990988790480644,
+    "wape_demand_only": 0.9080635838155123,
+    "bias_price": 0.4545567022174203
+   },
+   {
+    "sku": "MEDX.DMTS-DON-SIL-001",
+    "n_points": 420,
+    "sum_actual": 737170.0,
+    "share_of_abs_error": 0.012187652659141523,
+    "wape_price": 0.37431751412612696,
+    "wape_demand_only": 0.3796315287013606,
+    "bias_price": 0.004263391670453261
+   },
+   {
+    "sku": "MEDX.DMTS-JAN-FUG-003",
+    "n_points": 420,
+    "sum_actual": 608966.0,
+    "share_of_abs_error": 0.01109089947133224,
+    "wape_price": 0.4123456861049532,
+    "wape_demand_only": 0.4128354673730987,
+    "bias_price": 0.051102278074223136
+   },
+   {
+    "sku": "MEDX.STA-STA-010",
+    "n_points": 420,
+    "sum_actual": 554682.0,
+    "share_of_abs_error": 0.011038581336888904,
+    "wape_price": 0.45056444895396547,
+    "wape_demand_only": 0.4782396712690885,
+    "bias_price": -0.05365630457649751
+   },
+   {
+    "sku": "MEDX.PHAR-NAT-001",
+    "n_points": 420,
+    "sum_actual": 293988.0,
+    "share_of_abs_error": 0.010626967220159798,
+    "wape_price": 0.8184034837798655,
+    "wape_demand_only": 0.7877143254073611,
+    "bias_price": 0.32636356560808016
+   },
+   {
+    "sku": "MEDX.A2BEQ1PG",
+    "n_points": 420,
+    "sum_actual": 226446.0,
+    "share_of_abs_error": 0.010423574703023825,
+    "wape_price": 1.042172866307503,
+    "wape_demand_only": 0.9058962065659687,
+    "bias_price": 0.5713203340352311
+   },
+   {
+    "sku": "MEDX.MER-CON-002",
+    "n_points": 420,
+    "sum_actual": 288296.0,
+    "share_of_abs_error": 0.010090474753250407,
+    "wape_price": 0.7924296474092392,
+    "wape_demand_only": 0.7940078253740481,
+    "bias_price": 0.0056592312439879
+   },
+   {
+    "sku": "MEDX.DMTS-BAY-MAR-001",
+    "n_points": 420,
+    "sum_actual": 188791.0,
+    "share_of_abs_error": 0.00959821106386419,
+    "wape_price": 1.1510567636665086,
+    "wape_demand_only": 1.1668514172396827,
+    "bias_price": 0.08044302134255238
+   },
+   {
+    "sku": "MEDX.DMTS-ROH-NEW-001",
+    "n_points": 420,
+    "sum_actual": 273655.0,
+    "share_of_abs_error": 0.00870126419790743,
+    "wape_price": 0.7198909268809611,
+    "wape_demand_only": 0.7391407530311245,
+    "bias_price": 0.04303629444843415
+   },
+   {
+    "sku": "MEDX.GSK-VEN-002",
+    "n_points": 420,
+    "sum_actual": 239074.0,
+    "share_of_abs_error": 0.007835623099280022,
+    "wape_price": 0.7420427430489087,
+    "wape_demand_only": 0.73597075562924,
+    "bias_price": 0.004320744978421306
+   },
+   {
+    "sku": "MEDX.SHI-GEN-200",
+    "n_points": 420,
+    "sum_actual": 307435.0,
+    "share_of_abs_error": 0.007280480343603836,
+    "wape_price": 0.536160058087205,
+    "wape_demand_only": 0.5329468961169918,
+    "bias_price": -0.13719218137315148
+   },
+   {
+    "sku": "MEDX.6WUFT61P",
+    "n_points": 397,
+    "sum_actual": 210288.0,
+    "share_of_abs_error": 0.006832930483590426,
+    "wape_price": 0.7356652531652614,
+    "wape_demand_only": 0.709543262844156,
+    "bias_price": 0.011833716383526581
+   },
+   {
+    "sku": "MEDX.LEVOTHYROX-100MG-MERCK-H30V-DUC",
+    "n_points": 420,
+    "sum_actual": 182189.0,
+    "share_of_abs_error": 0.006683001458120003,
+    "wape_price": 0.8304952177393516,
+    "wape_demand_only": 0.8322527222948392,
+    "bias_price": -0.0555221827083957
+   },
+   {
+    "sku": "MEDX.V-ROHTO-VITAMIN-ROHTO-H13ML",
+    "n_points": 420,
+    "sum_actual": 202212.0,
+    "share_of_abs_error": 0.006543687693329724,
+    "wape_price": 0.7326615010594547,
+    "wape_demand_only": 0.6978798375740731,
+    "bias_price": 0.031402875216009825
+   },
+   {
+    "sku": "MEDX.DMTS-GSK-AUG-004",
+    "n_points": 420,
+    "sum_actual": 186173.0,
+    "share_of_abs_error": 0.006173570785325568,
+    "wape_price": 0.7507709627002132,
+    "wape_demand_only": 0.7484135624900212,
+    "bias_price": -0.11367862221055186
+   },
+   {
+    "sku": "MEDX.DMTS-PFI-MED-001",
+    "n_points": 420,
+    "sum_actual": 188170.0,
+    "share_of_abs_error": 0.005466596689683143,
+    "wape_price": 0.6577401928600962,
+    "wape_demand_only": 0.6442281508575565,
+    "bias_price": -0.0019395171237707259
+   },
+   {
+    "sku": "MEDX.DMTS-GSK-AUG-002",
+    "n_points": 420,
+    "sum_actual": 149274.0,
+    "share_of_abs_error": 0.0052056495255715235,
+    "wape_price": 0.7895479081679307,
+    "wape_demand_only": 0.7869988400876385,
+    "bias_price": 0.011721597496027756
+   },
+   {
+    "sku": "MEDX.9DCBBCV8",
+    "n_points": 420,
+    "sum_actual": 99835.0,
+    "share_of_abs_error": 0.0050961409713286615,
+    "wape_price": 1.1557032725091096,
+    "wape_demand_only": 1.140462092214328,
+    "bias_price": -0.7404629011962786
+   },
+   {
+    "sku": "MEDX.b7c0a55e56a2",
+    "n_points": 420,
+    "sum_actual": 114938.0,
+    "share_of_abs_error": 0.005066000442608131,
+    "wape_price": 0.9979052782390574,
+    "wape_demand_only": 0.9999914862544318,
+    "bias_price": 0.05152956131335841
+   },
+   {
+    "sku": "MEDX.DMTS-NOV-CAT-001",
+    "n_points": 420,
+    "sum_actual": 80858.0,
+    "share_of_abs_error": 0.0050282526382704005,
+    "wape_price": 1.407932478226125,
+    "wape_demand_only": 1.3117318503295228,
+    "bias_price": 0.23251353925901944
+   },
+   {
+    "sku": "MEDX.YF9DEQ1P",
+    "n_points": 38,
+    "sum_actual": 40137.0,
+    "share_of_abs_error": 0.004854246377999886,
+    "wape_price": 2.738196676383387,
+    "wape_demand_only": 2.738196676383387,
+    "bias_price": 0.8686000448464011
+   },
+   {
+    "sku": "MEDX.DMTS-PHA-NAB-001",
+    "n_points": 420,
+    "sum_actual": 127181.0,
+    "share_of_abs_error": 0.004524119503589892,
+    "wape_price": 0.8053776344323494,
+    "wape_demand_only": 0.8061837913457799,
+    "bias_price": -0.05729493763538447
+   }
+  ]
+ }
+}
