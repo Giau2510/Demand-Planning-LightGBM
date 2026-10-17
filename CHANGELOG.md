@@ -8,8 +8,13 @@ they take effect without any data change for every section/key that was never sa
 ## 1.2.2 - 2026-10-17 (P0: BigQuery end to end, quality gate = assessment, best evaluated candidate) [reports/demandforecast_v122_p0_bigquery_20261017.md]
 
 Database schema unchanged (3); settings: new key `quality.below_threshold_policy` (ignored by 1.2.1: rollback needs no
-restore). Root cause of "DEMO on the dashboard": the quality gate was a publish switch, so no BIGQUERY run was ever
-published (WAPE 0.807 > 0.60), and the Results page opened the newest run of ANY source (an old DEMO run).
+restore, checked). Root cause of "DEMO on the dashboard": the quality gate was a publish switch, so no BIGQUERY run was
+ever published (WAPE 0.807 > 0.60), and the Results page opened the newest run of ANY source (an old DEMO run).
+Package built 2026-10-17 18:30 from local commit 7053999 (SHA-256 7AA7D910...0F95; QA 405 incl. real BigQuery + 75
+vitest + build). Deployed to production 18:53-18:57 (deploy-upgrade.ps1, backup backup-20261017-185319-manual.zip) after
+an isolated rehearsal with its own Quick Tunnel (17/17 checks): the shared link, the read-only proxy and cloudflared kept
+running (same PIDs, same URL); the link answered 502 "app down" for ~82 s during the restart. Data and settings
+unchanged. Publishing the waiting BIGQUERY run (TRN-20261017101340-EEDA47) is left to the owner ("Use this model").
 
 * Quality policy `quality.below_threshold_policy` = `PUBLISH_WITH_WARNING` (owner decision 17/10/2026; changed default)
   or `BLOCK` (behaviour before 1.2.2). Thresholds and gate results unchanged and shown honestly. A technically sound run
