@@ -207,6 +207,18 @@ discount, promotion, voucher and source-update fields switch feature groups on o
    `BASELINE_MOVING_AVERAGE`, `model_version` `BL28-...` and possibly no model file (`training_runs.model_path` NULL).
 7. **Feature registry / feature_set_version** (`ml/feature_registry.py`) defines which features exist; the resolved set is
    stored per training run in `feature_config_json`.
+8. **Data identity of a training run (1.2.4).** `demand.fingerprint` (rows, sum, first/last day, `MAX(loaded_at)`)
+   changes whenever rows are rewritten, even with identical values. `data/identity.py` hashes the VALUES the model reads
+   (order_date, sku_id, fc_id, qty, n_orders, prices, shares; never loaded_at) per day and per window; a training run
+   stores the identity of its own window in `feature_config_json.data_identity`. Explanations accept the data when the
+   fingerprint is unchanged OR the window identity is identical (`SAME_CONTENT`); a changed day inside the window is
+   named and nothing is reproduced. A run trained before 1.2.4 gets an identity only by attestation from a backup whose
+   fingerprint equals its `data_fingerprint` (`app.cli attest-training-data`; `sync_state training_data_identity:<id>`,
+   written once, audit `TRAINING_DATA_ATTESTED`). No copy of the input data is stored per run.
+9. **Product names (1.2.4)** are display / search data: `sync_state product_names` = one name per local BIGQUERY SKU
+   from `bigquery.product_names_table` (default `dim_sku`, key `sku_code`); a SKU with several names in the source gets
+   none. Refreshed after each successful D-1 sync (a failure never fails the sync) or by hand. Never joined into any
+   quantity, metric or model input.
 
 ## 10. Business data contract vs current implementation
 

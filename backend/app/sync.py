@@ -111,6 +111,19 @@ def _production_off() -> AppError:
         return AppError("SOURCE_NOT_READY", 409, detail=flows.production_off_detail(c))
 
 
+def _after_d1(scope_key: str, job_id: str | None) -> None:
+    """1.2.4, display side only - never fails the sync: product names refreshed (one small read of the name table)
+    and the content identity of the new data version computed once, so the first explanation after a load is fast."""
+    from .bq import product_names
+    from .data import identity
+    product_names.refresh_quietly(f"D-1 job {job_id or '-'}")
+    try:
+        with db.read() as c:
+            identity.day_hashes(scope_key, c)
+    except Exception:  # noqa: BLE001
+        log.warning("data identity not computed after D-1", exc_info=True, extra={"ctx": {"job_id": job_id}})
+
+
 def run_d1_sync(job_id: str | None = None, fallback_mode: bool | None = None, backfill_start: str | None = None,
                 backfill_end: str | None = None) -> dict:
     """Daily history load (D-1 and older). Never touches today's data (D0 is a separate job and table).
@@ -217,6 +230,7 @@ def run_d1_sync(job_id: str | None = None, fallback_mode: bool | None = None, ba
         if not backfill:
             _state_set(c, f"last_d1_sync:{scope_key}", info)
         db.audit(c, "D1_SYNC", "scope", scope_key, {k: v for k, v in info.items() if k != "excluded_by_reason"})
+    _after_d1(scope_key, job_id)
     return {"status": "SUCCEEDED", "reason_code": "BACKFILL_DONE" if backfill else None, **info}
 
 

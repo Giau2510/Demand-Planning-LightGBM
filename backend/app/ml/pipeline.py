@@ -16,6 +16,7 @@ import numpy as np
 
 from .. import db, paths
 from .. import settings_service as ss
+from ..data import identity
 from ..data.demand import data_window, fingerprint, load_demand, panel_for_run, resolve_scope
 from ..data.quality import build_report
 from ..messages import AppError
@@ -416,6 +417,12 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
         log.info("training window", extra={"ctx": {"training_run_id": run_id, "window": window["start"] + ".." +
                                                    window["end"], "panel": f"{panel.dates[0].date()}..{panel.dates[-1].date()}",
                                                    "series": panel.n_series}})
+        # 1.2.4: content identity (values, not load time) of exactly this window, so an explanation can later prove that
+        # a reloaded database still holds the data this run used; metadata only - never blocks the training
+        try:
+            identity.record_for_training(run_id, scope["scope_key"], str(panel.dates[0].date()), str(panel.dates[-1].date()))
+        except Exception:  # noqa: BLE001
+            log.warning("data identity not recorded", exc_info=True, extra={"ctx": {"training_run_id": run_id}})
         at("BACKTESTING")
         bt = model.backtest(panel, mcfg, qcfg.mape_min_actual, cancel)
         at("TRAINING")

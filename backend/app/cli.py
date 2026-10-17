@@ -123,6 +123,11 @@ def main(argv=None) -> int:
     dc.add_argument("--db", help="database file (default: the configured database, opened read-only)")
     dc.add_argument("--models-dir", help="models folder (default: the configured one when --db is not given)")
     sub.add_parser("bq-check")
+    at = sub.add_parser("attest-training-data", help="1.2.4: content identity of an older training run's data, "
+                                                     "from a backup that provably holds it")
+    at.add_argument("--training-run", required=True)
+    at.add_argument("--backup", required=True, help="full path of the backup .zip taken while the data was unchanged")
+    sub.add_parser("product-names-refresh", help="1.2.4: read the product names of the local SKUs from BigQuery")
     a = ap.parse_args(argv)
     from . import paths
     try:
@@ -234,6 +239,19 @@ def _run(a) -> int:
         print(json.dumps(res, indent=2, default=str, ensure_ascii=False))
     elif a.cmd == "bq-check":
         return _bq_check()
+    elif a.cmd in ("attest-training-data", "product-names-refresh"):
+        from .messages import AppError
+        try:
+            if a.cmd == "attest-training-data":
+                from .data import identity
+                res = identity.attest_from_backup(a.training_run, a.backup)
+            else:
+                from .bq import product_names
+                res = product_names.refresh()
+        except AppError as e:
+            print(json.dumps({"ok": False, "code": e.code, "detail": e.detail}, ensure_ascii=False))
+            return 1
+        print(json.dumps({"ok": True, **res}, indent=2, ensure_ascii=False, default=str))
     elif a.cmd == "info":
         from . import __version__
         print(json.dumps({"version": __version__, "data_dir": str(paths.data_dir()), "db": str(paths.db_path()),

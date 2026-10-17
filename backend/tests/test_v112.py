@@ -63,7 +63,8 @@ def test_excel_method_names_follow_the_language_and_export_changes_nothing(clien
         used = {r[0] for r in c.execute("SELECT DISTINCT method FROM forecast_values WHERE run_id=?", (demo_run,))}
     assert "LIGHTGBM" in used and len(used) >= 2
     for wb, lang in ((vi, "vi"), (en, "en")):
-        for ws, name_col, code_col in ((wb.worksheets[1], 2, 5), (wb.worksheets[2], 6, 7)):
+        # 1.2.4 (export format 5): 'product name' was inserted after the SKU column -> every later column moved by one
+        for ws, name_col, code_col in ((wb.worksheets[1], 3, 6), (wb.worksheets[2], 7, 8)):
             head = [c.value for c in ws[1]]
             rows = list(ws.iter_rows(min_row=2, values_only=True))
             assert {r[code_col] for r in rows} == used                    # code column: original codes, unchanged
@@ -80,7 +81,7 @@ def test_forecast_export_dates_are_dd_mm_yyyy_in_both_languages(client, demo_run
     for lang in ("vi", "en"):
         wb = _xlsx(client, f"/api/forecast-runs/{demo_run}/export.xlsx?horizon=7&lang={lang}")
         daily = wb.worksheets[2]
-        assert all(daily.cell(row=r, column=3).number_format == "DD/MM/YYYY" for r in range(2, daily.max_row + 1))
+        assert all(daily.cell(row=r, column=4).number_format == "DD/MM/YYYY" for r in range(2, daily.max_row + 1))  # 1.2.4: +1 (product name)
         info = [r[1] for r in wb.worksheets[0].iter_rows(min_row=2, values_only=True)]
         text = " ".join(str(v) for v in info)
         o = datetime.fromisoformat(run["forecast_origin"]).strftime("%d/%m/%Y")

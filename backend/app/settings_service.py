@@ -282,6 +282,26 @@ class BigQuerySettings(BaseModel):
     # --- 1.2.1: the D-0 feed's own mapping (output column per D0_FIELDS). Independent of field_mapping: the D-0 output
     # may have fewer / other columns than D-1. Not part of the D-1 mapping hash (changing it never touches D-1).
     d0_mapping: dict[str, FieldMapping] = Field(default_factory=_default_d0_mapping)
+    # --- 1.2.4: product names shown next to the SKU in the forecast results (display / search only; bq/product_names).
+    # A table of the same project.dataset or a full id; one row per key column value. Not part of any mapping hash.
+    product_names_table: str = "dim_sku"
+    product_names_key_column: str = "sku_code"
+    product_names_name_column: str = "product_name"
+
+    @field_validator("product_names_table")
+    @classmethod
+    def _names_table(cls, v):
+        v = (v or "").strip()
+        if not v or not (IDENT.match(v) or TABLE_ID_RE.match(v)):
+            raise ValueError("product_names_table must be a table name or project.dataset.table")
+        return v
+
+    @field_validator("product_names_key_column", "product_names_name_column")
+    @classmethod
+    def _names_cols(cls, v):
+        if not v or not IDENT.match(v):
+            raise ValueError("only letters, digits and underscore are allowed")
+        return v
 
     @field_validator("d0_mapping")
     @classmethod

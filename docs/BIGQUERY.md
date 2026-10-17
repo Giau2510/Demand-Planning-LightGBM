@@ -266,6 +266,12 @@ Trang **SQL nguồn & đồng bộ** quản lý hai nguồn độc lập:
   trước khi lưu và báo sau khi lưu; `SOURCE_NOT_READY` ghi rõ tắt từ lúc nào, do thay đổi nào, cách khắc phục (*Kiểm tra
   dữ liệu toàn kỳ* → *Kích hoạt chế độ sản xuất*). *Tắt chế độ sản xuất* giữ nguyên nguồn đang dùng (trước 1.2.3 nút này
   tự chuyển sang DEMO).
+- **Tên sản phẩm (1.2.4).** Bảng D-1 không có tên sản phẩm. Tên lấy từ `<project>.<dataset>.dim_sku`
+  (`bigquery.product_names_table`, khóa `sku_code`, cột `product_name`; kiểm tra thật 17/10/2026: 298.517 dòng =
+  298.517 `sku_code` khác nhau, 0 tên rỗng), đọc 2 cột (~23 MB/lần, dry-run trước, giới hạn byte), chỉ giữ SKU có trong
+  dữ liệu BIGQUERY cục bộ. SKU có nhiều tên khác nhau → không gán tên; SKU không có trong bảng → "Chưa có tên sản phẩm".
+  Tự làm mới sau mỗi lần D-1 thành công; làm tay: `POST /api/bigquery/product-names/refresh` hoặc
+  `app.cli product-names-refresh`. Tên chỉ để hiển thị / tìm kiếm / Excel, không đổi số lượng hay chỉ số nào.
 
 ## 10. SQL D0 do người dùng cung cấp — các điểm cần xác nhận
 

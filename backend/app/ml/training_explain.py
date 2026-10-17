@@ -13,7 +13,8 @@ from collections import Counter
 
 from .. import db, paths
 from .. import settings_service as ss
-from ..data.demand import fingerprint, panel_for_run, resolve_scope
+from ..data import identity
+from ..data.demand import panel_for_run, resolve_scope
 from ..messages import AppError
 from . import feature_catalog, feature_registry, model
 
@@ -56,7 +57,8 @@ def overview(training_run_id: str | None = None) -> dict:
         if frs:
             methods = db.rows(c, "SELECT method, COUNT(DISTINCT sku_id || '|' || fc_id) AS n_series FROM forecast_values "
                                  "WHERE run_id=? GROUP BY method", (frs[0]["id"],))
-        fp_now = fingerprint(tr["scope_key"], c)
+        # 1.2.4: same data = same load OR identical values in the run's window (a reload does not count as a change)
+        state = identity.data_state(tr, tr["scope_key"], c)
     fcfg = _json(tr["feature_config_json"], {}) or {}
     cfg = fcfg.get("config") or {}
     features = fcfg.get("features") or []
@@ -80,7 +82,8 @@ def overview(training_run_id: str | None = None) -> dict:
         "active": active, "runs": runs,
         "training_run": {k: tr[k] for k in ("id", "status", "data_source", "scope_key", "started_at", "finished_at",
                                              "train_start", "train_end", "n_series", "n_rows", "reject_reason", "job_id")},
-        "data_unchanged_since_training": fp_now == tr["data_fingerprint"],
+        "data_unchanged_since_training": state["status"] in ("SAME_LOAD", "SAME_CONTENT"),
+        "data_check": {k: v for k, v in state.items() if k not in ("key", "changed_days")},
         "target": {"name": "qty", "unit": "order_qty",
                    "definition": "Σ order_qty per Vietnam calendar day × SKU × FC (demand_daily); cancellations not subtracted"},
         "config": {k: cfg.get(k) for k in ("objective", "num_boost_round", "learning_rate", "num_leaves", "max_train_days",
@@ -121,7 +124,7 @@ def backtest_points(training_run_id: str) -> dict:
         bt = db.one(c, "SELECT * FROM backtest_runs WHERE training_run_id=?", (training_run_id,))
         if not bt:
             raise AppError("BATCH_NOT_FOUND", 404, detail=f"no backtest for {training_run_id}")
-        if fingerprint(tr["scope_key"], c) != tr["data_fingerprint"]:
+        if identity.data_state(tr, tr["scope_key"], c)["status"] not in ("SAME_LOAD", "SAME_CONTENT"):
             raise AppError("DATA_CHANGED_SINCE_TRAINING", 409, detail="backtest points cannot be reproduced")
         mape_min = ss.get("quality", c).mape_min_actual
     mcfg = ss.ModelSettings.model_validate((_json(tr["feature_config_json"], {}) or {}).get("config") or {})

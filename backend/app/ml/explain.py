@@ -2,9 +2,10 @@
 
 * Method / reason: the per-series metadata stored at publish time (forecast_series_meta). Runs published before
   v1.1.1 have none; it is then RECOMPUTED with the same code (classification_details) - only if the data
-  fingerprint still equals the training run's - and the recomputed method must equal the published one.
+  is still the training run's (data/identity.py) - and the recomputed method must equal the published one.
 * History and LightGBM inputs: the run is REPRODUCED from the saved model file (sha256 checked) and the same data
-  (fingerprint checked). The reproduced value must equal the published value, otherwise nothing is shown.
+  (fingerprint, or content identity of the training window - 1.2.4). The reproduced value must equal the published
+  value, otherwise nothing is shown.
 * LightGBM contributions: exact TreeSHAP values from booster.predict(pred_contrib=True), in the model's raw score
   space; the forecast is link(bias + sum(contributions)), link = exp for tweedie/poisson, identity otherwise.
 No value is approximated or invented. Data after data_as_of is never read.
@@ -19,7 +20,8 @@ import numpy as np
 
 from .. import db, paths
 from .. import settings_service as ss
-from ..data.demand import fingerprint, panel_for_run
+from ..data import identity
+from ..data.demand import panel_for_run
 from ..messages import AppError
 from . import model
 from . import feature_catalog
@@ -88,16 +90,20 @@ def _input_source(name: str, t: int, T: int, direct: bool = False) -> str:
 
 
 def _reproduce(run: dict, tr: dict, sku: str, fc_id: str, method: str | None = None) -> dict:
-    """Rebuild the panel + reload the model; return reproduction state for one series (cached)."""
+    """Rebuild the panel + reload the model; return reproduction state for one series (cached).
+    1.2.4: the data check is identity.data_state - rows rewritten with identical values (a D-1 reload) still reproduce
+    exactly (SAME_CONTENT); any changed value inside the run's training window stays DATA_CHANGED."""
     with db.read() as c:
-        cur_fp = fingerprint(run["scope_key"], c)
-    key = (run["id"], sku, fc_id, cur_fp)          # data change -> different key -> no stale explanation
+        state = identity.data_state(tr, run["scope_key"], c)
+    check = {k: v for k, v in state.items() if k != "key"}
+    # data change, or a new verdict on the same data (e.g. an attestation) -> different key -> no stale explanation
+    key = (run["id"], sku, fc_id, state["key"], state["status"])
     if key in _cache:
         _cache.move_to_end(key)
         return _cache[key]
-    out: dict = {"status": "OK"}
-    if not tr or tr.get("data_fingerprint") != cur_fp:
-        out = {"status": "DATA_CHANGED"}
+    out: dict = {"status": "OK", "data_check": check}
+    if not tr or state["status"] not in ("SAME_LOAD", "SAME_CONTENT"):
+        out = {"status": "DATA_CHANGED", "data_check": check}
     else:
         mcfg = ss.ModelSettings.model_validate(json.loads(tr["feature_config_json"])["config"])
         panel = panel_for_run(tr)      # the run's own train_start..train_end: never beyond data_as_of
@@ -105,7 +111,7 @@ def _reproduce(run: dict, tr: dict, sku: str, fc_id: str, method: str | None = N
             out = {"status": "DATA_UNAVAILABLE"}
         else:
             if str(panel.dates[-1].date()) != run["data_as_of"] or (sku, fc_id) not in panel.keys:
-                out = {"status": "DATA_CHANGED"}
+                out = {"status": "DATA_CHANGED", "data_check": check}
             else:
                 s = panel.keys.index((sku, fc_id))
                 details = model.classification_details(panel, mcfg)
@@ -154,7 +160,7 @@ def explain(run_id: str, sku: str, fc_id: str, target_date: str) -> dict:
                      "run_created_at": run["created_at"], "training_run_id": run["training_run_id"]},
         "result": {"yhat": val["yhat"], "unit": "order_qty", "method": method}, "notes": []}
     rep = _reproduce(run, tr, sku, fc_id, method)
-    out["reproduction"] = {"status": rep["status"]}
+    out["reproduction"] = {"status": rep["status"], "data_check": rep.get("data_check")}
 
     # ---- method selection
     if meta_row:

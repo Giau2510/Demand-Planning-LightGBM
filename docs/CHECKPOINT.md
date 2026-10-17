@@ -363,3 +363,17 @@ must stay up; no push. Report `reports/demandforecast_v123_p0_source_not_ready_2
 | Deploy production 1.2.2 -> 1.2.3 | DONE 20:32-20:37 | UPGRADE OK, app pid 24100; backups `backup-20261017-203230-manual.zip` (SHA-256 25E71FB8...86EF) + `-203501-cli.zip`; fingerprint: data + settings identical (audit +1); data-check WARN (old DEMO meta only); rollback -To 1.2.2 -CheckOnly OK; storage.json 8D79DBDD unchanged |
 | Shared link | KEPT | same URL, proxy 13024 / cloudflared 31076 unchanged; 502 for ~87 s (20:35:00-20:36:28); after: 1.2.3, BIGQUERY forecast FCR-...FCC0EB, 10 writes 405, admin 403, Edge headless 4 pages 0 errors |
 | Schedules | UNCHANGED | D-1 OFF, D-0 OFF (08-18 every 2 h), training ON 09:00 SKIP; all three flows ready; enabling D-1 / D-0 is the owner's decision |
+
+
+# 1.2.4 History areas, product names + search, D-1 / D-0 switches (2026-10-17 20:55 - )
+
+Owner request: the two explanation areas were empty, add product name + search, D-1 and D-0 ON with switches on the
+Jobs page; link kept, no push. Report `reports/demandforecast_v124_history_names_schedules_20261017.md`.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Root cause (areas A1/A2) | DONE | fingerprint includes MAX(loaded_at); the manual D-1 of 19:58 rewrote 1,349,388 identical rows -> explain DATA_CHANGED (production API, MEDX.DMTS-SAN-ALP-001 / HN) |
+| Proof the data is unchanged | DONE | copy of 19:37 (fingerprint e2385893ed061e39 = TRN-...EEDA47) and live DB: same content hash c47771523275a866 over 1,349,388 rows, 9 model columns |
+| Name source | DONE | dim_sku: 298,517 rows = 298,517 distinct sku_code, 0 empty names; ~23 MB per read |
+| Code 1.2.4 | DONE | data/identity.py, bq/product_names.py, explain / training_explain / pipeline / sync / routes / export; UI Results, ExplainPanel, Jobs; tests 12 backend + 6 frontend |
+| Tests | DONE | backend 417 passed + 7 real BigQuery; vitest 86; typecheck + build OK; live DB untouched (history id 32, newest job unchanged) |

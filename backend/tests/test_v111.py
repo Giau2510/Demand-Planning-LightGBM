@@ -331,7 +331,7 @@ def test_two_snapshots_same_day_are_never_added_together(client, demo_run):
         else:
             assert r["actual_today"] is None
     wb = _xlsx(client, demo_run, "vi")
-    xs = [r[4] for r in wb.worksheets[1].iter_rows(min_row=2, values_only=True)]
+    xs = [r[5] for r in wb.worksheets[1].iter_rows(min_row=2, values_only=True)]   # 1.2.4: +1, product name after SKU
     assert sum(x for x in xs if x is not None) == pytest.approx(want)            # Excel: same rule
 
 
@@ -366,14 +366,16 @@ def test_excel_follows_ui_language_and_keeps_numbers(client, demo_run):
     assert en.sheetnames == ["Info", "Totals 7d", "Daily"]
     hv = [c.value for c in vi["Chi tiết theo ngày"][1]]
     he = [c.value for c in en["Daily"][1]]
-    assert hv == ["SKU", "FC/kho", "Ngày", "Ngày thứ", "Số lượng dự báo", "Thực tế đến hiện tại", "Phương pháp", "Mã kỹ thuật phương pháp (không dịch)"]
-    assert he == ["SKU", "FC/warehouse", "Date", "Day #", "Forecast qty", "Actual so far", "Method", "Technical method code (not translated)"]
+    # 1.2.4 (format 5): product name after the SKU; a DEMO run has none -> the explicit "no name" text
+    assert hv == ["SKU", "Tên sản phẩm", "FC/kho", "Ngày", "Ngày thứ", "Số lượng dự báo", "Thực tế đến hiện tại", "Phương pháp", "Mã kỹ thuật phương pháp (không dịch)"]
+    assert he == ["SKU", "Product name", "FC/warehouse", "Date", "Day #", "Forecast qty", "Actual so far", "Method", "Technical method code (not translated)"]
     today = str(timeutil.today_vn())
     for ws, lab in ((vi["Chi tiết theo ngày"], "Dự phòng cho chuỗi SKU–FC mới"), (en["Daily"], "Fallback for a new SKU–FC series")):
         rows = list(ws.iter_rows(min_row=2, values_only=True))
         assert len(rows) == len(stored)
-        assert ws.cell(row=2, column=3).number_format == "DD/MM/YYYY"                # both languages
-        for sku, fc, d, hday, q, act, mlabel, mcode in rows:
+        assert ws.cell(row=2, column=4).number_format == "DD/MM/YYYY"                # both languages
+        for sku, pname, fc, d, hday, q, act, mlabel, mcode in rows:
+            assert pname == ("Chưa có tên sản phẩm" if lab.startswith("Dự") else "No product name yet")
             assert isinstance(d, datetime)                                          # a real Excel date
             d = d.date().isoformat()
             assert q == stored[(sku, fc, d)]                                       # numbers unchanged
@@ -384,7 +386,7 @@ def test_excel_follows_ui_language_and_keeps_numbers(client, demo_run):
                 assert mlabel == ("Mô hình học máy (LightGBM)" if lab.startswith("Dự") else "Machine-learning model (LightGBM)")
     info_vi = {r[0]: r[1] for r in vi["Thông tin"].iter_rows(min_row=2, values_only=True)}
     info_en = {r[0]: r[1] for r in en["Info"].iter_rows(min_row=2, values_only=True)}
-    assert info_vi["Phiên bản định dạng file"] == "4" and info_en["Language"] == "English"
+    assert info_vi["Phiên bản định dạng file"] == "5" and info_en["Language"] == "English"
     run = client.get(f"/api/forecast-runs/{demo_run}").json()
     o = date_cls.fromisoformat(run["forecast_origin"])
     assert info_vi["Ngày bắt đầu"] == o.strftime("%d/%m/%Y") and info_en["Start date"] == o.strftime("%d/%m/%Y")
@@ -395,9 +397,9 @@ def test_excel_follows_ui_language_and_keeps_numbers(client, demo_run):
     assert info_en["Actual is simulated DEMO data"] == "Yes" and info_vi["Trạng thái thực tế trong ngày"] == "Đang cập nhật trong ngày"
     tot = list(en["Totals 7d"].iter_rows(min_row=2, values_only=True))
     daily_sum = {}
-    for sku, fc, d, hday, q, act, ml, mc in en["Daily"].iter_rows(min_row=2, values_only=True):  # noqa: B007
+    for sku, pn, fc, d, hday, q, act, ml, mc in en["Daily"].iter_rows(min_row=2, values_only=True):  # noqa: B007
         daily_sum[(sku, fc)] = daily_sum.get((sku, fc), 0) + q
-    for sku, fc, ml, total, act, mc in tot:                                       # totals == sum of daily sheet
+    for sku, pn, fc, ml, total, act, mc in tot:                                       # totals == sum of daily sheet
         assert total == pytest.approx(daily_sum[(sku, fc)])
 
 

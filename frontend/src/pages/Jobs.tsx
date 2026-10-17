@@ -1,6 +1,6 @@
 import { Fragment, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { get, post, qs } from "../api";
+import { get, post, put, qs } from "../api";
 import { useI18n } from "../i18n";
 import { Card, Code, Empty, ErrorBox, Field, Loading, OkBox, Pill, Term, fmtDatesInText, fmtDuration, fmtTime, jobOutcome, useAction, useAsync } from "../components/ui";
 
@@ -9,6 +9,8 @@ const TYPES = ["D1_SYNC", "D0_SYNC", "TRAIN_PUBLISH"];
 const STATE_PILL: Record<string, string> = { OFF: "SKIPPED", ON: "OK", ON_NOT_READY: "RETRY_WAIT", ON_NOT_LOADED: "PENDING",
   ON_SCHEDULER_STOPPED: "FAILED" };
 const ALL_TYPES = [...TYPES, "FORECAST_EXTEND"];
+/** The read-only remote link (scripts/remote/readonly_proxy.py) injects this banner: no write is offered there. */
+const isRemote = () => typeof document !== "undefined" && !!document.getElementById("df-remote-banner");
 
 export default function Jobs() {
   const { t } = useI18n();
@@ -27,6 +29,15 @@ export default function Jobs() {
   const tick = async () => {
     await act.run(() => post("/api/scheduler/tick"), t("common.saved"));
     jobs.reload();
+    sched.reload();
+  };
+  // 1.2.4: D-1 / D-0 switches. The box is driven by the SAVED state only: after the backend answers (success or
+  // refusal) the scheduler status is read again, so the switch never shows a state the backend did not confirm.
+  const sw = useAction();
+  const remote = isRemote();
+  const toggle = async (fl: "d1" | "d0", on: boolean) => {
+    if (!on && fl === "d0" && !window.confirm(t("sch.d0.confirm_on"))) return;
+    await sw.run(() => put(`/api/schedules/${fl}`, { enabled: !on }), t(on ? "sch.saved_off" : "sch.saved_on"));
     sched.reload();
   };
   const s = sched.data;
@@ -59,6 +70,28 @@ export default function Jobs() {
             })}
             <Link to="/schedules">{t("nav.schedules")} →</Link>
           </p>
+        )}
+        {s && (
+          <div className="small" data-testid="jobs-switches">
+            <ErrorBox error={sw.error} />
+            <OkBox text={sw.ok} />
+            {(["d1", "d0"] as const).map((fl) => {
+              const fs = s.flow_states?.[fl];
+              const on = !!fs?.enabled;
+              const canOn = !!fs?.readiness?.ready;
+              const why = !on && !canOn ? fs?.readiness?.reasons?.map((x: any) => x.code).join(", ") : "";
+              const times = fl === "d1" ? s.config.d1_signal_poll_start : s.config.d0_times.join(", ");
+              return (
+                <label key={fl} className="row" title={remote ? t("job.switch_remote") : why || undefined}>
+                  <input type="checkbox" role="switch" data-testid={`jobs-switch-${fl}`} checked={on}
+                    disabled={remote || sw.busy || !fs || (!on && !canOn)} onChange={() => toggle(fl, on)} />
+                  <b>{t(`job.switch.${fl}`)}</b>: {on ? t("job.switch_on") : t("job.switch_off")}
+                  <span className="muted"> · {times} (Asia/Ho_Chi_Minh)</span>
+                  {why && <span className="bad-t" data-testid={`jobs-switch-why-${fl}`}> · {why}</span>}
+                </label>
+              );
+            })}
+          </div>
         )}
         <p className="small muted">{t("job.offline_note")} <Term id="idempotency" /> <Term id="retry" /></p>
         <div className="row wrap">

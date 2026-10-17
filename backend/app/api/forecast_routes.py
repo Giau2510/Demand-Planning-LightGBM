@@ -200,6 +200,8 @@ def forecast_run(run_id: str):
         r["fcs"] = [x["fc_id"] for x in db.rows(c, "SELECT DISTINCT fc_id FROM forecast_values WHERE run_id=? "
                                                    "ORDER BY fc_id", (run_id,))]
         r["horizon_coverage"] = _coverage(c, r)
+        from ..bq import product_names       # 1.2.4: where the product names come from, when they were read
+        r["product_names"] = product_names.status(c) if r["data_source"] == "BIGQUERY" else None
     return r
 
 
@@ -238,12 +240,25 @@ def _check_h(run: dict, horizon: int | None) -> int:
     return h
 
 
-def _filters(sku_id, fc_id, date_from, date_to):
+def _search(c, run: dict, q: str | None) -> list[str] | None:
+    """1.2.4: SKUs of this run whose SKU or product name contains every word of q (partial, case- and
+    accent-insensitive); None = no search. Only this run's SKUs: another source's data is never read."""
+    from ..bq import product_names
+    if not q or not q.strip():
+        return None
+    skus = [r[0] for r in c.execute("SELECT DISTINCT sku_id FROM forecast_values WHERE run_id=?", (run["id"],))]
+    return product_names.matching_skus(skus, q, product_names.for_run(run, c))
+
+
+def _filters(sku_id, fc_id, date_from, date_to, skus: list[str] | None = None):
     sql, params = "", []
     for col, v in (("sku_id", sku_id), ("fc_id", fc_id)):
         if v:
             sql += f" AND {col}=?"
             params.append(v)
+    if skus is not None:                      # keyword search: the matching SKUs (an empty list matches nothing)
+        sql += " AND sku_id IN (SELECT value FROM json_each(?))"
+        params.append(json.dumps(skus))
     if date_from:
         sql += " AND target_date>=?"
         params.append(date_from)
@@ -255,28 +270,34 @@ def _filters(sku_id, fc_id, date_from, date_to):
 
 @router.get("/forecast-runs/{run_id}/values")
 def forecast_values(run_id: str, horizon: int | None = None, sku_id: str | None = None, fc_id: str | None = None,
-                    date_from: str | None = None, date_to: str | None = None, limit: int = 500, offset: int = 0):
+                    date_from: str | None = None, date_to: str | None = None, limit: int = 500, offset: int = 0,
+                    q: str | None = None):
+    from ..bq import product_names
     with db.read() as c:
         run = _run(c, run_id)
         h = _check_h(run, horizon)
-        f, p = _filters(sku_id, fc_id, date_from, date_to)
+        f, p = _filters(sku_id, fc_id, date_from, date_to, _search(c, run, q))
         base = f" FROM forecast_values WHERE run_id=? AND horizon_day<=?{f}"
         total = c.execute("SELECT COUNT(*)" + base, (run_id, h, *p)).fetchone()[0]
         rows = db.rows(c, "SELECT sku_id, fc_id, target_date, horizon_day, yhat, method, fallback_reason" + base +
                        " ORDER BY sku_id, fc_id, target_date LIMIT ? OFFSET ?", (run_id, h, *p, min(limit, 5000), offset))
         act = intraday.actual_today(run["scope_key"], run["data_source"], c)
+        names = product_names.for_run(run, c)
     for r in rows:
         r["actual_today"] = intraday.value_for(act, r["sku_id"], r["fc_id"], r["target_date"])
-    return {"total": total, "rows": rows, "horizon": h, "actual": intraday.public(act)}
+        r["product_name"] = names.get(r["sku_id"])
+    return {"total": total, "rows": rows, "horizon": h, "actual": intraday.public(act), "q": q or None}
 
 
 @router.get("/forecast-runs/{run_id}/summary")
 def forecast_summary(run_id: str, horizon: int | None = None, sku_id: str | None = None, fc_id: str | None = None,
-                     limit: int = 200, offset: int = 0):
+                     limit: int = 200, offset: int = 0, q: str | None = None):
+    from ..bq import product_names
     with db.read() as c:
         run = _run(c, run_id)
         h = _check_h(run, horizon)
-        f, p = _filters(sku_id, fc_id, None, None)
+        f, p = _filters(sku_id, fc_id, None, None, _search(c, run, q))
+        names = product_names.for_run(run, c)
         start = run["forecast_origin"]
         end = str(date.fromisoformat(start) + timedelta(days=h - 1))
         series = db.rows(c, "SELECT sku_id, fc_id, SUM(yhat) AS total, MIN(method) AS method, "
@@ -302,18 +323,20 @@ def forecast_summary(run_id: str, horizon: int | None = None, sku_id: str | None
     actual["n_series"] = len(keys)
     for r in series:
         r["actual_today"] = intraday.value_for(act, r["sku_id"], r["fc_id"], act["date"]) if in_range else None
+        r["product_name"] = names.get(r["sku_id"])
     for d in daily:
         d["actual_today"] = actual["total"] if d["target_date"] == act["date"] else None
     return {"run_id": run_id, "horizon": h, "start_date": start, "end_date": end, "actual": actual,
             "grand_total": sum(d["total"] for d in daily), "daily": daily, "series": series, "n_series": n_series,
             "methods": methods, "model_version": run["model_version"], "data_source": run["data_source"],
             "data_as_of": run["data_as_of"], "forecast_origin": run["forecast_origin"], "created_at": run["created_at"],
-            "scope_key": run["scope_key"]}
+            "scope_key": run["scope_key"], "q": q or None}
 
 
 @router.get("/forecast-runs/{run_id}/export.xlsx")
 def forecast_export(run_id: str, horizon: int | None = None, lang: str = "vi"):
     """Excel in the UI language (lang=vi|en). Codes/IDs stay untranslated; numbers unchanged (yhat as stored)."""
+    from ..bq import product_names
     from ..export_i18n import EXPORT_FORMAT_VERSION, fmt_date, fmt_vn_time, labels
     from ..ml.methods import label as method_label
     lang, L = labels(lang)
@@ -324,14 +347,20 @@ def forecast_export(run_id: str, horizon: int | None = None, lang: str = "vi"):
                                   "FROM forecast_values WHERE run_id=? AND horizon_day<=? "
                                   "ORDER BY sku_id, fc_id, target_date", c, params=(run_id, h))
         act = intraday.actual_today(run["scope_key"], run["data_source"], c)
+        names = product_names.for_run(run, c)
+        names_state = product_names.status(c) if run["data_source"] == "BIGQUERY" else None
+    # 1.2.4: name per SKU from a dict (one name per SKU): rows are never duplicated, quantities never touched
+    name_of = lambda s: names.get(s) or L["no_product_name"]  # noqa: E731
     start = run["forecast_origin"]
     end = str(date.fromisoformat(start) + timedelta(days=h - 1))
     in_range = start <= act["date"] <= end
     daily["actual_today"] = [intraday.value_for(act, r.sku_id, r.fc_id, r.target_date)
                              for r in daily.itertuples()]
     daily["method_label"] = daily["method"].map(lambda m: method_label(m, lang))
+    daily["product_name"] = daily["sku_id"].map(name_of)
     totals = daily.groupby(["sku_id", "fc_id", "method"], as_index=False)["forecast_qty"].sum()
     totals["method_label"] = totals["method"].map(lambda m: method_label(m, lang))
+    totals["product_name"] = totals["sku_id"].map(name_of)
     totals["actual_today"] = [intraday.value_for(act, r.sku_id, r.fc_id, act["date"]) if in_range else None
                               for r in totals.itertuples()]
     totals = totals[list(L["cols_totals"])].rename(columns=L["cols_totals"])
@@ -348,7 +377,9 @@ def forecast_export(run_id: str, horizon: int | None = None, lang: str = "vi"):
             ("actual_status", L["actual_status"].get(act["status"], act["status"])),
             ("actual_as_of_vn", fmt_vn_time(act["as_of"], L)), ("actual_as_of_utc", act["as_of"] or ""), ("actual_source_updated_max", act["source_updated_max"] or ""),
             ("actual_snapshot_id", act["snapshot_id"] or ""), ("actual_is_demo", L["yes"] if act["is_demo"] else L["no"]),
-            ("actual_note", L["actual_note"])]
+            ("actual_note", L["actual_note"]),
+            ("product_names_source", (names_state or {}).get("source") or ""),
+            ("product_names_fetched_at", fmt_vn_time((names_state or {}).get("fetched_at"), L) if names_state else "")]
     info = pd.DataFrame({L["field"]: [I[k] for k, _ in rows], L["value"]: [v for _, v in rows]})
     content = dataframe_to_xlsx({L["sheet_info"]: info, L["sheet_totals"].format(h=h): totals,
                                  L["sheet_daily"]: daily}, date_format=L["excel_date_fmt"])

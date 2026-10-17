@@ -18,6 +18,12 @@ export function ActualCell({ value, actual }: { value: number | null | undefined
   );
 }
 
+/** 1.2.4: product name next to the SKU, or exactly "no product name yet" (never another SKU's name). */
+export function ProductName({ name }: { name?: string | null }) {
+  const { t } = useI18n();
+  return name ? <span data-testid="product-name">{name}</span> : <span className="muted small" data-testid="product-name-missing">{t("fc.no_product_name")}</span>;
+}
+
 export function ActualNotice({ actual, run }: { actual: any; run?: any }) {
   const { t } = useI18n();
   if (!actual) return null;
@@ -44,6 +50,9 @@ export default function Results() {
   const [h, setH] = useState<number>(7);
   const [sku, setSku] = useState("");
   const [fc, setFc] = useState("");
+  const [q, setQ] = useState("");          // 1.2.4: keyword search (part of SKU / product name), sent once typing pauses
+  const [qd, setQd] = useState("");
+  useEffect(() => { const id = setTimeout(() => setQd(q.trim()), 300); return () => clearTimeout(id); }, [q]);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [page, setPage] = useState(0);
@@ -63,16 +72,16 @@ export default function Results() {
   useEffect(() => {
     if (run.data) setH(run.data.horizons?.[0] ?? run.data.max_horizon);
   }, [run.data?.id]);
-  useEffect(() => setPage(0), [runId, h, sku, fc, from, to, tab]);
+  useEffect(() => setPage(0), [runId, h, sku, fc, qd, from, to, tab]);
   useEffect(() => {   // resume tracking an extension started before a reload
     get("/api/jobs/active?job_type=FORECAST_EXTEND").then((j) => { if (j?.id) setExtendJob(j.id); }).catch(() => {});
   }, []);
 
-  const filters = { horizon: h, sku_id: sku, fc_id: fc };
+  const filters = { horizon: h, sku_id: sku, fc_id: fc, q: qd };
   const summary = useAsync(() => (runId ? get(`/api/forecast-runs/${runId}/summary${qs({ ...filters, limit: PAGE, offset: page * PAGE })}`) : Promise.resolve(null)),
-    [runId, h, sku, fc, page]);
+    [runId, h, sku, fc, qd, page]);
   const daily = useAsync(() => (runId && tab === "daily" ? get(`/api/forecast-runs/${runId}/values${qs({ ...filters, date_from: from, date_to: to, limit: PAGE, offset: page * PAGE })}`) : Promise.resolve(null)),
-    [runId, h, sku, fc, from, to, page, tab]);
+    [runId, h, sku, fc, qd, from, to, page, tab]);
   const acc = useAsync(() => (runId ? get(`/api/forecast-runs/${runId}/accuracy`) : Promise.resolve(null)), [runId]);
 
   const extend = async () => {
@@ -118,6 +127,12 @@ export default function Results() {
             </select>
           </Field>
           {r && <HorizonPicker value={h} onChange={setH} options={horizonOptions} />}
+          <Field label={t("fc.search")}>
+            <span className="row">
+              <input data-testid="fc-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("fc.search_ph")} aria-label={t("fc.search")} />
+              {q && <button className="small" data-testid="fc-search-clear" onClick={() => setQ("")} aria-label={t("fc.search_clear")}>✕</button>}
+            </span>
+          </Field>
           <Field label={t("fc.sku")}>
             <input list="skus" value={sku} onChange={(e) => setSku(e.target.value)} placeholder={t("common.all")} />
             <datalist id="skus">{r?.skus?.map((x: string) => <option key={x} value={x} />)}</datalist>
@@ -183,14 +198,25 @@ export default function Results() {
           <button className={tab === "totals" ? "tab active" : "tab"} onClick={() => setTab("totals")}>{t("fc.totals")}</button>
           <button className={tab === "daily" ? "tab active" : "tab"} onClick={() => setTab("daily")}>{t("fc.daily_detail")}</button>
         </div>
+        {r && (
+          <p className="small muted" data-testid="names-source">
+            {r.data_source !== "BIGQUERY" ? t("fc.names_not_bq")
+              : r.product_names?.fetched_at ? t("fc.names_source").replace("{src}", r.product_names.source).replace("{at}", fmtTime(r.product_names.fetched_at))
+                .replace("{n}", fmtNum(r.product_names.skus_named)).replace("{m}", fmtNum(r.product_names.skus_local))
+              : t("fc.names_never")}
+          </p>
+        )}
+        {total === 0 && (qd || sku || fc) && (tab === "totals" ? s : daily.data) && (
+          <div className="alert info small" data-testid="fc-no-results">{qd ? t("fc.no_results").replace("{q}", qd) : t("fc.no_results_filter")}</div>
+        )}
         {tab === "totals" && s && (
           <div className="scroll">
             <table className="tbl">
-              <thead><tr><th>{t("fc.sku")}</th><th>{t("fc.fc")}</th><th className="num">{t("fc.total")} ({h} {t("common.days")})</th>
+              <thead><tr><th>{t("fc.sku")}</th><th>{t("fc.product_name")}</th><th>{t("fc.fc")}</th><th className="num">{t("fc.total")} ({h} {t("common.days")})</th>
                 <th className="num" title={t("actual.col_help")}>{t("actual.col_today")}{today ? ` (${today.slice(5)})` : ""}</th><th>{t("fc.method")}</th><th></th></tr></thead>
               <tbody>
                 {s.series.map((x: any) => (
-                  <tr key={x.sku_id + x.fc_id}><td>{x.sku_id}</td><td>{x.fc_id}</td><td className="num">{fmtNum(x.total, 1)}</td>
+                  <tr key={x.sku_id + x.fc_id}><td>{x.sku_id}</td><td><ProductName name={x.product_name} /></td><td>{x.fc_id}</td><td className="num">{fmtNum(x.total, 1)}</td>
                     <td className="num"><ActualCell value={x.actual_today} actual={actual} /></td>
                     <td className="small"><MethodLabel code={x.method} /></td>
                     <td><button className="link" onClick={() => setExplain({ sku: x.sku_id, fc: x.fc_id, date: s.start_date })}>{t("ex.open")}</button></td></tr>
@@ -202,11 +228,11 @@ export default function Results() {
         {tab === "daily" && daily.data && (
           <div className="scroll">
             <table className="tbl">
-              <thead><tr><th>{t("fc.sku")}</th><th>{t("fc.fc")}</th><th>{t("fc.date")}</th><th className="num">{t("fc.day_n")}</th><th className="num">{t("fc.qty")}</th>
+              <thead><tr><th>{t("fc.sku")}</th><th>{t("fc.product_name")}</th><th>{t("fc.fc")}</th><th>{t("fc.date")}</th><th className="num">{t("fc.day_n")}</th><th className="num">{t("fc.qty")}</th>
                 <th className="num" title={t("actual.col_help")}>{t("actual.col_so_far")}</th><th>{t("fc.method")}</th><th></th></tr></thead>
               <tbody>
                 {daily.data.rows.map((x: any) => (
-                  <tr key={x.sku_id + x.fc_id + x.target_date}><td>{x.sku_id}</td><td>{x.fc_id}</td><td>{fmtDate(x.target_date)}</td><td className="num">{x.horizon_day}</td><td className="num">{fmtNum(x.yhat, 2)}</td>
+                  <tr key={x.sku_id + x.fc_id + x.target_date}><td>{x.sku_id}</td><td><ProductName name={x.product_name} /></td><td>{x.fc_id}</td><td>{fmtDate(x.target_date)}</td><td className="num">{x.horizon_day}</td><td className="num">{fmtNum(x.yhat, 2)}</td>
                     <td className="num"><ActualCell value={x.actual_today} actual={daily.data.actual} /></td>
                     <td className="small"><MethodLabel code={x.method} /></td>
                     <td><button className="link" onClick={() => setExplain({ sku: x.sku_id, fc: x.fc_id, date: x.target_date })}>{t("ex.open")}</button></td></tr>

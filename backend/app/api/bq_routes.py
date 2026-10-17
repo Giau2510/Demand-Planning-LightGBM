@@ -304,3 +304,19 @@ def sync_backfill(body: BackfillBody):
     if e < s or e >= today_vn():
         raise AppError("VALIDATION_ERROR", 422, detail="end must be >= start and before today (D-1 or older)")
     return background.submit("D1_SYNC", {"backfill_start": str(s), "backfill_end": str(e)})
+
+
+# ------------------------------------------------------------------ 1.2.4: product names (display / search only)
+@router.get("/bigquery/product-names")
+def product_names_view():
+    """Source table, when the names were read, how many local SKUs have a name / none / an ambiguous one."""
+    from ..bq import product_names
+    with db.read() as c:
+        return product_names.status(c) or {"status": "NEVER_FETCHED"}
+
+
+@router.post("/bigquery/product-names/refresh")
+def product_names_refresh():
+    """Read the names of the local BIGQUERY SKUs again (read-only on BigQuery; also done after each D-1 sync)."""
+    from ..bq import product_names
+    return product_names.refresh()

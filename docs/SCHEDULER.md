@@ -45,6 +45,11 @@ nhật ký riêng. Không còn công tắc chung cho mọi job.
   trên nguồn BigQuery chưa sẵn sàng bị từ chối ngay (409 + lý do, không tạo job bị bỏ qua). Trang *Job & Scheduler* và
   `/api/scheduler/status` (`flow_states`) hiển thị trạng thái hiệu lực: luồng bật nhưng nguồn chưa sẵn sàng là *Đã bật
   nhưng hiện chưa sẵn sàng* kèm lý do — không bao giờ *Đang bật — scheduler đã nạp* chỉ vì công tắc đang bật.
+- 1.2.4: trang *Job & Scheduler* có công tắc riêng cho D-1 và D-0 (cùng API `PUT /api/schedules/{d1|d0}`, cùng kiểm
+  tra readiness). Ô công tắc luôn hiển thị trạng thái ĐÃ LƯU: sau mỗi lần backend trả lời (đồng ý hay từ chối) trang đọc
+  lại `/api/scheduler/status`; lỗi được hiển thị và công tắc giữ trạng thái đã lưu. Trên link xem từ xa (proxy chỉ đọc)
+  công tắc bị vô hiệu. Một luồng đã tắt không bao giờ tự bật lại. Bật D-1 / D-0 trên production: 17/10/2026 sau deploy
+  1.2.4 (yêu cầu của chủ hệ thống), giờ chạy giữ nguyên (D-1 03:00, fallback 06:00; D-0 08–18 giờ, 2 giờ/lần).
 - Nâng cấp từ 1.1.7 trở về trước: D-1 và D-0 **TẮT**; huấn luyện giữ trạng thái của công tắc chung cũ. Không luồng nào
   từ TẮT chuyển sang BẬT. (Với nguồn DEMO, snapshot D0 tổng hợp trước đây chạy theo công tắc chung sẽ dừng cho tới khi
   bật D-0.)

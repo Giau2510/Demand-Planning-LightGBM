@@ -2,7 +2,7 @@
 translated; numbers are written unchanged. EXPORT_FORMAT_VERSION is stamped into the Info sheet."""
 from __future__ import annotations
 
-EXPORT_FORMAT_VERSION = "4"   # 4: DD/MM/YYYY in every language; VN local times; method label before the code
+EXPORT_FORMAT_VERSION = "5"   # 5: product name column after the SKU (1.2.4); 4: DD/MM/YYYY, VN local times, method label before the code
 
 LABELS = {
     "vi": {
@@ -18,16 +18,17 @@ LABELS = {
                  "actual_date": "Ngày áp dụng 'thực tế đến hiện tại'", "actual_status": "Trạng thái thực tế trong ngày",
                  "actual_as_of_vn": "Thực tế đọc lúc (giờ Việt Nam)", "actual_as_of_utc": "Thực tế đọc lúc (UTC)", "actual_source_updated_max": "Bản ghi nguồn mới nhất",
                  "actual_snapshot_id": "Mã snapshot D0", "actual_is_demo": "Thực tế là dữ liệu DEMO mô phỏng",
-                 "actual_note": "Ghi chú"},
+                 "actual_note": "Ghi chú", "product_names_source": "Nguồn tên sản phẩm",
+                 "product_names_fetched_at": "Tên sản phẩm đọc lúc (giờ Việt Nam)"},
         "actual_note": "Cột 'Thực tế đến hiện tại' chỉ có giá trị ở ngày hôm nay (giờ VN), là số lượng đặt lũy kế đến thời điểm đọc snapshot D0, KHÔNG phải số cả ngày. Ô trống = không áp dụng hoặc chưa có dữ liệu.",
         "actual_status": {"PARTIAL_DAY": "Đang cập nhật trong ngày", "STALE": "Có thể đã cũ", "NO_DATA_TODAY": "Chưa có dữ liệu hôm nay",
                           "NOT_APPLICABLE": "Không áp dụng cho nguồn này"},
-        "cols_totals": {"sku_id": "SKU", "fc_id": "FC/kho", "method_label": "Phương pháp", "forecast_qty": "Tổng dự báo trong khoảng",
+        "cols_totals": {"sku_id": "SKU", "product_name": "Tên sản phẩm", "fc_id": "FC/kho", "method_label": "Phương pháp", "forecast_qty": "Tổng dự báo trong khoảng",
                         "actual_today": "Thực tế hôm nay đến hiện tại", "method": "Mã kỹ thuật phương pháp (không dịch)"},
-        "cols_daily": {"sku_id": "SKU", "fc_id": "FC/kho", "target_date": "Ngày", "horizon_day": "Ngày thứ",
+        "cols_daily": {"sku_id": "SKU", "product_name": "Tên sản phẩm", "fc_id": "FC/kho", "target_date": "Ngày", "horizon_day": "Ngày thứ",
                        "forecast_qty": "Số lượng dự báo", "actual_today": "Thực tế đến hiện tại",
                        "method_label": "Phương pháp", "method": "Mã kỹ thuật phương pháp (không dịch)"},
-        "yes": "Có", "no": "Không", "language_name": "Tiếng Việt",
+        "yes": "Có", "no": "Không", "language_name": "Tiếng Việt", "no_product_name": "Chưa có tên sản phẩm",
         "date_fmt": "%d/%m/%Y", "excel_date_fmt": "DD/MM/YYYY", "time_suffix": "giờ Việt Nam, UTC+7",
     },
     "en": {
@@ -41,16 +42,17 @@ LABELS = {
                  "actual_date": "Date of 'actual so far'", "actual_status": "Intraday actual status",
                  "actual_as_of_vn": "Actual read at (Vietnam time)", "actual_as_of_utc": "Actual read at (UTC)", "actual_source_updated_max": "Latest source record",
                  "actual_snapshot_id": "D0 snapshot ID", "actual_is_demo": "Actual is simulated DEMO data",
-                 "actual_note": "Note"},
+                 "actual_note": "Note", "product_names_source": "Product name source",
+                 "product_names_fetched_at": "Product names read at (Vietnam time)"},
         "actual_note": "The 'Actual so far' column only has values for today (Vietnam time): cumulative ordered quantity up to the D0 snapshot read time, NOT a full-day figure. Empty = not applicable or no data yet.",
         "actual_status": {"PARTIAL_DAY": "Updating during the day", "STALE": "May be stale", "NO_DATA_TODAY": "No data today yet",
                           "NOT_APPLICABLE": "Not applicable for this source"},
-        "cols_totals": {"sku_id": "SKU", "fc_id": "FC/warehouse", "method_label": "Method", "forecast_qty": "Period total forecast",
+        "cols_totals": {"sku_id": "SKU", "product_name": "Product name", "fc_id": "FC/warehouse", "method_label": "Method", "forecast_qty": "Period total forecast",
                         "actual_today": "Actual today so far", "method": "Technical method code (not translated)"},
-        "cols_daily": {"sku_id": "SKU", "fc_id": "FC/warehouse", "target_date": "Date", "horizon_day": "Day #",
+        "cols_daily": {"sku_id": "SKU", "product_name": "Product name", "fc_id": "FC/warehouse", "target_date": "Date", "horizon_day": "Day #",
                        "forecast_qty": "Forecast qty", "actual_today": "Actual so far",
                        "method_label": "Method", "method": "Technical method code (not translated)"},
-        "yes": "Yes", "no": "No", "language_name": "English",
+        "yes": "Yes", "no": "No", "language_name": "English", "no_product_name": "No product name yet",
         "date_fmt": "%d/%m/%Y", "excel_date_fmt": "DD/MM/YYYY", "time_suffix": "Vietnam time, UTC+7",
     },
 }

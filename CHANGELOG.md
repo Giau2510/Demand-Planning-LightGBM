@@ -5,6 +5,28 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.2.4 - 2026-10-17 (explanation survives a reload of identical data, product names + search, D-1 / D-0 switches) [reports/demandforecast_v124_history_names_schedules_20261017.md]
+
+Database schema unchanged (3); settings: new keys `bigquery.product_names_table / _key_column / _name_column` (defaults
+`dim_sku` / `sku_code` / `product_name`, ignored by 1.2.3: rollback needs no restore). Cause of the empty "How was the
+forecast produced?" and "Demand history and Excel export" areas: the manual D-1 of 17/10 19:58 rewrote every row with
+identical values; the data fingerprint includes `MAX(loaded_at)`, so the published run was declared "data changed".
+
+* Data identity (`data/identity.py`): SHA-256 of the values the model reads, per day and per window, never loaded_at.
+  Stored with each training run; explanations (calculation, history + Excel, TreeSHAP trace) and the model page's
+  backtest points accept a reload with identical values (`SAME_CONTENT`), name the changed days otherwise. Older runs:
+  `app.cli attest-training-data --training-run <id> --backup <zip>` (only from a backup whose fingerprint equals the
+  run's). The cache of explanations includes the verdict.
+* Product names: `bq/product_names.py`, one name per SKU from `dim_sku` (ambiguous / missing -> "Chưa có tên sản phẩm"),
+  refreshed after each D-1 or by hand (`POST /api/bigquery/product-names/refresh`, `app.cli product-names-refresh`).
+  Results: name column, keyword search (`q`: parts of SKU / name, case- and accent-insensitive, all words, combined
+  with the FC / SKU filters; totals and pages follow it). Excel export (format 5): "Product name" after the SKU,
+  source + read time on the Info sheet; rows and numbers unchanged.
+* Jobs page: D-1 and D-0 switches (existing `PUT /api/schedules/{flow}`, readiness checked), showing only the saved
+  state; disabled on the read-only remote link.
+* Tests: `test_v124_history_names_schedules.py` (12), `v124.test.tsx` (6); export column positions in test_v111 /
+  test_v112 shifted by one (product name inserted after the SKU, format 5).
+
 ## 1.2.3 - 2026-10-17 (P0: SOURCE_NOT_READY explained, effective flow state, manual training not tied to schedules) [reports/demandforecast_v123_p0_source_not_ready_20261017.md]
 
 Database schema unchanged (3); no new setting (rollback to 1.2.2 needs no restore). Root cause of the skipped manual

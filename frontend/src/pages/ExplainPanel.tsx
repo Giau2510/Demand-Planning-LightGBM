@@ -12,6 +12,27 @@ function addDays(iso: string, n: number) {
 
 const TOP_N = 8;
 
+/** 1.2.4: how the backend checked that the data this run used is still the data in the database. A reload with the
+ *  same values (SAME_CONTENT) is said explicitly; a change names the days; without a recorded identity nothing is guessed. */
+export function DataCheck({ d }: { d: any }) {
+  const { t } = useI18n();
+  if (!d || d.status === "SAME_LOAD") return null;
+  if (d.status === "SAME_CONTENT") {
+    return (
+      <div className="alert info small" data-testid="ex-data-check">
+        {t("ex.dc.same_content").replace("{from}", fmtDate(d.window?.[0])).replace("{to}", fmtDate(d.window?.[1]))
+          .replace("{rows}", fmtNum(d.rows)).replace("{sha}", String(d.sha256 ?? "").slice(0, 12))}
+        {d.origin === "ATTESTED" && <> {t("ex.dc.attested")}</>}
+      </div>
+    );
+  }
+  if (d.status === "CHANGED") {
+    const days = (d.changed_days ?? []).slice(0, 10).map((x: string) => fmtDate(x)).join(", ");
+    return <div className="alert warn small" data-testid="ex-data-check">{t("ex.dc.changed").replace("{n}", fmtNum(d.n_changed_days)).replace("{days}", days)}</div>;
+  }
+  return <div className="alert warn small" data-testid="ex-data-check">{t("ex.dc.unverifiable")}</div>;
+}
+
 /** Collapsible block (closed blocks keep the screen readable; their content stays in the page for search/print). */
 function Block({ title, open = false, children, testid }: { title: ReactNode; open?: boolean; children: ReactNode; testid?: string }) {
   return (
@@ -121,6 +142,7 @@ export default function ExplainPanel({ runId, sku, fc, date, maxHorizon, origin,
               )}
               {lg?.uses_forecast_inputs && <div className="alert info small">{t("ex.lgb_recursive").replace("{h}", String(lg.recursive_step))}</div>}
               {lg?.forecast_strategy === "DIRECT" && <div className="alert info small" data-testid="ex-direct">{t("ex.direct")}</div>}
+              <DataCheck d={e.reproduction?.data_check} />
             </section>
 
             <Block title={`1. ${t("ex.identity")}`} open>
