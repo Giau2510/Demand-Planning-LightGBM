@@ -16,7 +16,7 @@ function Readiness({ r }: { r: any }) {
     <div className="small" data-testid="readiness">
       {r.ready ? <Pill status="OK" label={t("sch.ready")} /> : <Pill status="INSUFFICIENT" label={t("sch.not_ready")} />}
       {r.reasons?.length > 0 && <ul className="small">{r.reasons.map((x: any) => <li key={x.code}>{pick(x)}{x.detail ? <span className="muted mono"> ({x.detail})</span> : null}</li>)}</ul>}
-      {r.notes?.length > 0 && <p className="muted">{r.notes.map((x: any) => pick(x)).join(" ")}</p>}
+      {r.notes?.length > 0 && <ul className="small muted" data-testid="readiness-notes">{r.notes.map((x: any) => <li key={x.code}>{pick(x)}{x.detail ? <span className="mono"> ({x.detail})</span> : null}</li>)}</ul>}
     </div>
   );
 }

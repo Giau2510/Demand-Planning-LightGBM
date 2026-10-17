@@ -456,6 +456,7 @@ Mỗi luồng đọc đúng **một** bảng, cấu hình bằng full table id `
 - Từ 1.2.0, chế độ TABLE đọc bảng D-0, không lọc theo phân vùng của bảng D-1.
 - Luồng D-0 chỉ "sẵn sàng" khi bảng D-0 đã kiểm tra đạt (`D0_TABLE_NOT_CHECKED`).
 - Chế độ SQL (SQL do người dùng viết) không đổi.
+- 1.2.1: kiểm tra và đọc bảng D-0 dùng **ánh xạ D-0 riêng**, không còn dùng ánh xạ D-1; xem mục 15.
 
 **Kiểm tra thật ngày 16/10/2026 23:5x** (chỉ đọc):
 - Bảng D-0 có 12 cột: `fc_code, created_date, so_code, order_status, product_id, sku_code, item_code, seller_code,
@@ -497,3 +498,77 @@ trạng thái đó (công tắc bật, độ phủ giá 0). Các bước để g
 Kết quả backtest (7 fold, cùng điểm): chỉ nhu cầu WAPE 0,805953 / bias +0,068976; nhu cầu + giá WAPE 0,808117 / bias
 +0,071829. Hai feature giá hiện có chưa cải thiện metric tổng. Chi tiết, giới hạn và các thử nghiệm đề xuất ở
 `experiments/final_release_20261017/`.
+
+## 15. D-0 có ánh xạ riêng, xác nhận bằng BigQuery thật (1.2.1)
+
+**Vì sao D-0 production báo `SQL_NOT_VALIDATED` ("d0: no D-0 SQL version validated by BigQuery")** — kiểm tra ngày
+17/10/2026:
+- Luồng D-0 ở chế độ **SQL**. Hai phiên bản SQL của ngày 15/10 chưa từng được gửi BigQuery để xác nhận:
+  - v1 là SQL người dùng đưa;
+  - v2 là bản đề xuất.
+  Vì vậy không có phiên bản nào "đang dùng", và luồng D-0 không sẵn sàng.
+- Đến bản 1.2.0, D-0 còn mượn **ánh xạ D-1**:
+  - cột đầu ra bắt buộc, khóa mặc định và cột ngày đều lấy theo tên cột D-1;
+  - ở chế độ TABLE, bảng D-0 phải có mọi cột nội bộ mà D-1 ánh xạ, kể cả `sales_price`, và cột phân vùng của D-1.
+- Ở chế độ SQL, ứng dụng không lọc theo ngày: dòng của ngày khác chỉ gây cảnh báo nhưng **vẫn bị cộng** vào snapshot.
+
+**Từ 1.2.1:**
+- **Ánh xạ D-0 riêng** (`bigquery.d0_mapping`, trang *SQL nguồn & đồng bộ → D-0 → Ánh xạ D-0*;
+  `GET/PUT /api/bigquery/d0-mapping`).
+  - Trường thiết yếu: `sku_id`, `fc_id`, `order_qty`, và ngày của dòng: `order_date` (DATE/DATETIME) hoặc `created_at`
+    (TIMESTAMP, đổi sang ngày theo giờ Việt Nam).
+  - Trường tùy chọn: `order_id` (thuộc khóa mặc định), `source_updated_at`.
+  - Cột khác của SQL/bảng D-0 được bỏ qua. D-0 có thể ít cột hơn, khác tên, khác cấu trúc so với D-1.
+  - Lưu ánh xạ D-0 **không** đổi ánh xạ D-1, không đổi mapping hash D-1, không tắt chế độ sản xuất.
+  - Giá trị điền sẵn khi nâng cấp lấy theo metadata thật của bảng `demand_planing_lightgbm_D0` ngày 17/10/2026:
+    `sku_code`, `fc_code`, `demand_quantity`, `created_date`, `so_code`. Nút *Gợi ý từ schema thật*
+    (`POST /api/bigquery/d0-mapping/suggest`) đọc lại metadata bảng hoặc kết quả dry-run của một phiên bản SQL, không lưu gì.
+- **Xác nhận một phiên bản SQL D-0** (*Xác nhận với BigQuery*) là một vòng thật với BigQuery:
+  1. dry-run kiểm tra cú pháp, quyền, bảng nguồn, loại câu lệnh và chi phí;
+  2. đối chiếu schema đầu ra với ánh xạ D-0: cột có mặt, kiểu tương thích, cột khóa có mặt;
+  3. **chạy thật** phép tổng hợp của hôm nay. Phép này không ghi gì, giới hạn bởi `maximum_bytes_billed`.
+
+  Kết quả được lưu trong phiên bản đó: thời điểm, sha256 SQL, mã ánh xạ D-0, cột đầu ra, số liệu chạy thử, lỗi nếu có.
+  - Chỉ VALID mới được dùng.
+  - Lưu SQL không bao giờ tự xác nhận.
+  - Đổi SQL thì tạo phiên bản mới chưa xác nhận.
+  - Đổi ánh xạ hoặc khóa D-0 thì phiên bản đang dùng chuyển sang `D0_REVALIDATE_REQUIRED`, job bị bỏ qua có lý do.
+  - Xác nhận do bản 1.2.0 ghi lại cũng phải làm lại, vì thiếu kiểu cột đầu ra.
+
+  Chế độ TABLE áp dụng cùng quy tắc với metadata bảng D-0.
+- **Job D-0** chỉ tính dòng có ngày = hôm nay (giờ Việt Nam, tham số `@day`). Mọi dòng khác đều được đếm theo lý do:
+  `OTHER_DAY`, `NULL_DATE`, `NULL_SKU`, `NULL_FC`, `NULL_TARGET`, `NEGATIVE_TARGET`.
+  - Trùng khóa và trùng hoàn toàn chỉ tính trên dòng của hôm nay.
+  - Snapshot ghi vào `d0_snapshots` / `d0_snapshot_values`, **không** vào `demand_daily`. Huấn luyện và backtest không đọc
+    hai bảng này.
+  - Kết quả job ghi `forecast_match`: số SKU × FC có/không có dự báo cho hôm nay và tổng demand chưa đối chiếu được. Dòng
+    không có dự báo vẫn được giữ trong snapshot.
+  - D-0 lỗi không bao giờ chuyển sang đọc bảng D-1.
+
+**Kiểm tra thật ngày 17/10/2026 15:5x–16:13** (code 1.2.1, BigQuery thật chỉ đọc, ghi trên bản sao DB production, DB thật
+không đổi):
+- **Metadata bảng D-0:** 12 cột, 8.454 dòng, location `asia-southeast1`. Kiểm tra bảng với ánh xạ D-0 **đạt**; 7 cột không
+  cần được bỏ qua.
+- **v1** (SQL người dùng, 15/10): dry-run **đạt**. Câu lệnh SELECT, đọc `fact_order`, `fact_order_item`,
+  `adhoc_pm_master_sku`, ước tính khoảng 831 MB mỗi lần chạy.
+- **v2** (đề xuất, 15/10): BigQuery **từ chối**, lỗi `No matching signature for function DATE`. `DATE(a.created_at,
+  'Asia/Ho_Chi_Minh')` không dùng được với kiểu của `created_at`.
+- **Phiên bản mới** `SELECT * FROM \`lakehouse-prod-394907.gold_buymed_vn2.demand_planing_lightgbm_D0\` WHERE created_date
+  = CURRENT_DATE('Asia/Ho_Chi_Minh')`: **VALID**.
+  - Dry-run khoảng 1 MB, rồi chạy thật cho ngày 17/10: 8.454 dòng, 2.142 SKU × FC, tổng 34.618.
+  - 0 dòng lỗi, 0 dòng khác ngày, 0 dòng trùng hoàn toàn.
+  - **48 dòng trùng khóa** (`so_code, sku_code, fc_code, created_date`), tức nhiều dòng đơn của cùng SKU trong một đơn.
+- **Khóa trùng với chính sách D-0 hiện tại `BLOCK`:** snapshot bị chặn (`BQ_KEY_NOT_UNIQUE`) và không ghi gì. Với D-1, chủ dự
+  án đã chọn `SUM_ALL` (cộng các dòng đơn, 16/10/2026). Áp dụng cho D-0 là quyết định nghiệp vụ, chọn ở *Khi khóa bị trùng*.
+  Trên bản sao, với `SUM_ALL`: snapshot 2.142 SKU × FC; chạy lại cùng khóa job không ghi thêm.
+- **Kiểm thử tự động trên BigQuery thật** (`tests/test_v121_d0_real_bq.py`, bật bằng `DF_REAL_BQ=1`, 5 test):
+  - lọc đúng ngày Việt Nam;
+  - TIMESTAMP đổi sang ngày VN;
+  - đếm các lý do loại dòng;
+  - tính trùng khóa và trùng hoàn toàn;
+  - bảng D-0 thật đạt với ánh xạ mặc định;
+  - phân loại lỗi cú pháp và lỗi bảng không tồn tại.
+
+**Lỗi BigQuery "Not found: Table ... was not found in location X"** nay trả `BQ_NOT_FOUND`: bảng không tồn tại. Trước
+1.2.1 lỗi này bị xếp nhầm thành `BQ_LOCATION_MISMATCH`. Dataset không có ở location đã cấu hình vẫn là
+`BQ_LOCATION_MISMATCH`.

@@ -28,6 +28,10 @@ REFERENCE_FIELDS = ["product_id", "item_code", "outbound_qty", "order_status", "
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # full BigQuery table id project.dataset.table (1.2.0 source tables of the D-1 and D-0 feeds)
 TABLE_ID_RE = re.compile(r"^([a-z][a-z0-9\-]{4,61}[a-z0-9])\.([A-Za-z_][A-Za-z0-9_]{0,1023})\.([A-Za-z_][A-Za-z0-9_]{0,1023})$")
+# 1.2.1: fields the D-0 feed reads, mapped to the D-0 output's OWN column names (never through the D-1 mapping).
+# Essential: SKU, FC, quantity and the day of the line (order_date, or created_at when only a timestamp exists).
+D0_FIELDS = ["sku_id", "fc_id", "order_qty", "order_date", "created_at", "order_id", "source_updated_at"]
+D0_ESSENTIAL = ("sku_id", "fc_id", "order_qty")
 
 
 class GeneralSettings(BaseModel):
@@ -219,6 +223,19 @@ def _default_mapping() -> dict[str, FieldMapping]:
             for f in INTERNAL_FIELDS}
 
 
+# Columns of the D-0 table demand_planing_lightgbm_D0 as read from BigQuery metadata on 17/10/2026 (12 columns:
+# fc_code, created_date DATE, so_code, sku_code, demand_quantity INTEGER, ...). Only a pre-fill: every D-0 SQL
+# validation and every D-0 table check compares the mapping with the REAL output schema again.
+D0_DEFAULT_COLUMNS = {"sku_id": "sku_code", "fc_id": "fc_code", "order_qty": "demand_quantity",
+                      "order_date": "created_date", "order_id": "so_code"}
+
+
+def _default_d0_mapping() -> dict[str, FieldMapping]:
+    return {f: FieldMapping(column=D0_DEFAULT_COLUMNS.get(f),
+                            usage="REQUIRED" if f in D0_ESSENTIAL else ("UNUSED" if f == "created_at" else "OPTIONAL"))
+            for f in D0_FIELDS}
+
+
 class BigQuerySettings(BaseModel):
     project_id: str = "lakehouse-prod-394907"
     dataset_id: str = ""
@@ -254,6 +271,21 @@ class BigQuerySettings(BaseModel):
     # --- 1.2.0: table of the D-0 feed (today, intraday), full id project.dataset.table; read only by D0_SYNC when the
     # D-0 feed is in TABLE mode. The D-1 table stays project_id / dataset_id / source_table (scope key unchanged).
     d0_table_id: str = "lakehouse-prod-394907.gold_buymed_vn2.demand_planing_lightgbm_D0"
+    # --- 1.2.1: the D-0 feed's own mapping (output column per D0_FIELDS). Independent of field_mapping: the D-0 output
+    # may have fewer / other columns than D-1. Not part of the D-1 mapping hash (changing it never touches D-1).
+    d0_mapping: dict[str, FieldMapping] = Field(default_factory=_default_d0_mapping)
+
+    @field_validator("d0_mapping")
+    @classmethod
+    def _d0_map(cls, v):
+        for k, m in v.items():
+            if k not in D0_FIELDS:
+                raise ValueError(f"unknown D-0 field {k}")
+            if m.column and not IDENT.match(m.column):
+                raise ValueError(f"invalid column name for D-0 field {k}")
+        for k in D0_FIELDS:
+            v.setdefault(k, FieldMapping(column=None, usage="OPTIONAL"))
+        return v
 
     @field_validator("d0_table_id")
     @classmethod

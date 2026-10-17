@@ -40,6 +40,51 @@ def bq_source_table_save(kind: str, body: TableBody):
     return source_tables.save(kind, body.table_id)
 
 
+# ------------------------------------------------------------------ 1.2.1: the D-0 feed's own mapping
+class D0MappingBody(BaseModel):
+    mapping: dict[str, dict]
+
+
+@router.get("/bigquery/d0-mapping")
+def bq_d0_mapping():
+    """D-0 mapping (independent of the D-1 mapping), missing essential fields, key columns and readiness reasons."""
+    from ..bq import d0_feed
+    return d0_feed.view()
+
+
+@router.put("/bigquery/d0-mapping")
+def bq_d0_mapping_save(body: D0MappingBody):
+    """Save the D-0 mapping only: never the D-1 mapping, never production mode. The D-0 SQL / table must then be
+    validated again for the new mapping (no validated status is carried over)."""
+    from ..bq import d0_feed
+    return d0_feed.save_mapping(body.mapping)
+
+
+class D0SuggestBody(BaseModel):
+    source: str = Field(default="table", max_length=20)     # "table" or "sql:<version id>"
+
+
+@router.post("/bigquery/d0-mapping/suggest")
+def bq_d0_mapping_suggest(body: D0SuggestBody):
+    """Read the REAL D-0 schema - table metadata, or the dry-run output of a D-0 SQL version (no data read) - and
+    propose a D-0 mapping. Nothing is saved."""
+    from ..bq import d0_feed
+    bq = ss.get("bigquery")
+    if body.source == "table":
+        source_tables.parse(bq.d0_table_id)
+        try:
+            t = connector._client(bq).get_table(bq.d0_table_id)
+        except Exception as e:  # noqa: BLE001 - classified (no credential in the message)
+            raise connector._map_error(e) from e
+        cols = [{"name": f.name, "type": str(f.field_type).upper()} for f in t.schema]
+    elif body.source.startswith("sql:") and body.source[4:].isdigit():
+        v = sql_sources.version(sql_sources.source("d0"), int(body.source[4:]))
+        cols = connector.sql_dry_run(v.sql)["columns"]
+    else:
+        raise AppError("VALIDATION_ERROR", 422, detail="source must be 'table' or 'sql:<version id>'")
+    return {**d0_feed.suggest(cols), "source": body.source}
+
+
 # ------------------------------------------------------------------ identity + OAuth
 @router.get("/bigquery/identity")
 def bq_identity():
@@ -197,7 +242,8 @@ def _last(c, job_type: str) -> dict | None:
     keep = ("rows_read", "rows_valid", "rows_error", "excluded_by_reason", "series_days_written", "series_days_new",
             "series_days_updated", "series_days_removed", "series_rows_new", "snapshot_id", "series", "window_start",
             "window_end", "mode", "backfill", "sql_source", "key_duplicate_rows", "exact_duplicate_rows",
-            "source_batch_id", "already_written", "dates_in_output", "warnings", "qty_valid", "full_reload")
+            "source_batch_id", "already_written", "dates_in_output", "warnings", "qty_valid", "full_reload",
+            "rows_other_day", "forecast_match")
     r["result"] = {k: res.get(k) for k in keep if k in res}
     return r
 

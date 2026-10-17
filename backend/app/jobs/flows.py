@@ -4,7 +4,9 @@
   d0     D-0 snapshot: today's partial day (DEMO synthetic or BigQuery)          job D0_SYNC     schedule.d0_enabled
   train  daily training on closed days (candidate / first publication)          job TRAIN_PUBLISH schedule.train_enabled
 
-A flow can be switched ON only when it is READY for the active data source. Saving times never runs a job. The
+A flow can be switched ON only when it is READY for the active data source. Saving times never runs a job.
+On BIGQUERY the daily training follows TODAY's D-1: a D1_SYNC that succeeded today (scheduled, retried or run by hand,
+never a backfill) and loaded the closed days up to yesterday (1.2.1: a successful manual D-1 counts as well). The
 in-process scheduler reads these settings at every tick (nothing is registered in memory), so a restart restores the
 saved state from the database; `Scheduler.reload()` confirms right after a save that the running scheduler has loaded
 it. Readiness is computed from local state only (settings, saved checks): no call to Google/BigQuery.
@@ -17,7 +19,7 @@ from datetime import datetime, timedelta
 from .. import db
 from .. import settings_service as ss
 from ..messages import AppError, msg
-from ..timeutil import now_iso, now_vn, vn_slot
+from ..timeutil import now_iso, now_vn, parse_iso, vn_slot
 
 FLOWS = {"d1": {"job_type": "D1_SYNC", "flag": "d1_enabled"},
          "d0": {"job_type": "D0_SYNC", "flag": "d0_enabled"},
@@ -78,13 +80,11 @@ def readiness(flow: str, conn=None) -> dict:
                 bq = ss.get("bigquery", c)
                 if not bq.production_enabled:
                     reasons.append(_reason("SOURCE_NOT_READY", "bigquery.production_enabled=false"))
-                d0 = ss.get("sql_sources", c).d0
-                if d0.mode == "SQL" and not _active_valid(d0):
-                    reasons.append(_reason("SQL_NOT_VALIDATED", "d0: no D-0 SQL version validated by BigQuery"))
-                if d0.mode == "TABLE":
-                    from ..bq import source_tables
-                    if not source_tables.is_ok("d0", c):     # 1.2.0: the D-0 table must have passed its check
-                        reasons.append(_reason("D0_TABLE_NOT_CHECKED", bq.d0_table_id or "-"))
+                # 1.2.1: the D-0 feed's own mapping + a BigQuery validation (SQL) / table check made for THAT mapping
+                from ..bq import d0_feed
+                r0, n0 = d0_feed.readiness(c)
+                reasons += r0
+                notes += n0
         else:
             from ..data.demand import resolve_scope
             try:
@@ -93,12 +93,54 @@ def readiness(flow: str, conn=None) -> dict:
                 reasons.append(_reason(e.code, e.detail))
             if src == "BIGQUERY":
                 _bq_ready(c, reasons)
-                if not ss.get("schedule", c).d1_enabled:     # on BigQuery the daily training waits for today's D-1
-                    reasons.append(_reason("TRAIN_WAITS_FOR_D1"))
+                d1 = d1_success_today(c)          # on BigQuery the daily training follows today's D-1
+                if d1:
+                    notes.append(_reason("D1_TODAY_SUCCEEDED", f"{d1['id']} ({d1['trigger']}, {d1['finished_vn']}, "
+                                                                f"data to {d1['window_end']})"))
+                elif not ss.get("schedule", c).d1_enabled:
+                    reasons.append(_reason("TRAIN_WAITS_FOR_D1", "no successful D-1 today and the D-1 flow is OFF"))
+                else:
+                    notes.append(_reason("TRAIN_WAITING_FOR_TODAY_D1", _d1_today_state(c)))
         return {"ready": not reasons, "reasons": reasons, "notes": notes, "source": src}
     finally:
         if own:
             c.close()
+
+
+def _vn_day_start_utc(now: datetime) -> str:
+    from datetime import timezone
+    return vn_slot(now.date(), "00:00").astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def d1_success_today(c, now: datetime | None = None) -> dict | None:
+    """Today's D-1 load the training may follow: a D1_SYNC job that SUCCEEDED today (Vietnam day; scheduled, retried
+    or manual) whose result is a regular load (not a backfill) ending yesterday. A manual run goes through the same
+    completion-signal / sufficiency check as the scheduled one (sync.run_d1_sync), so it proves the same thing."""
+    now = now or now_vn()
+    yesterday = str(now.date() - timedelta(days=1))
+    rows = db.rows(c, "SELECT id, idempotency_key, trigger, finished_at, result_json FROM job_runs WHERE "
+                      "job_type='D1_SYNC' AND status='SUCCEEDED' AND finished_at>=? ORDER BY finished_at DESC, rowid DESC",
+                   (_vn_day_start_utc(now),))
+    for r in rows:
+        res = (json.loads(r["result_json"] or "{}") or {}).get("result") or {}
+        if res.get("backfill") or res.get("mode") == "BACKFILL" or str(res.get("window_end")) != yesterday:
+            continue
+        if res.get("status") not in (None, "SUCCEEDED"):
+            continue
+        fin = parse_iso(r["finished_at"])
+        return {"id": r["id"], "key": r["idempotency_key"], "trigger": r["trigger"], "finished_at": r["finished_at"],
+                "finished_vn": fin.astimezone(now.tzinfo).strftime("%H:%M") if fin and now.tzinfo else r["finished_at"],
+                "window_end": res.get("window_end")}
+    return None
+
+
+def _d1_today_state(c, now: datetime | None = None) -> str:
+    now = now or now_vn()
+    r = db.one(c, "SELECT id, status, reason_code FROM job_runs WHERE idempotency_key=?",
+               (f"D1_SYNC:{now.date().isoformat()}",))
+    if not r:
+        return "D-1 of today has not run yet"
+    return f"{r['id']}: {r['status']}{' ' + r['reason_code'] if r['reason_code'] else ''}"
 
 
 def _active_valid(src) -> bool:

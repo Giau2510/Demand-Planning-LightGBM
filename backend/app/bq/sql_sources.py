@@ -7,6 +7,8 @@ Rules:
 * The text is never rewritten. It runs as `SELECT <app columns> FROM ( <user sql> )`.
 * A job captures the active version (id + sha256 + text) when it starts and uses that snapshot until it ends.
 * Changing SQL never makes a new column a model feature (feature registry decides, see ml/feature_registry.py).
+* 1.2.1: the D0 feed has its OWN mapping (bigquery.d0_mapping, see d0_feed.py): its output only needs SKU, FC,
+  quantity and the day, under its own column names - never the D-1 columns.
 """
 from __future__ import annotations
 
@@ -16,9 +18,9 @@ from ..timeutil import now_iso
 from . import sql_guard
 
 KINDS = ("history", "d0")
-# output columns the app needs from a SQL feed (names come from the field mapping)
-NEEDED = {"history": ("order_date|created_at", "sku_id", "fc_id", "order_qty"),
-          "d0": ("sku_id", "fc_id", "order_qty")}
+# output columns the app needs from the history SQL feed (names come from the D-1 field mapping); the D0 feed's
+# columns come from the D-0 mapping (d0_feed.used)
+NEEDED = {"history": ("order_date|created_at", "sku_id", "fc_id", "order_qty")}
 
 
 def _kind(kind: str) -> str:
@@ -46,11 +48,15 @@ def version(src: ss.SqlSource, vid: int) -> ss.SqlVersion:
     return v
 
 
-def effective_keys(src: ss.SqlSource) -> list[str]:
-    """Candidate unique key actually checked: the user's list, else the mapped order / SKU / FC / date columns."""
+def effective_keys(src: ss.SqlSource, kind: str = "history") -> list[str]:
+    """Candidate unique key actually checked: the user's list, else the mapped order / SKU / FC / date columns (of
+    the D-1 mapping for history, of the D-0 mapping for D0)."""
     if src.key_columns:
         return list(src.key_columns)
     bq = ss.get("bigquery")
+    if kind == "d0":
+        from . import d0_feed
+        return d0_feed.key_columns(src, bq)
     out: list[str] = []
     for f in ("order_id", "sku_id", "fc_id", "order_date", "created_at"):
         m = bq.field_mapping.get(f)
@@ -62,14 +68,22 @@ def effective_keys(src: ss.SqlSource) -> list[str]:
 def view(kind: str) -> dict:
     src = source(kind)
     active = next((v for v in src.versions if v.id == src.active_version_id), None)
-    return {"kind": kind, "mode": src.mode, "active_version_id": src.active_version_id,
+    out = {"kind": kind, "mode": src.mode, "active_version_id": src.active_version_id,
             "active": _v(active) if active else None, "key_columns": src.key_columns,
-            "effective_key_columns": effective_keys(src),
+            "effective_key_columns": effective_keys(src, kind),
             "key_duplicate_policy": src.key_duplicate_policy,
             # D-0 schedule = the D-0 flow switch (schedule.d0_enabled); the history feed is scheduled by the D-1 flow
             "schedule_enabled": ss.get("schedule").d0_enabled if kind == "d0" else ss.get("schedule").d1_enabled,
             "versions": [_v(v) for v in sorted(src.versions, key=lambda x: -x.id)],
             "needed_outputs": required_columns(kind)}
+    if kind == "d0":
+        from . import d0_feed
+        out["d0"] = d0_feed.view()
+        h = out["d0"]["mapping_hash"]
+        for v in out["versions"]:        # a validation proves only the mapping / key it was made for
+            val = v.get("validation") or {}
+            v["validated_for_current_mapping"] = val.get("status") == "VALID" and val.get("d0_mapping_hash") == h
+    return out
 
 
 def _v(v: ss.SqlVersion) -> dict:
@@ -78,6 +92,12 @@ def _v(v: ss.SqlVersion) -> dict:
 
 def required_columns(kind: str) -> list[str]:
     bq = ss.get("bigquery")
+    if kind == "d0":
+        from . import d0_feed
+        u = d0_feed.used(bq)
+        df = d0_feed.date_field(u)
+        out = [u.get(f) or f"<{f}: chưa ánh xạ>" for f in ("sku_id", "fc_id", "order_qty")]
+        return out + [u[df] if df else "<order_date|created_at: chưa ánh xạ>"]
     out = []
     for need in NEEDED[kind]:
         cols = [bq.field_mapping[f].column for f in need.split("|")
@@ -158,7 +178,11 @@ def restore(kind: str, vid: int) -> dict:
 
 
 def snapshot(kind: str) -> dict:
-    """What a job uses from start to end. TABLE mode -> {'mode': 'TABLE'}; SQL mode -> the active validated text."""
+    """What a job uses from start to end. TABLE mode -> {'mode': 'TABLE'}; SQL mode -> the active validated text.
+    D0 (1.2.1): d0_feed.snapshot - also refused when the validation was made for another D-0 mapping / key."""
+    if _kind(kind) == "d0":
+        from . import d0_feed
+        return d0_feed.snapshot()
     src = source(kind)
     if src.mode == "TABLE":
         return {"mode": "TABLE", "kind": kind, "key_columns": effective_keys(src),

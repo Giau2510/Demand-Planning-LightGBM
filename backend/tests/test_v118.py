@@ -245,9 +245,14 @@ def test_d1_reads_closed_days_only_and_d0_reads_today_vn(client, utc, yesterday,
     assert r["window_end"] == yesterday                                       # never today's partial day
     daily = [q for q in fake.queries if q[0].startswith("-- df:daily") and not q[1]["dry_run"]][-1]
     assert max(str(v) for _, t, v in daily[1]["params"] if t == "DATE") == yesterday
+    from app.bq import source_tables
+    from test_v116 import _d0_rows
     sql_sources.set_options("d0", mode="TABLE")
-    fake.responses["d0"] = [{"sku_id": "S1", "fc_id": "F1", "cumulative_qty": 1, "source_updated_at": None, "n_rows": 1}]
+    assert source_tables.check("d0")["status"] == "PASSED"           # 1.2.1: a D-0 table runs only after its check
+    fake.responses["d0"] = _d0_rows(timeutil.today_vn())
     sync.run_d0_snapshot("J-D0", None, False)
+    d0q = [q for q in fake.queries if q[0].startswith("-- df:d0") and not q[1]["dry_run"]][-1]
+    assert ("day", "DATE", timeutil.today_vn()) in d0q[1]["params"] and str(timeutil.today_vn()) == today
     with db.read() as c:
         snap = db.one(c, "SELECT order_date FROM d0_snapshots ORDER BY rowid DESC LIMIT 1")
         d1_days = [x[0] for x in c.execute("SELECT DISTINCT order_date FROM demand_daily")]

@@ -351,14 +351,17 @@ def test_sql_preview_is_limited_and_read_only(client):
 
 
 def _d0_rows(today, key_dups="0", exact="0", other_date=None):
+    """Result rows of the D-0 aggregate (1.2.1 layout): a row of another day is EXCLUDED as OTHER_DAY by the query."""
+    n, q = (6, 10.0) if other_date else (5, 9.0)
     rows = [{"_kind": "VALID", "_reason": None, "sku_id": "S1", "fc_id": "F1", "qty": 6.0, "n_rows": 3},
             {"_kind": "VALID", "_reason": None, "sku_id": "S2", "fc_id": "F1", "qty": 1.0, "n_rows": 1},
             {"_kind": "EXCLUDED", "_reason": "NULL_FC", "qty": 2.0, "n_rows": 1},
-            {"_kind": "TOTAL_READ", "_reason": exact, "qty": 9.0, "n_rows": 5},
-            {"_kind": "TOTAL_KEPT", "_reason": key_dups, "qty": 9.0, "n_rows": 5},
+            {"_kind": "TOTAL_READ", "_reason": exact, "qty": q, "n_rows": n},
+            {"_kind": "TOTAL_KEPT", "_reason": key_dups, "qty": q, "n_rows": n},
             {"_kind": "DATE", "_reason": str(today), "qty": 9.0, "n_rows": 5}]
     if other_date:
-        rows.append({"_kind": "DATE", "_reason": other_date, "qty": 1.0, "n_rows": 1})
+        rows += [{"_kind": "EXCLUDED", "_reason": "OTHER_DAY", "qty": 1.0, "n_rows": 1},
+                 {"_kind": "DATE", "_reason": other_date, "qty": 1.0, "n_rows": 1}]
     return rows
 
 
@@ -380,9 +383,11 @@ def test_d0_snapshot_from_user_sql_key_gate_dates_and_idempotent_retry(client):
     res = run_d0_snapshot("JOB-A", "slot", False)
     sql = [q for q in fake.queries if q[0].startswith("-- df:d0") and not q[1]["dry_run"]][-1][0]
     assert "FROM (\nSELECT\n  a.fc_code," in sql and "TO_JSON_STRING(STRUCT(t.`so_code`" in sql   # user SQL verbatim, sub-query
-    assert "BETWEEN @start" not in sql and "@day" not in sql            # no extra date filter added by the app
+    # 1.2.1: only TODAY's rows (Vietnam day, query parameter) are counted; rows of another day are excluded and counted
+    params = [q for q in fake.queries if q[0].startswith("-- df:d0") and not q[1]["dry_run"]][-1][1]["params"]
+    assert "WHEN _d != @day THEN 'OTHER_DAY'" in sql and ("day", "DATE", today) in params
     assert res["series"] == 2 and res["rows_error"] == 1 and res["source_batch_id"].startswith("D0SQL-v1-")
-    assert res["dates_in_output"] and res["warnings"][0]["code"] == "D0_DATES_OTHER_THAN_TODAY"
+    assert res["rows_other_day"] == 1 and res["warnings"][0]["code"] == "D0_ROWS_OTHER_THAN_TODAY"
     again = run_d0_snapshot("JOB-A", "slot", False)                     # retry of the same job -> no duplicate
     assert again["already_written"] and again["snapshot_id"] == res["snapshot_id"]
     with db.read() as c:
@@ -472,7 +477,7 @@ def test_d1_is_independent_backfill_is_bounded_and_counts_new_updated(client, mo
     sql_sources.set_options("d0", mode="TABLE")
     assert source_tables.check("d0")["status"] == "PASSED"
     sql_sources.set_options("d0", schedule_enabled=True)
-    fake.responses["d0"] = [{"sku_id": "S1", "fc_id": "F1", "cumulative_qty": 1, "source_updated_at": None, "n_rows": 1}]
+    fake.responses["d0"] = _d0_rows(timeutil.today_vn())
     sync.run_d0_snapshot("J5", "slot", False)
     with db.read() as c:
         assert c.execute("SELECT COUNT(*) FROM job_runs WHERE job_type='TRAIN_PUBLISH'").fetchone()[0] == 0

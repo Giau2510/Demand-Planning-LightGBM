@@ -186,8 +186,26 @@ CATALOG: dict[str, tuple[str, str]] = {
     "D0_SOURCE_MANUAL_IMPORT": ("Nguồn MANUAL_IMPORT là lịch sử tĩnh từ file Excel, không có dữ liệu trong ngày — D-0 không áp dụng.",
                                 "MANUAL_IMPORT is static history from an Excel file with no intraday data — D-0 does not apply."),
     "D0_DEMO_SYNTHETIC": ("Nguồn DEMO: snapshot D-0 là dữ liệu tổng hợp, gắn nhãn DEMO.", "DEMO source: D-0 snapshots are synthetic data labelled DEMO."),
-    "TRAIN_WAITS_FOR_D1": ("Với BigQuery, huấn luyện hằng ngày chờ D-1 hôm nay thành công — hãy bật luồng D-1 trước.",
-                           "With BigQuery the daily training waits for today's D-1 sync — switch the D-1 flow on first."),
+    "TRAIN_WAITS_FOR_D1": ("Với BigQuery, huấn luyện hằng ngày chỉ chạy sau khi D-1 hôm nay thành công. Hôm nay chưa có lần D-1 "
+                           "thành công và luồng D-1 đang tắt — bật luồng D-1 hoặc chạy D-1 thủ công (trang Lịch chạy dữ liệu).",
+                           "With BigQuery the daily training runs only after today's D-1 succeeded. There is no successful D-1 "
+                           "today and the D-1 flow is OFF — switch the D-1 flow on or run D-1 by hand (Data schedules page)."),
+    "TRAIN_WAITING_FOR_TODAY_D1": ("Huấn luyện đang chờ D-1 hôm nay thành công (chưa có lần D-1 thành công nào hôm nay).",
+                                   "The training waits for today's D-1 to succeed (no successful D-1 today yet)."),
+    "D1_TODAY_SUCCEEDED": ("D-1 hôm nay đã thành công — huấn luyện theo lịch được phép chạy (vẫn qua quality gate).",
+                           "Today's D-1 succeeded — the scheduled training may run (the quality gate still applies)."),
+    "D0_MAPPING_INCOMPLETE": ("Ánh xạ D-0 thiếu trường thiết yếu để đối chiếu demand (SKU, FC, số lượng hoặc ngày). Mở trang "
+                              "Nguồn SQL → D-0 → Ánh xạ D-0 và chọn cột cho các trường trong chi tiết.",
+                              "The D-0 mapping lacks an essential field for the demand comparison (SKU, FC, quantity or day). "
+                              "Open SQL sources → D-0 → D-0 mapping and choose a column for the fields in the detail."),
+    "D0_REVALIDATE_REQUIRED": ("SQL/bảng D-0 đã được xác nhận cho một ánh xạ hoặc khóa D-0 khác (hoặc trước bản 1.2.1) — bấm "
+                               "Xác nhận với BigQuery lại cho phiên bản cần dùng.",
+                               "The D-0 SQL/table was validated for another D-0 mapping or key (or before 1.2.1) — validate "
+                               "the version to use with BigQuery again."),
+    "D0_MAPPING_TYPE_INCOMPATIBLE": ("Cột ánh xạ D-0 có kiểu dữ liệu không dùng được (xem chi tiết trường / cột / kiểu).",
+                                     "A mapped D-0 column has an unusable type (see field / column / type in the detail)."),
+    "D0_LAST_CHECK_DATA_ISSUES": ("Lần kiểm tra BigQuery gần nhất của D-0 thấy vấn đề dữ liệu có thể chặn snapshot.",
+                                  "The last BigQuery check of D-0 found data issues that may block a snapshot."),
     "SCHEDULER_NOT_RUNNING": ("Đã lưu, nhưng scheduler không chạy trong tiến trình này (ví dụ chế độ kiểm thử) — lịch CHƯA có hiệu lực cho tới khi ứng dụng chạy với scheduler.",
                               "Saved, but the scheduler is not running in this process (e.g. test mode) — the schedule has NO effect until the app runs with its scheduler."),
     "SCHEDULE_SWITCH_VIA_FLOW_API": ("Công tắc bật/tắt từng luồng chỉ đổi được ở trang Lịch chạy dữ liệu (có kiểm tra sẵn sàng).",
@@ -201,8 +219,10 @@ CATALOG: dict[str, tuple[str, str]] = {
     "SQL_NOT_A_QUERY": ("BigQuery xác định câu lệnh không phải truy vấn SELECT.", "BigQuery says the statement is not a SELECT query."),
     "SQL_OUTPUT_MISSING_COLUMNS": ("Kết quả SQL thiếu cột cần thiết theo ánh xạ hoặc khóa duy nhất.",
                                    "The SQL output lacks columns required by the mapping or the unique key."),
-    "SQL_NOT_VALIDATED": ("Chưa có phiên bản SQL nào được BigQuery xác nhận cho nguồn này — job không chạy.",
-                          "No SQL version of this feed has been validated by BigQuery — the job does not run."),
+    "SQL_NOT_VALIDATED": ("Chưa có phiên bản SQL nào được BigQuery xác nhận cho nguồn này — job không chạy. Mở trang Nguồn SQL, "
+                          "chọn phiên bản và bấm Xác nhận với BigQuery (chi tiết: trạng thái từng phiên bản).",
+                          "No SQL version of this feed has been validated by BigQuery — the job does not run. Open SQL "
+                          "sources, pick a version and validate it with BigQuery (detail: status of each version)."),
     "OAUTH_NOT_CONFIGURED": ("Chưa có OAuth client (loại Desktop app) do quản trị Google Cloud cấp. Nhập Client ID và Client secret trước khi đăng nhập.",
                              "No OAuth client (Desktop app) from the Google Cloud administrator yet. Enter the client ID and secret before signing in."),
     "OAUTH_IN_PROGRESS": ("Đang chờ đăng nhập Google trong trình duyệt.", "Waiting for the Google sign-in in the browser."),
@@ -279,7 +299,8 @@ def category(code: str) -> str:
         return "MODEL"
     if code in ("NO_ACTIVE_DATASET", "ACTIVE_DATASET_INCONSISTENT", "SOURCE_NOT_READY", "SCHEDULER_DISABLED",
                 "FLOW_NOT_READY", "D0_SCHEDULE_DISABLED", "D1_SCHEDULE_DISABLED", "TRAIN_SCHEDULE_DISABLED",
-                "SCHEDULE_SWITCH_VIA_FLOW_API", "SCHEDULER_NOT_RUNNING"):
+                "SCHEDULE_SWITCH_VIA_FLOW_API", "SCHEDULER_NOT_RUNNING", "D0_MAPPING_INCOMPLETE", "D0_REVALIDATE_REQUIRED",
+                "TRAIN_WAITS_FOR_D1"):
         return "CONFIG"
     if code in ("INTERNAL_ERROR",):
         return "INTERNAL"

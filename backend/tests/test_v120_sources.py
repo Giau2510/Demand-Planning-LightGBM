@@ -11,7 +11,7 @@ from app.bq import connector, source_tables, sql_sources
 from app.jobs import flows
 
 from fake_bq import FakeBQ
-from test_v116 import D0_OUT, LAYOUT, _bq_ready
+from test_v116 import D0_OUT, LAYOUT, _bq_ready, _d0_rows
 
 D1 = "lakehouse-prod-394907.gold_buymed_vn2.demand_planing_lightgbm"
 D0 = "lakehouse-prod-394907.gold_buymed_vn2.demand_planing_lightgbm_D0"
@@ -42,13 +42,20 @@ def test_d0_check_uses_only_the_fields_the_d0_feed_reads(client):
     assert bad["status"] == "FAILED" and {e.get("column") for e in bad["errors"]} >= {"open_date", "total_open_hours"}
     st = client.get("/api/bigquery/source-tables").json()
     assert st["d0"]["ok"] and st["d0"]["last_check"]["checked_at"]
-    # a mapped INTERNAL field whose column is missing from the D-0 table fails the D-0 check (the query would fail)
+    # 1.2.1: the D-0 check reads the D-0 mapping only - a D-1 column the D-0 table lacks does not matter to D-0
     m = ss.get("bigquery").field_mapping
     ss.update("bigquery", {"field_mapping": {**{k: v.model_dump() for k, v in m.items()},
                                              "source_updated_at": {"column": "refresh_time", "usage": "OPTIONAL"}}})
+    same = client.post("/api/bigquery/source-tables/d0/check", json={"table_id": D0}).json()
+    assert same["status"] == "PASSED", same
+    # ... while a D-0 mapping naming a column the D-0 table lacks fails the D-0 check (the query would fail)
+    d0m = ss.get("bigquery").d0_mapping
+    ss.update("bigquery", {"d0_mapping": {**{k: v.model_dump() for k, v in d0m.items()},
+                                          "source_updated_at": {"column": "refresh_time", "usage": "OPTIONAL"}}})
     miss = client.post("/api/bigquery/source-tables/d0/check", json={"table_id": D0}).json()
     assert miss["status"] == "FAILED" and miss["errors"][0]["column"] == "refresh_time"
-    ss.update("bigquery", {"field_mapping": {k: v.model_dump() for k, v in m.items()}})
+    ss.update("bigquery", {"field_mapping": {k: v.model_dump() for k, v in m.items()},
+                           "d0_mapping": {k: v.model_dump() for k, v in d0m.items()}})
     assert not st["d1"]["ok"]                       # the last D-1 check was for another table id and failed
     assert fake.queries == []                       # metadata only: no query, no cost
 
@@ -93,7 +100,7 @@ def test_d0_job_reads_only_the_d0_table_and_needs_a_passed_check(client):
     from app.sync import run_d0_snapshot
     fake = _bq_ready(_fake())
     today = timeutil.today_vn()
-    fake.responses["d0"] = [{"sku_id": "S1", "fc_id": "BD", "cumulative_qty": 7, "source_updated_at": None, "n_rows": 3}]
+    fake.responses["d0"] = _d0_rows(today)
     sql_sources.set_options("d0", mode="TABLE")
     ss.update("bigquery", {"production_enabled": True})
     ss.update("general", {"active_source": "BIGQUERY"})
@@ -102,7 +109,7 @@ def test_d0_job_reads_only_the_d0_table_and_needs_a_passed_check(client):
     assert source_tables.check("d0")["status"] == "PASSED"
     assert "D0_TABLE_NOT_CHECKED" not in [x["code"] for x in flows.readiness("d0")["reasons"]]
     res = run_d0_snapshot("JOB-D0", None, False)
-    assert res["series"] == 1
+    assert res["series"] == 2
     sql = [q[0] for q in fake.queries if q[0].startswith("-- df:d0")][-1]
     assert f"`{D0}`" in sql and f"`{D1}`" not in sql
     again = run_d0_snapshot("JOB-D0", None, False)                         # retry of the same job: no duplicate

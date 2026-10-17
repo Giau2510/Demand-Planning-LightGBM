@@ -342,18 +342,25 @@ def run_d0_snapshot(job_id: str | None = None, scheduled_slot: str | None = None
         if not bq.production_enabled:
             raise AppError("SOURCE_NOT_READY", 409)
         scope_key = bigquery_scope_key(bq)
-        snap = sql_sources.snapshot("d0")          # the D0 SQL used from start to end of THIS job
+        # the D0 SQL / table, D-0 mapping and key rules used from start to end of THIS job (1.2.1: refused when the
+        # validation was made for another D-0 mapping); only TODAY's rows (Vietnam) are counted, never D-1 data
+        snap = sql_sources.snapshot("d0")
         res = connector.fetch_d0(day, read_at, snap)
         rows = [{"sku_id": r["sku_id"], "fc_id": r["fc_id"], "cumulative_qty": float(r["cumulative_qty"] or 0),
                  "source_updated_at": str(r["source_updated_at"]) if r.get("source_updated_at") else None}
                 for r in res["rows"]]
         ups = [r["source_updated_at"] for r in rows if r["source_updated_at"]]
-        sqlid = f"D0SQL-v{snap['version_id']}-{snap['sha256'][:12]}" if snap.get("mode") == "SQL" else None
+        sqlid = (f"D0SQL-v{snap['version_id']}-{snap['sha256'][:12]}" if snap.get("mode") == "SQL"
+                 else f"D0TABLE-{snap.get('table', '')}"[:200])
         stats = {"rows_read": res["rows_read"], "rows_valid": res["rows_valid"], "rows_error": res["rows_error"],
                  "source_updated_max": max(ups) if ups else None, "source_batch_id": sqlid}
+        with db.read() as c:
+            match = _forecast_match(c, scope_key, day, rows, read_at.isoformat(timespec="seconds"))
         extra = {"sql_source": sql_sources.public_snapshot(snap), "excluded_by_reason": res.get("excluded_by_reason"),
                  "key_duplicate_rows": res.get("key_duplicate_rows"), "dates_in_output": res.get("dates_in_output"),
-                 "warnings": res.get("warnings")}
+                 "rows_other_day": res.get("rows_other_day"), "forecast_match": match,
+                 "warnings": (res.get("warnings") or []) + ([{"code": "D0_NO_FORECAST_FOR_TODAY", "detail": str(day)}]
+                                                            if not match["forecast_run_id"] else [])}
     sid = db.new_id("SNP")
     with db.tx() as c:
         if job_id:     # a retried / re-entered job never writes a second snapshot
@@ -374,6 +381,23 @@ def run_d0_snapshot(job_id: str | None = None, scheduled_slot: str | None = None
                                                          "rows": len(rows)})
     log.info("d0 snapshot", extra={"ctx": {"snapshot_id": sid, "job_id": job_id, "rows": len(rows)}})
     return {"status": "SUCCEEDED", "snapshot_id": sid, "series": len(rows), "series_rows_new": len(rows), **stats, **extra}
+
+
+def _forecast_match(c, scope_key: str, day: date, rows: list[dict], snapshot_at: str) -> dict:
+    """How today's D-0 rows line up with the forecast for today (latest published run of the same scope created before
+    the read, as on the snapshot page). Rows without a forecast are KEPT in the snapshot and counted here."""
+    fr = db.one(c, "SELECT id FROM forecast_runs WHERE scope_key=? AND forecast_origin<=? AND created_at<=? "
+                   "ORDER BY created_at DESC, rowid DESC LIMIT 1", (scope_key, str(day), snapshot_at))
+    fset = set()
+    if fr:
+        fset = {(r["sku_id"], r["fc_id"]) for r in db.rows(
+            c, "SELECT sku_id, fc_id FROM forecast_values WHERE run_id=? AND target_date=?", (fr["id"], str(day)))}
+    missing = [r for r in rows if (r["sku_id"], r["fc_id"]) not in fset]
+    have = {(r["sku_id"], r["fc_id"]) for r in rows}
+    return {"forecast_run_id": fr["id"] if fr else None, "series_d0": len(rows), "series_with_forecast": len(rows) - len(missing),
+            "series_without_forecast": len(missing), "qty_without_forecast": sum(r["cumulative_qty"] for r in missing),
+            "forecast_series_without_d0_row": len(fset - have),
+            "sample_without_forecast": [f"{r['sku_id']}|{r['fc_id']}" for r in missing[:20]]}
 
 
 def list_snapshots(filters: dict, limit: int = 200) -> list[dict]:

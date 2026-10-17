@@ -12,7 +12,7 @@ nhật ký riêng. Không còn công tắc chung cho mọi job.
 |---|---|---|
 | `D0_SYNC` — D-0, ngày hiện tại (`schedule.d0_enabled`, mặc định **TẮT**) | 08:00, 10:00, 12:00, 14:00, 16:00, 18:00 | DEMO (mô phỏng, gắn nhãn DEMO), BIGQUERY. MANUAL_IMPORT: *bị bỏ qua* (dữ liệu tĩnh) |
 | `D1_SYNC` — D-1, ngày đã đóng (`schedule.d1_enabled`, mặc định **TẮT**) | chờ tín hiệu từ 01:00, kiểm tra mỗi 30 phút; giờ dự phòng 06:00 | chỉ BIGQUERY |
-| `TRAIN_PUBLISH` — huấn luyện hằng ngày (`schedule.train_enabled`, giữ trạng thái công tắc chung cũ) | 07:00 | mọi nguồn; với BIGQUERY chỉ chạy sau khi D-1 hôm nay thành công |
+| `TRAIN_PUBLISH` — huấn luyện hằng ngày (`schedule.train_enabled`, giữ trạng thái công tắc chung cũ) | 07:00 | mọi nguồn; với BIGQUERY chỉ chạy sau khi D-1 hôm nay thành công (theo lịch hoặc chạy tay, 1.2.1) |
 
 ## Công tắc từng luồng (1.1.8)
 
@@ -24,7 +24,14 @@ nhật ký riêng. Không còn công tắc chung cho mọi job.
     lịch sử (nếu dùng SQL) đã được BigQuery xác nhận. Với DEMO/Excel: *Chưa sẵn sàng* — dữ liệu ngày đã đóng đến từ lô.
   - D-0: DEMO (snapshot tổng hợp, có nhãn) sẵn sàng khi có lô DEMO; MANUAL_IMPORT không áp dụng; BIGQUERY cần
     production và — ở chế độ SQL (mặc định) — một phiên bản SQL D-0 đã được BigQuery xác nhận (SQL v2 đề xuất không bao giờ tự được dùng).
-  - Huấn luyện: có bộ dữ liệu; với BIGQUERY cần production + kiểm tra đạt và luồng D-1 bật (huấn luyện chờ D-1).
+    1.2.1: ánh xạ D-0 riêng đủ trường thiết yếu (`D0_MAPPING_INCOMPLETE`) và lần xác nhận được làm cho đúng ánh xạ/khóa
+    D-0 hiện tại (`D0_REVALIDATE_REQUIRED`); chi tiết lý do ghi rõ trạng thái từng phiên bản (xem BIGQUERY.md mục 15).
+  - Huấn luyện: có bộ dữ liệu; với BIGQUERY cần production + kiểm tra đạt, và **D-1 hôm nay thành công** (1.2.1): lần D-1
+    theo lịch hoặc **chạy tay** (không phải bổ sung khoảng), kết thúc thành công trong ngày và nạp đến hôm qua. Chưa có lần
+    nào như vậy và luồng D-1 tắt → `TRAIN_WAITS_FOR_D1`; luồng D-1 bật nhưng D-1 hôm nay chưa thành công → ghi chú
+    `TRAIN_WAITING_FOR_TODAY_D1` (kèm trạng thái job D-1 hôm nay); đã thành công → ghi chú `D1_TODAY_SUCCEEDED` (job, giờ,
+    dữ liệu đến ngày nào). Trước 1.2.1 chỉ lần D-1 *theo lịch* được tính: D-1 chạy tay thành công (ví dụ 17/10/2026 08:30)
+    vẫn để huấn luyện báo "chờ D-1 hôm nay thành công".
 - **Lưu không chạy job**: lưu giờ chạy hoặc bật một luồng không chạy gì. Thời điểm bật được lưu (`*_enabled_at`); các mốc
   TRƯỚC thời điểm bật không được chạy và không bị tính là "bị lỡ" (không có chạy bù do bật).
 - **Scheduler đọc cấu hình đã lưu ở mỗi lượt** (30 s): không có gì phải "đăng ký" trong bộ nhớ, khởi động lại là khôi
@@ -54,6 +61,9 @@ diễn biến hằng ngày như sau:
 - Lúc 06:00, kiểm tra thấy ngày hôm qua có 0 dòng, nên trả `SOURCE_INCOMPLETE`.
 - Job thử lại sau 60, 120 rồi 240 giây và *Thất bại* (`RETRIES_EXHAUSTED`) vào khoảng 06:08.
 - Lượt huấn luyện 09:00 trên BIGQUERY chờ D-1 của ngày đó thành công, nên **sẽ không chạy**.
+- 1.2.1: nếu sau đó người vận hành **chạy tay D-1** khi nguồn đã đủ và lần đó thành công, lượt huấn luyện của ngày được
+  chạy theo chính sách chạy bù đang chọn (`RUN_ONCE`: chạy một lần ngay ở lượt scheduler kế tiếp; `SKIP`: bỏ qua). Quality
+  gate vẫn áp dụng: model không đạt thì không publish, forecast đã publish giữ nguyên.
 
 Muốn luồng hằng ngày chạy được cần **một quyết định của chủ dự án**, chọn một trong ba hướng: dời giờ dự phòng hoặc giờ D-1
 sau giờ làm mới của nguồn, cấu hình bảng tín hiệu hoàn tất, hoặc tăng số lần thử / khoảng chờ. Ứng dụng không tự đổi giờ.

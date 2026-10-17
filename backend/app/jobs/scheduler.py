@@ -5,7 +5,8 @@ its own switch (1.1.8, see jobs/flows.py) and is planned only when that switch i
   D0_SYNC       schedule.d0_enabled    at each configured slot (default 08:00..18:00 every 2h)
   D1_SYNC       schedule.d1_enabled    from `d1_signal_poll_start`, polling the completion signal; after
                                        `d1_fallback_time` it verifies the source has a plausible full day before syncing
-  TRAIN_PUBLISH schedule.train_enabled at `train_time` (BIGQUERY: only once today's D1_SYNC succeeded)
+  TRAIN_PUBLISH schedule.train_enabled at `train_time` (BIGQUERY: only once today's D-1 succeeded - the scheduled
+                                       D1_SYNC or, 1.2.1, a manual regular D-1 run of today, see flows.d1_success_today)
 
 Missed slots (machine off / app closed) are recorded as SKIPPED (MISSED_SLOT_NO_BACKFILL). For D0 the policy
 `d0_catchup_policy` decides: LATEST_ONCE = at most ONE catch-up snapshot of TODAY (stamped with the real time, flagged
@@ -110,6 +111,9 @@ def plan(now: datetime, sched, active_source: str, last_heartbeat: datetime | No
     if live("TRAIN_PUBLISH", train_slot) and train_slot <= now and kt not in existing:
         late = now - train_slot > grace
         d1_ok = existing.get(k1, {}).get("status") == "SUCCEEDED"
+        if not d1_ok and active_source == "BIGQUERY":
+            from .flows import d1_success_today
+            d1_ok = d1_success_today(conn, now) is not None
         if active_source == "BIGQUERY" and not d1_ok:
             pass  # wait for D-1; re-evaluated every tick (visible as pending on the dashboard)
         elif late and sched.train_catchup_policy == "SKIP":

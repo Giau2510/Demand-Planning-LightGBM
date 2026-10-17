@@ -190,7 +190,9 @@ def _map_error(e: Exception) -> AppError:
         return AppError("BQ_API_DISABLED", 403, detail=msg)
     if name in ("Forbidden", "PermissionDenied") or "access denied" in low or "permission" in low:
         return AppError("BQ_PERMISSION_DENIED", 403, detail=msg)
-    if name == "NotFound" and "location" in low:
+    # "Not found: Table x was not found in location L" = the table does not exist; a dataset not found in a location
+    # is the classic wrong-location case (real BigQuery messages, checked 17/10/2026)
+    if name == "NotFound" and "location" in low and "not found: table" not in low:
         return AppError("BQ_LOCATION_MISMATCH", 409, detail=msg)
     if name == "NotFound":
         return AppError("BQ_NOT_FOUND", 404, detail=msg)
@@ -1142,114 +1144,13 @@ def fetch_daily(start: date, end: date, snap: dict | None = None, context: str =
 
 
 # ------------------------------------------------------------------ D0 (today)
-def _d0_sql(bq, snap: dict) -> str:
-    """Aggregate the user's D0 SQL output per SKU × FC. No extra date filter: the user's SQL defines 'today'.
-    The dates found in the output are returned so a time-zone mismatch is visible instead of silently filtered."""
-    sku, fc, qty = _col(bq, "sku_id"), _col(bq, "fc_id"), _col(bq, "order_qty")
-    raw = _raw_date_col(bq)
-    d = f"CAST(t.{raw} AS STRING)" if raw else "CAST(NULL AS STRING)"
-    key = _key_expr(snap)
-    keyx = key.replace("STRUCT(`", "STRUCT(t.`").replace(", `", ", t.`") if key else "CAST(NULL AS STRING)"
-    keydup = "CAST(COUNT(*) - COUNT(DISTINCT _key) AS STRING)" if key else "'NO_KEY'"
-    drop = bq.exact_duplicate_policy == "DROP_EXACT"
-    kept = ("SELECT sku_id, fc_id, order_qty, _d, _key, _row FROM (SELECT sku_id, fc_id, order_qty, _d, _key, _row, "
-            "ROW_NUMBER() OVER (PARTITION BY _row) AS _rn FROM src) WHERE _rn = 1") if drop \
-        else "SELECT sku_id, fc_id, order_qty, _d, _key, _row FROM src"
-    return f"""WITH src AS (
-  SELECT t.{sku} AS sku_id, t.{fc} AS fc_id, t.{qty} AS order_qty, {d} AS _d, {keyx} AS _key, TO_JSON_STRING(t) AS _row
-  FROM {sql_guard.as_subquery(snap['sql'])} AS t
-), kept AS (
-  {kept}
-), checked AS (
-  SELECT sku_id, fc_id, order_qty, _d, _key, _row, {_REASON} AS _reason FROM kept
-)
-SELECT 'VALID' AS _kind, CAST(NULL AS STRING) AS _reason, CAST(sku_id AS STRING) AS sku_id, CAST(fc_id AS STRING) AS fc_id,
-  SUM(order_qty) AS qty, COUNT(*) AS n_rows FROM checked WHERE _reason IS NULL GROUP BY 3, 4
-UNION ALL
-SELECT 'EXCLUDED', _reason, NULL, NULL, SUM(order_qty), COUNT(*) FROM checked WHERE _reason IS NOT NULL GROUP BY 2
-UNION ALL
-SELECT 'TOTAL_READ', CAST(COUNT(*) - COUNT(DISTINCT _row) AS STRING), NULL, NULL, SUM(order_qty), COUNT(*) FROM src
-UNION ALL
-SELECT 'TOTAL_KEPT', {keydup}, NULL, NULL, SUM(order_qty), COUNT(*) FROM kept
-UNION ALL
-SELECT 'DATE', _d, NULL, NULL, SUM(order_qty), COUNT(*) FROM kept GROUP BY 2"""
-
-
-def _d0_from_rows(bq, snap: dict, rows: list[dict], day: date, enforce: bool = True) -> dict:
-    good = [r for r in rows if r.get("_kind") == "VALID"]
-    excluded = {r.get("_reason") or "UNKNOWN": {"rows": int(r.get("n_rows") or 0), "qty": _num(r.get("qty")) or 0.0}
-                for r in rows if r.get("_kind") == "EXCLUDED"}
-    tot = next((r for r in rows if r.get("_kind") == "TOTAL_READ"), {}) or {}
-    kept = next((r for r in rows if r.get("_kind") == "TOTAL_KEPT"), {}) or {}
-    dates = {str(r.get("_reason")): {"rows": int(r.get("n_rows") or 0), "qty": _num(r.get("qty")) or 0.0}
-             for r in rows if r.get("_kind") == "DATE"}
-    dup_rows = int(tot.get("_reason") or 0)
-    v_rows = sum(int(r.get("n_rows") or 0) for r in good)
-    v_qty = sum(_num(r.get("qty")) or 0.0 for r in good)
-    e_rows = sum(v["rows"] for v in excluded.values())
-    e_qty = sum(v["qty"] for v in excluded.values())
-    k_rows = int(kept.get("n_rows") or 0)
-    k_qty = _num(kept.get("qty")) or 0.0
-    rec_ok = k_rows == v_rows + e_rows and abs(k_qty - (v_qty + e_qty)) <= 1e-6 * max(1.0, abs(k_qty))
-    issues = []
-    if dup_rows and bq.exact_duplicate_policy == "BLOCK":
-        issues.append({"code": "EXACT_DUPLICATES", "detail": {"rows": dup_rows}})
-    key_dups = kept.get("_reason")
-    kpol = snap.get("key_duplicate_policy", "BLOCK")
-    if key_dups in (None, "NO_KEY") or int(key_dups or 0):
-        if kpol == "BLOCK":
-            issues.append({"code": "KEY_NOT_UNIQUE", "detail": {"rows": key_dups, "key": snap.get("key_columns")}})
-    if not rec_ok:
-        issues.append({"code": "RECONCILIATION_FAILED", "detail": {"kept": [k_rows, k_qty], "valid": [v_rows, v_qty],
-                                                                   "excluded": [e_rows, e_qty]}})
-    other_dates = sorted(d for d in dates if d != str(day))
-    out = {"rows": [{"sku_id": r["sku_id"], "fc_id": r["fc_id"], "cumulative_qty": _num(r.get("qty")) or 0.0,
-                     "source_updated_at": None, "n_rows": int(r.get("n_rows") or 0)} for r in good],
-           "rows_read": int(tot.get("n_rows") or 0), "rows_valid": v_rows, "rows_error": e_rows,
-           "rows_dropped_duplicates": int(tot.get("n_rows") or 0) - k_rows, "qty_valid": v_qty,
-           "excluded_by_reason": excluded, "exact_duplicate_rows": dup_rows, "key_duplicate_rows": key_dups,
-           "dates_in_output": dates, "dates_other_than_today": other_dates, "blocking_issues": issues,
-           "warnings": ([{"code": "D0_DATES_OTHER_THAN_TODAY", "detail": other_dates}] if other_dates else []),
-           "source": _public(snap), "cutoff_applied": False}
-    if enforce and issues:
-        code = {"EXACT_DUPLICATES": "BQ_DATA_DUPLICATES", "KEY_NOT_UNIQUE": "BQ_KEY_NOT_UNIQUE",
-                "RECONCILIATION_FAILED": "BQ_SYNC_RECONCILIATION_FAILED"}[issues[0]["code"]]
-        raise AppError(code, 409, detail=json.dumps(issues, default=str)[:500])
-    return out
-
-
-def fetch_d0(day: date, cutoff, snap: dict | None = None) -> dict:
-    """Cumulative quantity per SKU × FC for `day`: from the validated D0 SQL (SQL mode) or the table (TABLE mode)."""
+def fetch_d0(day: date, cutoff=None, snap: dict | None = None) -> dict:
+    """Cumulative quantity per SKU x FC for `day` (1.2.1: the D-0 feed's own mapping, see d0_feed). `cutoff` is kept
+    for callers of the 1.2.0 signature; the Vietnam day filter decides which rows count."""
+    from . import d0_feed
     bq = ss.get("bigquery")
-    _require_config(bq)
-    snap = _snap(snap, "d0")
-    if _is_sql(snap):
-        res = _run(_client(bq), bq, "d0", _d0_sql(bq, snap), None)
-        return {**_d0_from_rows(bq, snap, res["rows"], day), "estimated_bytes": res["estimated_bytes"]}
-    # 1.2.0: TABLE mode reads the D-0 table (bigquery.d0_table_id), never the D-1 history table
-    from .source_tables import parse
-    d0t = (bq.d0_table_id or "").strip()
-    if not d0t:
-        raise AppError("BQ_D0_TABLE_MISSING", 409)
-    parse(d0t)
-    od = _order_date_expr(bq)
-    ts = _created_ts_expr(bq)
-    upd = _col(bq, "source_updated_at")
-    cut = f" AND {ts} <= @cutoff" if ts else ""
-    distinct = "DISTINCT " if bq.exact_duplicate_policy == "DROP_EXACT" else ""
-    sql = (f"WITH src AS (SELECT {distinct}{_select_list(bq, with_refs=bool(distinct))} FROM `{d0t}` WHERE {od} = @day{cut}) "
-           f"SELECT CAST(sku_id AS STRING) AS sku_id, CAST(fc_id AS STRING) AS fc_id, SUM(order_qty) AS cumulative_qty, "
-           + ("MAX(source_updated_at) AS source_updated_at, " if upd else "NULL AS source_updated_at, ")
-           + "COUNT(*) AS n_rows FROM src WHERE sku_id IS NOT NULL AND fc_id IS NOT NULL AND order_qty >= 0 "
-           "GROUP BY 1, 2 UNION ALL SELECT NULL, NULL, NULL, NULL, COUNT(*) FROM src "
-           "WHERE sku_id IS NULL OR fc_id IS NULL OR order_qty IS NULL OR order_qty < 0")
-    params = [("day", "DATE", day)] + ([("cutoff", "TIMESTAMP", cutoff)] if ts else [])
-    res = _run(_client(bq), bq, "d0", sql, params)
-    good = [r for r in res["rows"] if r.get("sku_id") is not None]
-    bad = sum(int(r.get("n_rows") or 0) for r in res["rows"] if r.get("sku_id") is None)
-    return {"rows": good, "rows_read": sum(int(r["n_rows"]) for r in good) + bad,
-            "rows_valid": sum(int(r["n_rows"]) for r in good), "rows_error": bad, "cutoff_applied": bool(ts),
-            "source": {**_public(snap), "table": d0t}}
+    _require_config(bq, table=False)
+    return d0_feed.fetch(day, snap if snap is not None else d0_feed.snapshot())
 
 
 # ------------------------------------------------------------------ SQL editor: dry run, validation, preview, test
@@ -1285,12 +1186,16 @@ def _version_snap(kind: str, vid: int) -> dict:
     src = sql_sources.source(kind)
     v = sql_sources.version(src, vid)
     return {"mode": "SQL", "kind": kind, "version_id": v.id, "sha256": v.sha256, "sql": v.sql,
-            "key_columns": sql_sources.effective_keys(src), "key_duplicate_policy": src.key_duplicate_policy}
+            "key_columns": sql_sources.effective_keys(src, kind), "key_duplicate_policy": src.key_duplicate_policy}
 
 
 def validate_sql_version(kind: str, vid: int) -> dict:
-    """Dry run + output checks. VALID activates the version; INVALID keeps the previously active one."""
+    """Dry run + output checks. VALID activates the version; INVALID keeps the previously active one.
+    1.2.1: a D-0 version is checked against the D-0 mapping and executed for today (d0_feed.validate_version)."""
     from . import sql_sources
+    if kind == "d0":
+        from . import d0_feed
+        return d0_feed.validate_version(vid)
     bq = ss.get("bigquery")
     snap = _version_snap(kind, vid)
     result: dict = {"checked_at": now_iso(), "static_check": sql_guard.check(snap["sql"])}
@@ -1332,13 +1237,11 @@ def test_sql_version(kind: str, vid: int) -> dict:
     """Data checks of a saved version on real data, WITHOUT writing anything (D0: today's output; history: the
     configured read range)."""
     bq = ss.get("bigquery")
-    snap = _version_snap(kind, vid)
     if kind == "d0":
+        from . import d0_feed
         _require_config(bq, table=False)
-        res = _run(_client(bq), bq, "d0_test", _d0_sql(bq, snap), None)
-        out = _d0_from_rows(bq, snap, res["rows"], today_vn(), enforce=False)
-        return {**out, "rows": out["rows"][:50], "n_series": len(out["rows"]), "estimated_bytes": res["estimated_bytes"],
-                "passed": not out["blocking_issues"], "checked_at": now_iso()}
+        return d0_feed.test_version(vid)
+    snap = _version_snap(kind, vid)
     _require_config(bq)
     start, end = read_range(bq)
     return _run_validation(bq, snap, start, end)

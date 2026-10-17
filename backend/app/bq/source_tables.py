@@ -5,9 +5,10 @@
 
 A check reads table METADATA only (no query, no cost): the table exists and is readable with the credentials of the
 Windows account that runs the app, its location equals the configured one, and its schema has every column the feed
-reads with a compatible type (D-1: every mapped column, internal + reference fields; D-0: the mapped internal fields
-only - a D-0 snapshot reads SKU, FC, quantity and the order date / time). A table is saved only after a PASSED check
-of that exact id. Nothing is created or renamed, and a failing table never falls back to another one. The D-1 table
+reads with a compatible type (D-1: every mapped column, internal + reference fields; D-0 (1.2.1): the D-0 feed's OWN
+mapping only - SKU, FC, quantity, the day and the key columns, see d0_feed.py; the D-0 table does not need the D-1
+columns). A D-0 check records the D-0 mapping hash and column types it proved: a later change of the D-0 mapping needs
+a new check. A table is saved only after a PASSED check of that exact id. Nothing is created or renamed, and a failing table never falls back to another one. The D-1 table
 cannot be changed while production mode is on (that would silently switch the data scope of the forecasts)."""
 from __future__ import annotations
 
@@ -53,9 +54,15 @@ def last_check(kind: str, conn=None) -> dict | None:
 
 
 def is_ok(kind: str, conn=None) -> bool:
-    """The configured table of this feed passed its last check (and that check was for this exact table id)."""
+    """The configured table of this feed passed its last check (and that check was for this exact table id; for D-0
+    also for the current D-0 mapping)."""
     lc = last_check(kind, conn)
-    return bool(lc and lc.get("status") == "PASSED" and lc.get("table_id") == current_id(kind, ss.get("bigquery", conn)))
+    bq = ss.get("bigquery", conn)
+    ok = bool(lc and lc.get("status") == "PASSED" and lc.get("table_id") == current_id(kind, bq))
+    if ok and kind == "d0":
+        from . import d0_feed
+        ok = lc.get("d0_mapping_hash") == d0_feed.mapping_hash(bq, conn=conn)
+    return ok
 
 
 def check(kind: str, table_id: str | None = None) -> dict:
@@ -77,7 +84,14 @@ def check(kind: str, table_id: str | None = None) -> dict:
                    modified=str(getattr(t, "modified", "") or ""), table_type=str(getattr(t, "table_type", "") or ""))
         if bq.location and loc and loc.lower() != bq.location.lower():
             out["errors"].append({"code": "BQ_LOCATION_MISMATCH", "detail": f"{loc} != {bq.location}"})
-        chk = connector.validate_mapping(cols, bq.field_mapping, None if kind == "d1" else {})
+        if kind == "d1":
+            chk = connector.validate_mapping(cols, bq.field_mapping, None)
+        else:
+            from . import d0_feed
+            src = ss.get("sql_sources").d0
+            chk = d0_feed.check_columns(cols, bq, d0_feed.key_columns(src, bq))
+            out.update(d0_mapping_hash=d0_feed.mapping_hash(bq, src), mapped_types=chk["mapped_types"],
+                       ignored_columns=chk["ignored_columns"])
         out["errors"] += [{"code": "BQ_MAPPING_INVALID", **e} for e in chk["errors"]]
         out["warnings"] += chk.get("warnings", [])
         out["status"] = "FAILED" if out["errors"] else "PASSED"
@@ -121,5 +135,8 @@ def status() -> dict:
             out[kind] = {"table_id": current_id(kind, bq), "last_check": lc,
                          "ok": bool(lc and lc.get("status") == "PASSED" and lc.get("table_id") == current_id(kind, bq))}
     out["d1"].update(used_by="D1_SYNC, validation, ingest check", production_enabled=bq.production_enabled)
+    from . import d0_feed
+    lc0 = out["d0"]["last_check"] or {}
+    out["d0"]["ok"] = out["d0"]["ok"] and lc0.get("d0_mapping_hash") == d0_feed.mapping_hash(bq)
     out["d0"].update(used_by="D0_SYNC when the D-0 feed is in TABLE mode", mode=ss.get("sql_sources").d0.mode)
     return out

@@ -14,6 +14,19 @@ bằng PowerShell: `powershell -ExecutionPolicy Bypass -File scripts\<tên>.ps1`
 
 Đổi cổng: tạo `%LOCALAPPDATA%\DemandForecast\app.env` (mẫu `config\app.env.example`) với `DF_PORT=8770`.
 
+### Link xem từ xa (chỉ đọc, 1.2.1)
+
+Có thể tạo link HTTPS để người khác xem dashboard bằng Chrome mà không cần VPS:
+- **Mở link:** bấm đúp `Start-DemandForecast-Remote.bat` (thư mục dự án). Launcher dùng Cloudflare Quick Tunnel tới một
+  proxy **chỉ đọc**; người xem không chạy, lưu hay nhập được gì.
+- **Dừng:** `Stop-DemandForecast-Remote.bat`. Lệnh này chỉ dừng tunnel và proxy, ứng dụng vẫn chạy.
+- **Lưu ý:**
+  - Link đổi mỗi lần khởi động lại.
+  - Máy phải bật và có Internet.
+  - Ai có link đều xem được.
+
+Hướng dẫn đầy đủ, giới hạn và xử lý lỗi: [REMOTE_ACCESS_GUIDE.md](../REMOTE_ACCESS_GUIDE.md).
+
 ## Sao lưu
 
 - Giao diện: **Hệ thống & sao lưu → Sao lưu ngay**; hoặc `Backup.bat` / `scripts\backup.ps1`. An toàn khi ứng dụng đang chạy

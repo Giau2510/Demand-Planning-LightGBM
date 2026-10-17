@@ -5,6 +5,33 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.2.1 - not released (D-0 own mapping + real BigQuery validation, training follows today's D-1, read-only remote link) [reports/demandforecast_v121_d0_d1_remote_20261017.md]
+
+Source only: not committed, not packaged, not deployed (the user's instruction for this batch: no commit). Database schema
+unchanged (3); settings: new key `bigquery.d0_mapping` (ignored by 1.2.0, so a rollback keeps working). Production still
+runs 1.2.0. QA and evidence: see the report.
+
+* D-0 feed: its own mapping `bigquery.d0_mapping` (SKU, FC, quantity, day; optional order id / update time), edited on
+  *SQL sources -> D-0 -> D-0 mapping* (`GET/PUT /api/bigquery/d0-mapping`, suggestion from the real schema
+  `POST /api/bigquery/d0-mapping/suggest`). The D-0 SQL output / table no longer needs the D-1 columns, names or partition
+  column. Saving it never touches the D-1 mapping, hash or production mode.
+* D-0 validation = dry run + output check against the D-0 mapping + a REAL execution of today's aggregate (nothing
+  written); the validation records the SQL sha256 and the D-0 mapping hash. A mapping / key change makes the version
+  stale (`D0_REVALIDATE_REQUIRED`, job SKIPPED with that reason); validations recorded by 1.2.0 must be redone.
+* D-0 job: only rows of today (Vietnam, `@day`) count; rows of another day / without day / SKU / FC / quantity are counted
+  by reason; duplicates measured on today's rows; `forecast_match` (series and quantity without a forecast for today) in the
+  job result. Never writes `demand_daily`; never falls back to the D-1 table. Changed: in SQL mode rows of another day were
+  summed with a warning before; now they are excluded (OTHER_DAY).
+* Daily training on BIGQUERY follows today's successful D-1 - scheduled OR manual (not a backfill) ending yesterday. Before,
+  only the scheduled D-1 counted, so a successful manual D-1 still left the training "waiting for D-1". Readiness shows the
+  D-1 of today (`D1_TODAY_SUCCEEDED`, `TRAIN_WAITING_FOR_TODAY_D1`, `TRAIN_WAITS_FOR_D1`); quality gate unchanged.
+* Readiness reasons and notes show their detail in the UI; `SQL_NOT_VALIDATED` lists the status of each version.
+* BigQuery error "Not found: Table ... in location X" is `BQ_NOT_FOUND` (was misreported as `BQ_LOCATION_MISMATCH`).
+* Remote read-only link (no app change needed, works with 1.2.0): `Start-DemandForecast-Remote.bat` /
+  `Stop-DemandForecast-Remote.bat`, `scripts/remote/remote-access.ps1` (Cloudflare Quick Tunnel, cloudflared downloaded from
+  the official release with SHA-256 + signature check) and `scripts/remote/readonly_proxy.py` (GET/HEAD only, allow-list,
+  local paths removed, rate limit). Guide: `REMOTE_ACCESS_GUIDE.md`.
+
 ## 1.2.0 - 2026-10-17 (L7_direct strategy, quality-gate exception record, D-1 / D-0 source tables, feature groups) [experiments/final_release_20261017/]
 
 Database schema unchanged (3): rollback to 1.1.9 / 1.1.8 needs no restore. A DIRECT model published with 1.2.0 is

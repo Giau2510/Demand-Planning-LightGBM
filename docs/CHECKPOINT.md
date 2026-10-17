@@ -302,3 +302,18 @@ User authorized: commit/push, release 1.1.9, upgrade, source BIGQUERY, real writ
 | Training | REJECTED | TRN-20261016095451-697A11: WAPE 1.017 / bias 0.399 (gate 0.60 / 0.20); baseline 0.839 / 0.119; not published |
 | Schedules | PARTIAL | D-0 OFF (restore refused: SQL_NOT_VALIDATED), D-1 OFF (as before), train ON 07:00 but waits for D-1 |
 
+
+# 1.2.1 source: D-0 own mapping + real BigQuery validation, training follows today's D-1, read-only remote link (2026-10-17 15:25 - 16:40)
+
+No commit / package / deploy (user's instruction). Production stays 1.2.0. Report `reports/demandforecast_v121_d0_d1_remote_20261017.md`.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Source checkpoint | DONE | `checkpoints\source-1.2.0-before-1.2.1-d0-remote-20261017-153536.zip` (git archive of HEAD 514c90b) |
+| Production backup | DONE | `backups\backup-20261017-153542-manual.zip` (online backup, SHA-256 421AA88F...C200) |
+| D-0 code (own mapping, validation with execution, today filter, forecast match) | DONE | `backend/app/bq/d0_feed.py`; tests `test_v121_d0.py` (17, fake client), `test_v121_d0_real_bq.py` (5, real BigQuery) |
+| Training follows today's D-1 (scheduled or manual) | DONE | `jobs/flows.py`, `jobs/scheduler.py`; tests in `test_v121_d0.py` |
+| Isolated check on a DB copy, real BigQuery | DONE | new D-0 SQL on the D-0 table VALID (8,454 rows, 2,142 series, 48 key repeats); live DB fingerprint unchanged |
+| Remote link (Quick Tunnel + read-only proxy) | DONE | two real HTTPS links verified then stopped; tests `test_v121_remote_proxy.py` (43) |
+| Handoff ZIP | DONE | `dist\DemandForecast-RemoteAccess-1.2.1-20261017.zip` (SHA-256 7EEC7A1F...558B) |
+| Release 1.2.1 / deploy | NOT RUN | needs the user's commit + deploy authorization |

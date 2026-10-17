@@ -8,6 +8,88 @@ function vstatus(v: any) {
   return v?.validation?.status ?? "UNCHECKED";
 }
 
+/** Blocking reasons + notes exactly as the backend reports them (code, text, detail). */
+export function ReasonList({ reasons, notes }: { reasons?: any[]; notes?: any[] }) {
+  const { pick } = useI18n();
+  return (
+    <>
+      {(reasons ?? []).length > 0 && <ul className="small" data-testid="reasons">{reasons!.map((x: any) => <li key={x.code} className="bad-t">{pick(x)} <code className="code">{x.code}</code>{x.detail ? <span className="mono"> ({x.detail})</span> : null}</li>)}</ul>}
+      {(notes ?? []).length > 0 && <ul className="small muted" data-testid="notes">{notes!.map((x: any) => <li key={x.code}>{pick(x)}{x.detail ? <span className="mono"> ({x.detail})</span> : null}</li>)}</ul>}
+    </>
+  );
+}
+
+const D0_ESSENTIAL = ["sku_id", "fc_id", "order_qty"];
+const D0_DATE_FIELDS = ["order_date", "created_at"];
+
+function d0Body(fields: any[], m: Record<string, any>) {
+  return Object.fromEntries(fields.map((x: any) => {
+    const col = (m[x.field]?.usage === "UNUSED" ? null : m[x.field]?.column) || null;
+    return [x.field, { column: col, usage: col ? (D0_ESSENTIAL.includes(x.field) ? "REQUIRED" : "OPTIONAL") : (D0_DATE_FIELDS.includes(x.field) ? "UNUSED" : "OPTIONAL") }];
+  }));
+}
+
+/** 1.2.1: the D-0 feed's own mapping (output column names of the D-0 SQL / table; never the D-1 mapping). */
+export function D0Mapping({ d0, reload, sqlVersionId }: { d0: any; reload: () => void; sqlVersionId?: number | null }) {
+  const { t } = useI18n();
+  const act = useAction();
+  const [m, setM] = useState<Record<string, any>>(d0.mapping);
+  const [cols, setCols] = useState<string[]>([]);
+  const saved = JSON.stringify(d0.mapping);
+  useEffect(() => { setM(d0.mapping); }, [saved]);
+  const setCol = (f: string, column: string) => setM({ ...m, [f]: { column: column.trim() || null, usage: "OPTIONAL" } });
+  const suggest = async (source: string) => {
+    const r = await act.run(() => post("/api/bigquery/d0-mapping/suggest", { source }));
+    if (r) { setM(r.mapping); setCols((r.columns ?? []).map((c: any) => `${c.name}`)); act.setOk(t("d0m.suggested")); }
+  };
+  const dirty = JSON.stringify(d0Body(d0.fields, m)) !== JSON.stringify(d0Body(d0.fields, d0.mapping));
+  return (
+    <div className="stack" data-testid="d0-mapping">
+      <b className="small">{t("d0m.title")}</b>
+      <p className="small muted">{t("d0m.help")}</p>
+      <div className="small" data-testid="d0-readiness">
+        {d0.ready ? <Pill status="OK" label={t("d0m.ready")} /> : <Pill status="INSUFFICIENT" label={t("d0m.not_ready")} />}
+        <ReasonList reasons={d0.reasons} notes={d0.notes} />
+      </div>
+      <ErrorBox error={act.error} />
+      <OkBox text={act.ok} />
+      <table className="tbl small">
+        <thead><tr><th>{t("d0m.field")}</th><th>{t("d0m.column")}</th><th>{t("d0m.types")}</th></tr></thead>
+        <tbody>
+          {d0.fields.map((x: any) => (
+            <tr key={x.field}>
+              <td>{t(`d0m.f.${x.field}`)}{x.essential ? " *" : ""} <span className="mono muted">{x.field}</span></td>
+              <td><input list="d0-columns" aria-label={`d0-col-${x.field}`} value={(m[x.field]?.usage === "UNUSED" ? "" : m[x.field]?.column) ?? ""} onChange={(e) => setCol(x.field, e.target.value)} /></td>
+              <td className="mono muted">{x.types.join(", ")}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <datalist id="d0-columns">{cols.map((c) => <option key={c} value={c} />)}</datalist>
+      <div className="row wrap small">
+        <button className="primary" disabled={act.busy || !dirty} data-testid="d0m-save"
+          onClick={async () => { if (await act.run(() => put("/api/bigquery/d0-mapping", { mapping: d0Body(d0.fields, m) }), t("d0m.saved"))) reload(); }}>{t("d0m.save")}</button>
+        <button disabled={act.busy} data-testid="d0m-suggest-table" onClick={() => suggest("table")}>{t("d0m.suggest_table")}</button>
+        {sqlVersionId ? <button disabled={act.busy} data-testid="d0m-suggest-sql" onClick={() => suggest(`sql:${sqlVersionId}`)}>{t("d0m.suggest_sql")} v{sqlVersionId}</button> : null}
+        <span className="muted">{t("d0m.key")}: <span className="mono">{(d0.key_columns ?? []).join(" + ") || "—"}</span> · {t("d0m.hash")} <span className="mono">{d0.mapping_hash}</span></span>
+      </div>
+      {d0.missing.length > 0 && <div className="bad-t small" data-testid="d0m-missing">{t("d0m.missing")}: <span className="mono">{d0.missing.join(", ")}</span></div>}
+    </div>
+  );
+}
+
+function Execution({ ex }: { ex: any }) {
+  const { t } = useI18n();
+  if (!ex) return null;
+  return (
+    <div className="small" data-testid="sql-execution">
+      <b>{t("sql.exec")}</b> {ex.day}: {t("sql.exec.rows")} {fmtNum(ex.rows_read)} · {t("sql.exec.valid")} {fmtNum(ex.rows_valid)} · {t("sql.exec.error")} {fmtNum(ex.rows_error)} · {t("sql.exec.other_day")} {fmtNum(ex.rows_other_day)} · SKU×FC {fmtNum(ex.n_series)} · {t("sql.exec.qty")} {fmtNum(ex.qty_valid)} · {fmtBytes(ex.estimated_bytes)}
+      {(ex.blocking_issues ?? []).length > 0 && <div className="bad-t" data-testid="sql-execution-issues">{t("sql.exec.issues")}: {ex.blocking_issues.map((i: any) => `${i.code} ${JSON.stringify(i.detail)}`).join("; ")}</div>}
+      {(ex.warnings ?? []).length > 0 && <div className="muted">{ex.warnings.map((w: any) => `${w.code} ${JSON.stringify(w.detail)}`).join("; ")}</div>}
+    </div>
+  );
+}
+
 function Feed({ kind, data, reload }: { kind: "history" | "d0"; data: any; reload: () => void }) {
   const { t, pick } = useI18n();
   const act = useAction();
@@ -47,6 +129,7 @@ function Feed({ kind, data, reload }: { kind: "history" | "d0"; data: any; reloa
             <Link to="/schedules">{t("sql.schedule_where")} →</Link>
           </div>
         )}
+        {kind === "d0" && data.d0 && <D0Mapping d0={data.d0} reload={reload} sqlVersionId={sel} />}
         <ErrorBox error={act.error} />
         <OkBox text={act.ok} />
         <b className="small">{t("sql.editor")}</b>
@@ -79,7 +162,9 @@ function Feed({ kind, data, reload }: { kind: "history" | "d0"; data: any; reloa
                   <td>{v.note ?? ""}</td>
                   <td>{v.saved_at ? fmtTime(v.saved_at) : "—"}</td>
                   <td><Pill status={vstatus(v) === "VALID" ? "OK" : vstatus(v) === "INVALID" ? "FAILED" : "PENDING"} label={t(`sql.status.${vstatus(v)}`)} />
-                    {v.validation?.error && <div className="bad-t">{v.validation.error.code}{v.validation.error.detail ? ` — ${String(v.validation.error.detail).slice(0, 160)}` : ""}</div>}</td>
+                    {kind === "d0" && vstatus(v) === "VALID" && v.validated_for_current_mapping === false && <div className="bad-t" data-testid={`sql-stale-${v.id}`}>{t("d0m.stale")}</div>}
+                    {v.validation?.checked_at && <div className="muted">{fmtTime(v.validation.checked_at)}</div>}
+                    {v.validation?.error && <div className="bad-t">{v.validation.error.code}{v.validation.error.detail ? ` — ${String(v.validation.error.detail).slice(0, 300)}` : ""}</div>}</td>
                   <td className="row wrap">
                     <button onClick={() => { setSel(v.id); setText(v.sql); }}>{t("sql.load")}</button>
                     <button disabled={act.busy} data-testid={`sql-validate-${kind}-${v.id}`} onClick={() => call(`${t("sql.validate")} v${v.id}`, () => post(`/api/sql-sources/${kind}/versions/${v.id}/validate`))}>{t("sql.validate")}</button>
@@ -109,6 +194,8 @@ function Feed({ kind, data, reload }: { kind: "history" | "d0"; data: any; reloa
             {out.r?.validation && <p className="small">{out.r.validation.status === "VALID" ? <Pill status="OK" label={t("sql.status.VALID")} /> : <Pill status="FAILED" label={t("sql.status.INVALID")} />}
               {" "}{out.r.validation.statement_type} · {fmtBytes(out.r.validation.estimated_bytes)} · {(out.r.validation.columns ?? []).map((c: any) => c.name).join(", ")}
               {out.r.validation.error && <span className="bad-t"> — {pick(out.r.validation.error)} {out.r.validation.error.detail ?? ""}</span>}</p>}
+            {out.r?.validation?.execution && <Execution ex={out.r.validation.execution} />}
+            {out.r?.validation?.mapping_check?.errors?.length > 0 && <ul className="small bad-t">{out.r.validation.mapping_check.errors.map((e: any, i: number) => <li key={i}>{e.field}: {e.code}{e.column ? ` (${e.column}${e.type ? ` ${e.type}` : ""})` : ""}</li>)}</ul>}
             {Array.isArray(out.r?.rows) && out.r.rows.length > 0 && typeof out.r.rows[0] === "object" && (
               <div className="scroll"><table className="tbl small"><thead><tr>{Object.keys(out.r.rows[0]).map((k) => <th key={k}>{k}</th>)}</tr></thead>
                 <tbody>{out.r.rows.map((row: any, i: number) => <tr key={i}>{Object.values(row).map((x: any, j) => <td key={j}>{x === null ? "" : typeof x === "object" ? JSON.stringify(x) : String(x)}</td>)}</tr>)}</tbody></table></div>

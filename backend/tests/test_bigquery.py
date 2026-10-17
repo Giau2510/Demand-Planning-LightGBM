@@ -167,10 +167,16 @@ def test_d1_waits_for_signal_then_verifies_source_after_fallback():
 def test_d0_snapshot_from_bigquery_and_failure_creates_no_snapshot():
     from app.sync import run_d0_snapshot
     fake = FakeBQ(responses={"profile": [{"n_rows": 10}],
-                             "d0": [{"sku_id": "S1", "fc_id": "F1", "cumulative_qty": 7, "source_updated_at": None,
-                                     "n_rows": 3}, {"sku_id": None, "fc_id": None, "cumulative_qty": None,
-                                                    "source_updated_at": None, "n_rows": 1}]})
+                             "d0": [{"_kind": "VALID", "_reason": None, "sku_id": "S1", "fc_id": "F1", "qty": 7, "n_rows": 3},
+                                    {"_kind": "EXCLUDED", "_reason": "NULL_SKU", "qty": 1, "n_rows": 1},
+                                    {"_kind": "TOTAL_READ", "_reason": "0", "qty": 8, "n_rows": 4},
+                                    {"_kind": "TOTAL_KEPT", "_reason": "0", "qty": 8, "n_rows": 4}]})
     _activate(fake)
+    # 1.2.1: this source has other column names than the default D-0 table -> its own D-0 mapping
+    from app import settings_service as ss
+    ss.update("bigquery", {"d0_mapping": {"sku_id": {"column": "sku"}, "fc_id": {"column": "warehouse"},
+                                          "order_qty": {"column": "qty"}, "order_date": {"column": None, "usage": "UNUSED"},
+                                          "created_at": {"column": "created_at"}, "order_id": {"column": "order_id"}}})
     from app.bq import sql_sources
     # 1.1.6: D0 defaults to the user's SQL feed and scheduled BigQuery D0 runs are OFF; this test covers TABLE mode
     # 1.2.0: TABLE mode reads the D-0 table, which must pass its metadata check before the D-0 flow can be switched on
