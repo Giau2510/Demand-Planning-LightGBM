@@ -10,8 +10,10 @@ they take effect without any data change for every section/key that was never sa
 Database schema unchanged (3): rollback to 1.1.9 / 1.1.8 needs no restore. A DIRECT model published with 1.2.0 is
 displayed by older versions but cannot be explained or extended by them (they refuse it; see docs/VAN-HANH.md).
 Package built 2026-10-17 01:56 from commit 577b925 (SHA-256 2343261C...F666; QA 324 + 66 passed); isolated rehearsal on a
-copy of the real DB with prices passed (upgrade, price training, exception release, restart, rollback, restore). Not
-deployed to production yet (deployment step not authorised in this session).
+copy of the real DB with prices passed (upgrade, price training, exception release, restart, rollback, restore).
+Deployed to production 2026-10-17 08:16 (deploy-upgrade.ps1, backup backup-20261017-081320-manual.zip); price mapping
+saved and D-1 full reload 01/01-16/10 with prices (coverage 99.98%). Production training / model release not done yet
+(training on production not authorised in that session); no model in use for the BigQuery scope.
 
 * Forecast strategy `model.forecast_strategy`: RECURSIVE (default, every earlier model, DEMO) | DIRECT (experiment
   L7_direct, 16/10/2026). DIRECT = one LightGBM model for every horizon day: features at the forecast origin (data before

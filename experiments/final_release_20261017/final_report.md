@@ -1,5 +1,7 @@
 # Báo cáo batch xuyên đêm 1.2.0 — 17/10/2026 (01:40–03:05, giờ Việt Nam)
 
+> Cập nhật 17/10 08:55: 1.2.0 đã deploy lên production và dữ liệu giá đã nạp. Xem `continuation_report.md`.
+
 ## A. Trạng thái tổng thể: `PARTIAL`
 
 - Gói 1.2.0 đã build, xác minh và diễn tập cô lập đạt.

@@ -1,0 +1,256 @@
+{
+ "before": {
+  "rows": 1347346,
+  "qty": 41722635.0,
+  "priced": 0,
+  "first": "2026-01-01",
+  "last": "2026-10-15"
+ },
+ "after": {
+  "rows": 1349388,
+  "qty": 41808940.0,
+  "priced": 1349148,
+  "null_price": 240,
+  "zero_price": 83,
+  "negative_price": 0,
+  "coverage": 0.9998221415930777,
+  "first": "2026-01-01",
+  "last": "2026-10-16"
+ },
+ "counts": {
+  "unchanged": 1346121,
+  "new": 3136,
+  "removed": 1094,
+  "updated": 131
+ },
+ "days_with_changes": 278,
+ "changes_before_2026_10_10": 276,
+ "changes_by_day_last_15": [
+  {
+   "order_date": "2026-10-02",
+   "kind": "removed",
+   "rows": 1,
+   "qty_before": 1.0,
+   "qty_after": 0.0
+  },
+  {
+   "order_date": "2026-10-04",
+   "kind": "removed",
+   "rows": 2,
+   "qty_before": 3.0,
+   "qty_after": 0.0
+  },
+  {
+   "order_date": "2026-10-04",
+   "kind": "updated",
+   "rows": 15,
+   "qty_before": 1057.0,
+   "qty_after": 1035.0
+  },
+  {
+   "order_date": "2026-10-05",
+   "kind": "removed",
+   "rows": 1,
+   "qty_before": 2.0,
+   "qty_after": 0.0
+  },
+  {
+   "order_date": "2026-10-05",
+   "kind": "updated",
+   "rows": 2,
+   "qty_before": 3555.0,
+   "qty_after": 3522.0
+  },
+  {
+   "order_date": "2026-10-06",
+   "kind": "removed",
+   "rows": 3,
+   "qty_before": 52.0,
+   "qty_after": 0.0
+  },
+  {
+   "order_date": "2026-10-06",
+   "kind": "updated",
+   "rows": 2,
+   "qty_before": 296.0,
+   "qty_after": 289.0
+  },
+  {
+   "order_date": "2026-10-07",
+   "kind": "removed",
+   "rows": 1,
+   "qty_before": 2.0,
+   "qty_after": 0.0
+  },
+  {
+   "order_date": "2026-10-08",
+   "kind": "removed",
+   "rows": 1,
+   "qty_before": 1.0,
+   "qty_after": 0.0
+  },
+  {
+   "order_date": "2026-10-09",
+   "kind": "removed",
+   "rows": 2,
+   "qty_before": 2.0,
+   "qty_after": 0.0
+  },
+  {
+   "order_date": "2026-10-09",
+   "kind": "updated",
+   "rows": 1,
+   "qty_before": 265.0,
+   "qty_after": 264.0
+  },
+  {
+   "order_date": "2026-10-10",
+   "kind": "removed",
+   "rows": 1,
+   "qty_before": 1.0,
+   "qty_after": 0.0
+  },
+  {
+   "order_date": "2026-10-10",
+   "kind": "updated",
+   "rows": 18,
+   "qty_before": 3656.0,
+   "qty_after": 3613.0
+  },
+  {
+   "order_date": "2026-10-11",
+   "kind": "removed",
+   "rows": 2,
+   "qty_before": 5.0,
+   "qty_after": 0.0
+  },
+  {
+   "order_date": "2026-10-12",
+   "kind": "removed",
+   "rows": 4,
+   "qty_before": 40.0,
+   "qty_after": 0.0
+  },
+  {
+   "order_date": "2026-10-12",
+   "kind": "updated",
+   "rows": 11,
+   "qty_before": 5391.0,
+   "qty_after": 5378.0
+  },
+  {
+   "order_date": "2026-10-13",
+   "kind": "removed",
+   "rows": 1,
+   "qty_before": 6.0,
+   "qty_after": 0.0
+  },
+  {
+   "order_date": "2026-10-13",
+   "kind": "updated",
+   "rows": 9,
+   "qty_before": 2140.0,
+   "qty_after": 721.0
+  },
+  {
+   "order_date": "2026-10-14",
+   "kind": "removed",
+   "rows": 3,
+   "qty_before": 17.0,
+   "qty_after": 0.0
+  },
+  {
+   "order_date": "2026-10-14",
+   "kind": "updated",
+   "rows": 58,
+   "qty_before": 29909.0,
+   "qty_after": 29754.0
+  },
+  {
+   "order_date": "2026-10-15",
+   "kind": "removed",
+   "rows": 2,
+   "qty_before": 3.0,
+   "qty_after": 0.0
+  },
+  {
+   "order_date": "2026-10-15",
+   "kind": "updated",
+   "rows": 11,
+   "qty_before": 634.0,
+   "qty_after": 607.0
+  },
+  {
+   "order_date": "2026-10-16",
+   "kind": "new",
+   "rows": 3136,
+   "qty_before": 0.0,
+   "qty_after": 92866.0
+  }
+ ],
+ "changes_by_month": {
+  "2026-01": {
+   "new": 0,
+   "removed": 148,
+   "updated": 0
+  },
+  "2026-02": {
+   "new": 0,
+   "removed": 108,
+   "updated": 0
+  },
+  "2026-03": {
+   "new": 0,
+   "removed": 145,
+   "updated": 0
+  },
+  "2026-04": {
+   "new": 0,
+   "removed": 135,
+   "updated": 0
+  },
+  "2026-05": {
+   "new": 0,
+   "removed": 119,
+   "updated": 0
+  },
+  "2026-06": {
+   "new": 0,
+   "removed": 113,
+   "updated": 0
+  },
+  "2026-07": {
+   "new": 0,
+   "removed": 128,
+   "updated": 0
+  },
+  "2026-08": {
+   "new": 0,
+   "removed": 110,
+   "updated": 0
+  },
+  "2026-09": {
+   "new": 0,
+   "removed": 62,
+   "updated": 4
+  },
+  "2026-10": {
+   "new": 3136,
+   "removed": 26,
+   "updated": 127
+  }
+ },
+ "other_scopes_unchanged": true,
+ "price_coverage_by_month": {
+  "2026-01": 1.0,
+  "2026-02": 0.99998,
+  "2026-03": 0.99964,
+  "2026-04": 0.99958,
+  "2026-05": 0.99986,
+  "2026-06": 0.99986,
+  "2026-07": 0.99998,
+  "2026-08": 0.99984,
+  "2026-09": 0.99957,
+  "2026-10": 0.99976
+ }
+}

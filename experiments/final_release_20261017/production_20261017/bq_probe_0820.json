@@ -1,0 +1,205 @@
+{
+ "at": "2026-10-17T01:19:27.705730+00:00",
+ "mode": "fresh",
+ "tables": {
+  "d1": {
+   "table_id": "lakehouse-prod-394907.gold_buymed_vn2.demand_planing_lightgbm",
+   "type": "TABLE",
+   "rows": 8910595,
+   "bytes": 1514695894,
+   "modified": "2026-10-17T01:08:43.393000+00:00",
+   "location": "asia-southeast1",
+   "schema": [
+    [
+     "fc_code",
+     "STRING"
+    ],
+    [
+     "created_date",
+     "DATE"
+    ],
+    [
+     "so_code",
+     "STRING"
+    ],
+    [
+     "order_status",
+     "STRING"
+    ],
+    [
+     "product_id",
+     "INTEGER"
+    ],
+    [
+     "sku_code",
+     "STRING"
+    ],
+    [
+     "item_code",
+     "STRING"
+    ],
+    [
+     "seller_code",
+     "STRING"
+    ],
+    [
+     "sku_system_status",
+     "STRING"
+    ],
+    [
+     "demand_quantity",
+     "INTEGER"
+    ],
+    [
+     "outbound_quantity",
+     "INTEGER"
+    ],
+    [
+     "sales_price",
+     "FLOAT"
+    ],
+    [
+     "seller_class",
+     "STRING"
+    ],
+    [
+     "open_date",
+     "DATE"
+    ],
+    [
+     "total_open_hours",
+     "FLOAT"
+    ],
+    [
+     "total_open_days",
+     "FLOAT"
+    ],
+    [
+     "refresh_time",
+     "STRING"
+    ]
+   ]
+  },
+  "d0": {
+   "table_id": "lakehouse-prod-394907.gold_buymed_vn2.demand_planing_lightgbm_D0",
+   "type": "TABLE",
+   "rows": 662,
+   "bytes": 76020,
+   "modified": "2026-10-17T01:08:47.142000+00:00",
+   "location": "asia-southeast1",
+   "schema": [
+    [
+     "fc_code",
+     "STRING"
+    ],
+    [
+     "created_date",
+     "DATE"
+    ],
+    [
+     "so_code",
+     "STRING"
+    ],
+    [
+     "order_status",
+     "STRING"
+    ],
+    [
+     "product_id",
+     "INTEGER"
+    ],
+    [
+     "sku_code",
+     "STRING"
+    ],
+    [
+     "item_code",
+     "STRING"
+    ],
+    [
+     "seller_code",
+     "STRING"
+    ],
+    [
+     "sku_system_status",
+     "STRING"
+    ],
+    [
+     "demand_quantity",
+     "INTEGER"
+    ],
+    [
+     "outbound_quantity",
+     "INTEGER"
+    ],
+    [
+     "sales_price",
+     "FLOAT"
+    ]
+   ]
+  }
+ },
+ "queries": {
+  "d1_newest_days": {
+   "estimated_bytes": 421457852,
+   "rows": [
+    {
+     "d": "2026-10-13",
+     "n": 19459,
+     "qty": 77307,
+     "price_null": 112,
+     "price_zero": 0,
+     "price_neg": 0,
+     "skus": 2562,
+     "fcs": 2
+    },
+    {
+     "d": "2026-10-14",
+     "n": 20065,
+     "qty": 100389,
+     "price_null": 130,
+     "price_zero": 0,
+     "price_neg": 0,
+     "skus": 2517,
+     "fcs": 2
+    },
+    {
+     "d": "2026-10-15",
+     "n": 19015,
+     "qty": 93001,
+     "price_null": 133,
+     "price_zero": 0,
+     "price_neg": 0,
+     "skus": 2495,
+     "fcs": 2
+    },
+    {
+     "d": "2026-10-16",
+     "n": 18912,
+     "qty": 92866,
+     "price_null": 138,
+     "price_zero": 0,
+     "price_neg": 0,
+     "skus": 2424,
+     "fcs": 2
+    }
+   ]
+  },
+  "d0_range": {
+   "estimated_bytes": 31285,
+   "rows": [
+    {
+     "mn": "2026-10-17",
+     "mx": "2026-10-17",
+     "n": 662,
+     "qty": 3405,
+     "price_null": 1,
+     "price_zero": 0,
+     "price_neg": 0,
+     "skus": 383,
+     "fcs": 2
+    }
+   ]
+  }
+ }
+}

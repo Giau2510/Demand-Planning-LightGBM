@@ -1,0 +1,252 @@
+{
+ "copied_from": "D:\\Buymed\\Lightgbm AI\\data\\runtime\\db\\app.db",
+ "model_settings": {
+  "feature_price": true,
+  "forecast_strategy": "DIRECT",
+  "direct_origins": 12,
+  "direct_origin_step_days": 7,
+  "feature_lags": true,
+  "feature_rolling": true
+ },
+ "train": {
+  "result": {
+   "status": "REJECTED",
+   "reason_code": "QUALITY_GATE_FAILED",
+   "training_run_id": "TRN-20261017013431-F2F32B",
+   "quality_gate": {
+    "passed": false,
+    "checks": [
+     {
+      "check": "BACKTEST_RELIABLE",
+      "passed": true,
+      "value": 7,
+      "threshold": null
+     },
+     {
+      "check": "MIN_BACKTEST_POINTS",
+      "passed": true,
+      "value": 3351605,
+      "threshold": 200
+     },
+     {
+      "check": "WAPE_MAX",
+      "passed": false,
+      "value": 0.8074442313338153,
+      "threshold": 0.6
+     },
+     {
+      "check": "ABS_BIAS_MAX",
+      "passed": true,
+      "value": 0.05754006251813735,
+      "threshold": 0.2
+     }
+    ],
+    "thresholds_approved_by_business": false
+   }
+  },
+  "seconds": 712,
+  "stages": [
+   [
+    "VALIDATING_DATA",
+    0
+   ],
+   [
+    "PREPARING_DATA",
+    41
+   ],
+   [
+    "BACKTESTING",
+    56
+   ],
+   [
+    "TRAINING",
+    625
+   ],
+   [
+    "QUALITY_GATE",
+    712
+   ]
+  ]
+ },
+ "run": {
+  "id": "TRN-20261017013431-F2F32B",
+  "status": "REJECTED",
+  "reject_reason": "QUALITY_GATE_FAILED",
+  "model_version": "MV-20261017-084542-F32B",
+  "model_path": "MV-20261017-084542-F32B.txt",
+  "model_sha256": "fc69311b9c6280eb42cfaa190dc3acfb48255813f5ce6ac1ff0233218c8dc37f",
+  "train": [
+   "2026-01-01",
+   "2026-10-16"
+  ],
+  "n_series": 17125,
+  "n_rows": 5201046,
+  "features": [
+   "sku_code",
+   "fc_code",
+   "series_age",
+   "lag_1",
+   "lag_2",
+   "lag_3",
+   "lag_4",
+   "lag_5",
+   "lag_6",
+   "lag_7",
+   "lag_14",
+   "lag_21",
+   "lag_28",
+   "roll_mean_7",
+   "roll_mean_14",
+   "roll_mean_28",
+   "roll_mean_56",
+   "roll_std_7",
+   "roll_std_28",
+   "zero_share_28",
+   "days_since_last_sale",
+   "roll_max_28",
+   "price_last",
+   "price_rel_28",
+   "dow",
+   "dom",
+   "month",
+   "weekofyear",
+   "is_weekend",
+   "days_to_month_end",
+   "horizon"
+  ],
+  "feature_groups": {
+   "historical_demand": {
+    "switch_on": true,
+    "used": true
+   },
+   "price": {
+    "switch_on": true,
+    "used": true
+   }
+  },
+  "price_decision": {
+   "switch": "feature_price",
+   "switch_on": true,
+   "data_column": "avg_unit_price",
+   "coverage": 0.9998221415930777,
+   "min_coverage": 0.5,
+   "used": true,
+   "reason": "DATA_OK",
+   "features": [
+    "price_last",
+    "price_rel_28"
+   ]
+  },
+  "config_fingerprint": "7caa9472f4e78535",
+  "data_window": {
+   "start": "2026-01-01",
+   "end": "2026-10-16",
+   "rule": "Model input = complete Vietnam days from data_policy.window_start_date to yesterday (Asia/Ho_Chi_Minh). Today's partial day is used only by D0 snapshots; future dates are never used. Stored rows outside the window are kept but not used."
+  },
+  "metrics": {
+   "wape": 0.8074442313338153,
+   "bias": 0.05754006251813735,
+   "mae": 6.726690386987589,
+   "n_points": 3351605
+  },
+  "baseline": {
+   "wape": 0.843570680558171,
+   "bias": 0.12435459688983963,
+   "mae": 7.0276541307151765
+  },
+  "backtest": {
+   "horizon_days": 30,
+   "folds": 12,
+   "step_days": 30,
+   "folds_evaluated": 7,
+   "span_days": 210,
+   "first_day": "2026-03-21",
+   "last_day": "2026-10-16",
+   "history_days": 289,
+   "min_train_days": 56
+  },
+  "gate": {
+   "passed": false,
+   "checks": [
+    {
+     "check": "BACKTEST_RELIABLE",
+     "passed": true,
+     "value": 7,
+     "threshold": null
+    },
+    {
+     "check": "MIN_BACKTEST_POINTS",
+     "passed": true,
+     "value": 3351605,
+     "threshold": 200
+    },
+    {
+     "check": "WAPE_MAX",
+     "passed": false,
+     "value": 0.8074442313338153,
+     "threshold": 0.6
+    },
+    {
+     "check": "ABS_BIAS_MAX",
+     "passed": true,
+     "value": 0.05754006251813735,
+     "threshold": 0.2
+    }
+   ],
+   "thresholds_approved_by_business": false
+  },
+  "exception": {
+   "eligible": true,
+   "failed_checks": [
+    "WAPE_MAX"
+   ]
+  }
+ },
+ "release_on_copy": {
+  "result": {
+   "status": "PUBLISHED",
+   "reason_code": "RELEASED_WITH_GATE_EXCEPTION",
+   "training_run_id": "TRN-20261017013431-F2F32B",
+   "forecast_run_id": "FCR-20261017014610-6B8D3E",
+   "model_version": "MV-20261017-084542-F32B",
+   "exception": {
+    "type": "QUALITY_GATE_EXCEPTION",
+    "scope": "THIS_TRAINING_RUN_ONLY",
+    "training_run_id": "TRN-20261017013431-F2F32B",
+    "model_version": "MV-20261017-084542-F32B",
+    "approved_by": "Chu du an (COPY rehearsal, not production)",
+    "reason": "Isolated copy of production 17/10/2026: owner-approved exception for the DIRECT model with price",
+    "approved_at": "2026-10-17T01:46:10+00:00",
+    "review_by": "2026-11-16",
+    "failed_checks": [
+     "WAPE_MAX"
+    ],
+    "metrics": {
+     "wape": 0.8074442313338153,
+     "bias": 0.05754006251813735,
+     "n_points": 3351605
+    },
+    "baseline_metrics": {
+     "n_points": 3351605,
+     "sum_actual": 27921692.0,
+     "sum_forecast": 31393882.75314226,
+     "wape": 0.843570680558171,
+     "mae": 7.0276541307151765,
+     "bias": 0.12435459688983963,
+     "mape": 1.3181148269407448,
+     "mape_points": 938583,
+     "mape_excluded_points": 2413022,
+     "notes": []
+    },
+    "standard_thresholds": {
+     "WAPE_MAX": 0.6,
+     "ABS_BIAS_MAX": 0.2
+    },
+    "standard_gate_changed": false,
+    "forecast_strategy": "DIRECT"
+   },
+   "replaced_training_run_id": null
+  },
+  "seconds": 31
+ }
+}
