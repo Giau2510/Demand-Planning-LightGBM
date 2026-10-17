@@ -17,6 +17,10 @@ identical values; the data fingerprint includes `MAX(loaded_at)`, so the publish
   backtest points accept a reload with identical values (`SAME_CONTENT`), name the changed days otherwise. Older runs:
   `app.cli attest-training-data --training-run <id> --backup <zip>` (only from a backup whose fingerprint equals the
   run's). The cache of explanations includes the verdict.
+* Explanation speed (the remote link cuts a request after 100 s): the run's panel / classification / model are built
+  once per run and content version (not once per series; ~40 s on the real data), the fingerprint is computed once per
+  check; a D-1 that only adds days after the window keeps them. Measured on a production copy: first explanation
+  ~90 s (cold, copy on C:), next series ~19 s.
 * Product names: `bq/product_names.py`, one name per SKU from `dim_sku` (ambiguous / missing -> "Chưa có tên sản phẩm"),
   refreshed after each D-1 or by hand (`POST /api/bigquery/product-names/refresh`, `app.cli product-names-refresh`).
   Results: name column, keyword search (`q`: parts of SKU / name, case- and accent-insensitive, all words, combined
@@ -24,7 +28,7 @@ identical values; the data fingerprint includes `MAX(loaded_at)`, so the publish
   source + read time on the Info sheet; rows and numbers unchanged.
 * Jobs page: D-1 and D-0 switches (existing `PUT /api/schedules/{flow}`, readiness checked), showing only the saved
   state; disabled on the read-only remote link.
-* Tests: `test_v124_history_names_schedules.py` (12), `v124.test.tsx` (6); export column positions in test_v111 /
+* Tests: `test_v124_history_names_schedules.py` (13), `v124.test.tsx` (6); export column positions in test_v111 /
   test_v112 shifted by one (product name inserted after the SKU, format 5).
 
 ## 1.2.3 - 2026-10-17 (P0: SOURCE_NOT_READY explained, effective flow state, manual training not tied to schedules) [reports/demandforecast_v123_p0_source_not_ready_20261017.md]

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from collections import OrderedDict
 
 import numpy as np
@@ -105,27 +106,25 @@ def _reproduce(run: dict, tr: dict, sku: str, fc_id: str, method: str | None = N
     if not tr or state["status"] not in ("SAME_LOAD", "SAME_CONTENT"):
         out = {"status": "DATA_CHANGED", "data_check": check}
     else:
-        mcfg = ss.ModelSettings.model_validate(json.loads(tr["feature_config_json"])["config"])
-        panel = panel_for_run(tr)      # the run's own train_start..train_end: never beyond data_as_of
-        if panel is None:
+        # identical window content = identical panel: keyed by the content hash when verified (a later D-1 that only adds
+        # days after the window does not rebuild it), by the fingerprint otherwise
+        inp = _run_inputs(run, tr, (run["id"], state.get("sha256") or state["key"]))
+        if inp is None:
             out = {"status": "DATA_UNAVAILABLE"}
         else:
+            panel, mcfg, details = inp["panel"], inp["mcfg"], inp["details"]
             if str(panel.dates[-1].date()) != run["data_as_of"] or (sku, fc_id) not in panel.keys:
                 out = {"status": "DATA_CHANGED", "data_check": check}
             else:
                 s = panel.keys.index((sku, fc_id))
-                details = model.classification_details(panel, mcfg)
                 out.update(panel=panel, s=s, mcfg=mcfg, details=details, booster=None)
                 if method == model.METHOD_BASELINE:     # 1.2.2: the 28-day baseline, no model file involved
                     out.update(yhat=model.baseline_run(panel, run["max_horizon"])["yhat"][s])
                 elif details["methods"][s] == model.METHOD_LGBM:
-                    mpath = paths.models_dir() / (tr.get("model_path") or "")
-                    if not tr.get("model_path") or not mpath.exists() or \
-                            hashlib.sha256(mpath.read_bytes()).hexdigest() != tr.get("model_sha256"):
+                    booster = _booster(inp, tr)
+                    if booster is None:
                         out["status"] = "MODEL_MISSING"
                     else:
-                        import lightgbm as lgb
-                        booster = lgb.Booster(model_file=str(mpath))
                         fc = model.forecast(panel, booster, mcfg, run["max_horizon"], capture=s)
                         out.update(booster=booster, yhat=fc["yhat"][s], captured=fc["captured"])
                 else:   # fallback: model.forecast uses the constant rate, clipped at 0
@@ -134,6 +133,39 @@ def _reproduce(run: dict, tr: dict, sku: str, fc_id: str, method: str | None = N
     if len(_cache) > _CACHE_MAX:
         _cache.popitem(last=False)
     return out
+
+
+# 1.2.4: the run-level inputs (panel of the run's own window, classification, model) are the same for every series of
+# a run and a data version: built once (~40 s on 1.35 M rows) instead of once per series - an explanation opened
+# through the remote link must answer within the tunnel's 100 s. One entry: a new run / data version replaces it.
+_inputs: "OrderedDict[tuple, dict | None]" = OrderedDict()
+_inputs_lock = threading.Lock()
+
+
+def _run_inputs(run: dict, tr: dict, key: tuple) -> dict | None:
+    with _inputs_lock:
+        if key in _inputs:
+            return _inputs[key]
+    mcfg = ss.ModelSettings.model_validate(json.loads(tr["feature_config_json"])["config"])
+    panel = panel_for_run(tr)      # the run's own train_start..train_end: never beyond data_as_of
+    v = None if panel is None else {"panel": panel, "mcfg": mcfg, "details": model.classification_details(panel, mcfg),
+                                    "booster": None}
+    with _inputs_lock:
+        _inputs.clear()
+        _inputs[key] = v
+    return v
+
+
+def _booster(inp: dict, tr: dict):
+    """The run's LightGBM model, loaded once per run inputs after its SHA-256 matched; None if missing / modified."""
+    if inp.get("booster") is None:
+        mpath = paths.models_dir() / (tr.get("model_path") or "")
+        if not tr.get("model_path") or not mpath.exists() or \
+                hashlib.sha256(mpath.read_bytes()).hexdigest() != tr.get("model_sha256"):
+            return None
+        import lightgbm as lgb
+        inp["booster"] = lgb.Booster(model_file=str(mpath))
+    return inp["booster"]
 
 
 def explain(run_id: str, sku: str, fc_id: str, target_date: str) -> dict:

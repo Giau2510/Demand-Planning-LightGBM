@@ -293,3 +293,28 @@ def test_a_switch_is_refused_when_the_flow_is_not_ready_and_nothing_is_saved(cli
         assert r.status_code == 409 and r.json()["code"] == "FLOW_NOT_READY"
         assert "SOURCE_NOT_READY" in r.json()["detail"]
     assert ss.get("schedule").model_dump() == before
+
+
+def test_run_inputs_are_built_once_per_run_and_content(client, fast_model, monkeypatch):
+    """The panel of a run (~40 s on the real data) is built once for all its series, and an identical reload (a D-1
+    adding nothing to the window) does not rebuild it once the content was verified."""
+    from app.ml import explain as ex_mod
+    _, scope, res = _published()
+    fr = res["forecast_run_id"]
+    vals = client.get(f"/api/forecast-runs/{fr}/values?limit=5000").json()["rows"]
+    keys = sorted({(r["sku_id"], r["fc_id"]) for r in vals})[:3]
+    calls = []
+    real = ex_mod.panel_for_run
+    with monkeypatch.context() as m:
+        m.setattr(ex_mod, "panel_for_run", lambda tr, *a, **k: calls.append(1) or real(tr, *a, **k))
+        ex_mod._inputs.clear()
+        for sku, fc in keys:
+            assert _explain(client, fr, sku, fc, vals[0]["target_date"])["reproduction"]["status"] == "OK"
+        assert len(calls) == 1
+        _reload_same_values(scope)                       # first verified reload: keyed by the content hash from now on
+        _explain(client, fr, *keys[0], vals[0]["target_date"])
+        assert len(calls) == 2
+        with db.tx() as c:                               # another identical reload: same content, no rebuild
+            c.execute("UPDATE demand_daily SET loaded_at=? WHERE scope_key=?", ("2099-02-01T00:00:00+00:00", scope))
+        assert _explain(client, fr, *keys[1], vals[0]["target_date"])["reproduction"]["status"] == "OK"
+        assert len(calls) == 2

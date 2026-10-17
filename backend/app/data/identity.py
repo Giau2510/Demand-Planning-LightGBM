@@ -32,11 +32,11 @@ _CACHE_MAX = 4
 _lock = threading.Lock()
 
 
-def day_hashes(scope_key: str, conn, cache: bool = True) -> dict[str, tuple[str, int]]:
+def day_hashes(scope_key: str, conn, cache: bool = True, fp: str | None = None) -> dict[str, tuple[str, int]]:
     """{order_date: (sha256, rows)} of the whole scope. One ordered scan (~11 s for 1.35 M rows), cached per data
     version of the live database (the fingerprint): computed again only after the data was written. cache=False for
-    another database (a backup copy)."""
-    key = (scope_key, fingerprint(scope_key, conn))
+    another database (a backup copy). fp: the fingerprint when the caller has it (one full-scope aggregate less)."""
+    key = (scope_key, fp or fingerprint(scope_key, conn))
     with _lock:
         if cache and key in _cache:
             _cache.move_to_end(key)
@@ -63,9 +63,9 @@ def day_hashes(scope_key: str, conn, cache: bool = True) -> dict[str, tuple[str,
     return out
 
 
-def window_identity(scope_key: str, start: str, end: str, conn, days: dict | None = None) -> dict:
+def window_identity(scope_key: str, start: str, end: str, conn, days: dict | None = None, fp: str | None = None) -> dict:
     """Identity of the data window [start, end] of a scope (both Vietnam calendar dates, inclusive)."""
-    days = days if days is not None else day_hashes(scope_key, conn)
+    days = days if days is not None else day_hashes(scope_key, conn, fp=fp)
     sel = {d: v for d, v in days.items() if start <= d <= end}
     sha = hashlib.sha256("\n".join(f"{d}:{sel[d][0]}" for d in sorted(sel)).encode()).hexdigest()
     return {"algorithm": ALGORITHM, "columns": list(CONTENT_COLUMNS), "start": start, "end": end, "days": len(sel),
@@ -97,7 +97,7 @@ def data_state(tr: dict | None, scope_key: str, conn) -> dict:
     ident = stored_identity(tr, conn)
     if not ident or ident.get("algorithm") != ALGORITHM:
         return {"status": "UNVERIFIABLE", "key": cur}
-    now = window_identity(scope_key, ident["start"], ident["end"], conn)
+    now = window_identity(scope_key, ident["start"], ident["end"], conn, fp=cur)
     base = {"key": cur, "origin": ident["origin"], "window": [ident["start"], ident["end"]], "rows": ident.get("rows"),
             "sha256": ident["sha256"]}
     if now["sha256"] == ident["sha256"]:
