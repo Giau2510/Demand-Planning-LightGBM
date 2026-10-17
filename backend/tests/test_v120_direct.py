@@ -95,7 +95,8 @@ def _direct_settings(**quality):
     ss.update("model", {"forecast_strategy": "DIRECT", "direct_origins": 4, "direct_origin_step_days": 7})
     ss.update("horizons", {"enabled": [7]})
     if quality:
-        ss.update("quality", quality)
+        # 1.2.2: the documented gate exception belongs to the BLOCK policy (a failed gate rejects only under BLOCK)
+        ss.update("quality", {"below_threshold_policy": "BLOCK", **quality})
 
 
 def _approval(run_id, tr, **kw):
@@ -139,6 +140,8 @@ def test_gate_exception_releases_exactly_one_run_and_never_changes_the_gate(clie
     assert exc["scope"] == "THIS_TRAINING_RUN_ONLY" and exc["standard_gate_changed"] is False
     assert exc["failed_checks"] == ["WAPE_MAX"] and exc["standard_thresholds"]["WAPE_MAX"] == 0.0001
     assert ss.get("quality").wape_max == 0.0001                       # the standard gate itself is untouched
+    a = client.get(f"/api/training-runs/{rid}").json()["assessment"]   # 1.2.2: shown as usable WITH a warning
+    assert a["usage"] == {"status": "USABLE_WITH_WARNING", "reason": "QUALITY_GATE_EXCEPTION"} and a["exception"]
     with db.read() as c:
         assert pipeline.latest_published(conn=c)["id"] == fr
         assert c.execute("SELECT COUNT(*) FROM forecast_values WHERE run_id=?", (fr,)).fetchone()[0] > 0

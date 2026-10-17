@@ -21,6 +21,12 @@ def _q(c, sql, params=()):
     return [tuple(r) for r in c.execute(sql, params).fetchall()]
 
 
+def _baseline_only(c, training_run_id: str) -> bool:
+    """Every forecast run of this training run was produced by the 28-day baseline only (1.2.2)."""
+    runs = _q(c, "SELECT method_counts_json FROM forecast_runs WHERE training_run_id=?", (training_run_id,))
+    return bool(runs) and all(set(json.loads(m or "{}")) == {"BASELINE_MOVING_AVERAGE"} for (m,) in runs)
+
+
 def _check(name, rule, bad, fail=True, examples=None):
     n = len(bad) if isinstance(bad, list) else int(bad)
     return {"check": name, "status": "OK" if n == 0 else ("FAIL" if fail else "WARN"), "count": n, "rule": rule,
@@ -106,6 +112,8 @@ def _run(c, db_path: Path, models_dir: Path | None) -> dict:
         for rid, mv, mp, sha in _q(c, "SELECT id, model_version, model_path, model_sha256 FROM training_runs "
                                       "WHERE status='ACCEPTED'"):
             f = Path(models_dir) / (mp or "")
+            if not mp and _baseline_only(c, rid):
+                continue        # 1.2.2: a published 28-day baseline (LightGBM not trained) has no model file by design
             if not mp or not f.is_file():
                 model_bad.append((rid, mv, "missing"))
             elif sha and hashlib.sha256(f.read_bytes()).hexdigest() != sha:

@@ -1,7 +1,9 @@
-"""Train -> backtest -> quality gate -> publish (immutable forecast run).
+"""Train -> backtest -> candidate selection -> quality assessment -> publish (immutable forecast run).
 
-A new forecast is published ONLY when data checks and the configured quality gate pass. Otherwise the
-previously published forecast stays the current one and the reason is recorded.
+1.2.2: the quality gate is an ASSESSMENT, not a publish switch, unless quality.below_threshold_policy is BLOCK. A run is
+refused only for technical reasons (no data / too little history, stale data under the data policy, a forecast that
+cannot be computed). Otherwise the best evaluated candidate (LightGBM or the 28-day baseline, same backtest points) is
+published with its warnings when the scope has no model in use; a model in use is never replaced automatically.
 """
 from __future__ import annotations
 
@@ -25,21 +27,26 @@ from .features import build_panel, feature_names, is_direct
 log = logging.getLogger("df.pipeline")
 
 
-def quality_gate(bt: dict, q) -> dict:
-    m, mb = bt["metrics"], bt["baseline_metrics"]
+def _gate_checks(m: dict, mb: dict | None, reliable: bool, n_folds: int, q) -> list[dict]:
     checks = [
-        {"check": "BACKTEST_RELIABLE", "passed": bool(bt["reliable"]), "value": len(bt["folds"]), "threshold": None},
-        {"check": "MIN_BACKTEST_POINTS", "passed": m["n_points"] >= q.min_backtest_points, "value": m["n_points"],
-         "threshold": q.min_backtest_points},
-        {"check": "WAPE_MAX", "passed": m["wape"] is not None and m["wape"] <= q.wape_max, "value": m["wape"],
+        {"check": "BACKTEST_RELIABLE", "passed": bool(reliable), "value": n_folds, "threshold": None},
+        {"check": "MIN_BACKTEST_POINTS", "passed": (m.get("n_points") or 0) >= q.min_backtest_points,
+         "value": m.get("n_points"), "threshold": q.min_backtest_points},
+        {"check": "WAPE_MAX", "passed": m.get("wape") is not None and m["wape"] <= q.wape_max, "value": m.get("wape"),
          "threshold": q.wape_max},
-        {"check": "ABS_BIAS_MAX", "passed": m["bias"] is not None and abs(m["bias"]) <= q.abs_bias_max,
-         "value": m["bias"], "threshold": q.abs_bias_max},
+        {"check": "ABS_BIAS_MAX", "passed": m.get("bias") is not None and abs(m["bias"]) <= q.abs_bias_max,
+         "value": m.get("bias"), "threshold": q.abs_bias_max},
     ]
-    if q.require_beat_baseline:
-        checks.append({"check": "BEAT_BASELINE", "passed": (m["wape"] is not None and mb["wape"] is not None
+    if q.require_beat_baseline and mb is not None:
+        checks.append({"check": "BEAT_BASELINE", "passed": (m.get("wape") is not None and mb.get("wape") is not None
                                                             and m["wape"] < mb["wape"]),
-                       "value": m["wape"], "threshold": mb["wape"]})
+                       "value": m.get("wape"), "threshold": mb.get("wape")})
+    return checks
+
+
+def quality_gate(bt: dict, q) -> dict:
+    """The configured thresholds evaluated on the LightGBM candidate's backtest (unchanged meaning since 1.0)."""
+    checks = _gate_checks(bt["metrics"], bt["baseline_metrics"], bt["reliable"], len(bt["folds"]), q)
     return {"passed": all(c["passed"] for c in checks), "checks": checks,
             "thresholds_approved_by_business": q.approved_by_business}
 
@@ -47,6 +54,131 @@ def quality_gate(bt: dict, q) -> dict:
 PENDING_REVIEW = "PROMOTION_REVIEW_REQUIRED"
 EQUAL_TOLERANCE = 1e-9          # numerical tie only (floating point noise), NOT a business threshold
 FOLD_KEYS = ("backtest_folds", "backtest_horizon_days", "backtest_step_days", "min_total_history_days")
+
+# ------------------------------------------------------------------ 1.2.2 candidate selection and assessment
+CANDIDATE_LGBM = model.METHOD_LGBM            # the trained LightGBM model with its per-series fallback rules
+CANDIDATE_BASELINE = model.METHOD_BASELINE    # mean of the last 28 known days (the backtest baseline)
+QUALITY_CHECKS = ("WAPE_MAX", "ABS_BIAS_MAX", "BEAT_BASELINE")          # below threshold -> warning
+CONFIDENCE_CHECKS = ("BACKTEST_RELIABLE", "MIN_BACKTEST_POINTS")         # weak evaluation -> low confidence
+_METRIC_KEYS = ("wape", "bias", "mae", "n_points", "sum_actual", "sum_forecast")
+_REJECTED_BECAUSE = {"LIGHTGBM_NOT_TRAINED": "NOT_TRAINED", "BASELINE_LOWER_WAPE": "HIGHER_WAPE",
+                     "LIGHTGBM_LOWER_OR_EQUAL_WAPE": "NOT_LOWER_WAPE", "NO_BACKTEST_EVALUATION": "NOT_EVALUATED",
+                     "WAPE_UNDEFINED": "WAPE_UNDEFINED"}
+
+
+def select_candidate(metrics: dict, baseline_metrics: dict, n_folds: int, model_trained: bool) -> dict:
+    """Best candidate of ONE training run. Both candidates were scored by backtest() on exactly the same walk-forward
+    points (same folds, series, days and target), so their pooled WAPE is comparable; training-set error is never
+    used. Rule: lower pooled WAPE wins; a numerical tie keeps LightGBM. WAPE is undefined when the actual total is 0
+    (metrics.compute): then nothing can be compared and the trained model is kept. No business threshold here."""
+    m, mb = metrics or {}, baseline_metrics or {}
+    cands = {CANDIDATE_LGBM: {"available": bool(model_trained), "metrics": {k: m.get(k) for k in _METRIC_KEYS}},
+             CANDIDATE_BASELINE: {"available": True, "metrics": {k: mb.get(k) for k in _METRIC_KEYS}}}
+    if not model_trained:
+        chosen, why = CANDIDATE_BASELINE, "LIGHTGBM_NOT_TRAINED"
+    elif not n_folds:
+        chosen, why = CANDIDATE_LGBM, "NO_BACKTEST_EVALUATION"
+    elif m.get("wape") is None or mb.get("wape") is None:
+        chosen, why = CANDIDATE_LGBM, "WAPE_UNDEFINED"
+    elif mb["wape"] < m["wape"] - EQUAL_TOLERANCE:
+        chosen, why = CANDIDATE_BASELINE, "BASELINE_LOWER_WAPE"
+    else:
+        chosen, why = CANDIDATE_LGBM, "LIGHTGBM_LOWER_OR_EQUAL_WAPE"
+    other = CANDIDATE_BASELINE if chosen == CANDIDATE_LGBM else CANDIDATE_LGBM
+    return {"rule": "LOWEST_POOLED_WAPE_ON_SAME_BACKTEST_POINTS", "equal_tolerance": EQUAL_TOLERANCE,
+            "candidates": cands, "chosen": chosen, "reason": why,
+            "rejected": [{"candidate": other, "reason": _REJECTED_BECAUSE[why]}]}
+
+
+def assess(gate: dict, selection: dict, q, reliable: bool, n_folds: int, model_trained: bool) -> dict:
+    """Three separate statements about one training run (stored in quality_gate_json["assessment"]):
+      technical  - can the run produce a forecast (checks other than quality / confidence ones: none fail today,
+                   because data and training errors stop the run earlier with their own codes);
+      quality    - the configured thresholds on the SELECTED candidate's backtest: PASS / BELOW_THRESHOLD
+                   (NOT_EVALUATED when no backtest fold exists);
+      confidence - LOW when the evaluation is weak (unreliable backtest, too few points, LightGBM not trained);
+      usage      - what quality.below_threshold_policy allows: USABLE / USABLE_WITH_WARNING / NOT_USABLE."""
+    chosen = selection["chosen"]
+    if chosen == CANDIDATE_LGBM:
+        checks = gate["checks"]
+    else:
+        bm = selection["candidates"][CANDIDATE_BASELINE]["metrics"]
+        checks = _gate_checks(bm, None, reliable, n_folds, q)       # BEAT_BASELINE does not apply to the baseline
+    failed = [c["check"] for c in checks if not c["passed"]]
+    below = [c for c in failed if c in QUALITY_CHECKS]
+    weak = [c for c in failed if c in CONFIDENCE_CHECKS] + ([] if model_trained else ["MODEL_TRAINED"])
+    technical = [c for c in failed if c not in QUALITY_CHECKS + CONFIDENCE_CHECKS + ("MODEL_TRAINED",)]
+    policy = q.below_threshold_policy
+    if technical:
+        usage, reason = "NOT_USABLE", "TECHNICAL_CHECK_FAILED"
+    elif policy == "BLOCK" and (failed or not gate["passed"]):
+        usage, reason = "NOT_USABLE", "QUALITY_GATE_FAILED"
+    elif below or weak:
+        usage, reason = "USABLE_WITH_WARNING", "BELOW_THRESHOLD" if below else "LOW_CONFIDENCE"
+    else:
+        usage, reason = "USABLE", None
+    return {"policy": policy, "candidate": chosen,
+            "technical": {"status": "FAILED" if technical else "OK", "failed_checks": technical},
+            "quality": {"status": "NOT_EVALUATED" if not n_folds else ("BELOW_THRESHOLD" if below else "PASS"),
+                        "failed_checks": below, "checks": checks},
+            "confidence": {"level": "LOW" if weak else "NORMAL", "reasons": weak},
+            "usage": {"status": usage, "reason": reason}}
+
+
+def selection_of(tr: dict) -> dict:
+    """Stored selection of a training run; runs from before 1.2.2 are re-derived from their stored backtest metrics
+    (both candidates were always scored on the same points). Never guessed: no metrics -> LightGBM, as published."""
+    gate = json.loads(tr.get("quality_gate_json") or "{}") or {}
+    if gate.get("selection"):
+        return gate["selection"]
+    m = json.loads(tr.get("metrics_json") or "null")
+    mb = json.loads(tr.get("baseline_metrics_json") or "null")
+    if not m or not mb:
+        return {"rule": "NOT_RECORDED", "chosen": CANDIDATE_LGBM, "reason": "NO_STORED_METRICS", "candidates": {},
+                "rejected": []}
+    n_folds = next((c.get("value") for c in gate.get("checks", []) if c.get("check") == "BACKTEST_RELIABLE"), 1) or 0
+    return select_candidate(m, mb, int(n_folds), bool(tr.get("model_path")) or m.get("wape") is not None)
+
+
+def run_assessment(tr: dict | None, q=None) -> dict | None:
+    """Assessment of a stored training run for the API / UI. Read-only.
+    A run in use (or kept for review) shows the assessment it was published / kept under. A REJECTED run is not in use:
+    its usage follows the CURRENT policy (what 'Use this model' would do now), its training-time policy is kept in
+    'training_policy'. Runs from before 1.2.2 get an assessment derived from their stored gate."""
+    if not tr:
+        return None
+    gate = json.loads(tr.get("quality_gate_json") or "{}") or {}
+    stored = gate.get("assessment")
+    q = q or ss.get("quality")
+    if stored and (tr.get("status") != "REJECTED" or stored.get("policy") == q.below_threshold_policy):
+        out = {**stored, "selection": gate.get("selection"), "exception": bool(gate.get("exception"))}
+        if gate.get("exception"):          # released under the documented owner-approved exception (BLOCK policy)
+            out["usage"] = {"status": "USABLE_WITH_WARNING", "reason": "QUALITY_GATE_EXCEPTION"}
+        return out
+    if "checks" not in gate:
+        return None
+    sel = selection_of(tr)
+    checks = gate["checks"]
+    reliable = next((bool(c.get("passed")) for c in checks if c.get("check") == "BACKTEST_RELIABLE"), False)
+    n_folds = next((c.get("value") or 0 for c in checks if c.get("check") == "BACKTEST_RELIABLE"), 0)
+    trained = not any(c.get("check") == "MODEL_TRAINED" and not c.get("passed") for c in checks)
+    a = assess(gate, sel, q, reliable, int(n_folds), trained)
+    if gate.get("exception"):
+        a["usage"] = {"status": "USABLE_WITH_WARNING", "reason": "QUALITY_GATE_EXCEPTION"}
+    extra = {"training_policy": stored.get("policy")} if stored else {"derived": True}
+    return {**a, "selection": sel, "exception": bool(gate.get("exception")), **extra}
+
+
+def candidate_forecast(choice: str, panel, booster, mcfg, horizon: int, cancel=None) -> tuple[dict, dict | None]:
+    """(forecast, classification details) of the chosen candidate; the baseline needs no model file."""
+    if choice == CANDIDATE_BASELINE:
+        return model.baseline_run(panel, horizon), None
+    return model.forecast(panel, booster, mcfg, horizon, cancel), model.classification_details(panel, mcfg)
+
+
+def is_baseline_run(run: dict) -> bool:
+    counts = run.get("method_counts") or json.loads(run.get("method_counts_json") or "{}")
+    return bool(counts) and set(counts) == {CANDIDATE_BASELINE}
 
 
 def incumbent(scope_key: str, conn) -> dict | None:
@@ -58,26 +190,35 @@ def incumbent(scope_key: str, conn) -> dict | None:
     return {"forecast_run": fr, "training_run": tr} if tr else None
 
 
-def compare_with_incumbent(panel, cand_bt: dict, cand_cfg, inc_tr: dict, qcfg, cancel=None) -> dict:
+def compare_with_incumbent(panel, cand_bt: dict, cand_cfg, inc_tr: dict, qcfg, cancel=None,
+                           cand_choice: str = CANDIDATE_LGBM) -> dict:
     """Champion/challenger on the SAME validation set: the incumbent's own configuration (features, LightGBM parameters,
     fallback rules - stored with its training run) is re-fitted walk-forward on exactly the candidate's folds, panel
     (grain SKU x FC x day) and target. Both are scored on identical (series, day) points with the same metrics.
+    1.2.2: each side is scored as what it publishes - the candidate with its selected candidate, an incumbent that
+    published the 28-day baseline with the baseline on these folds (no re-fit needed).
     Verdict: BETTER / WORSE / EQUAL by pooled WAPE (EQUAL = numerical tie only), INSUFFICIENT_DATA when the folds have
     fewer points than quality.min_backtest_points or the incumbent configuration cannot be rebuilt. No business
     threshold is applied here."""
+    c = cand_bt["baseline_metrics"] if cand_choice == CANDIDATE_BASELINE else cand_bt["metrics"]
     out = {"method": "WALK_FORWARD_SAME_FOLDS", "incumbent_training_run_id": inc_tr["id"],
-           "incumbent_model_version": inc_tr.get("model_version"), "candidate": cand_bt["metrics"],
+           "incumbent_model_version": inc_tr.get("model_version"), "candidate": c, "candidate_choice": cand_choice,
            "folds": len(cand_bt["folds"]), "fold_config": cand_bt.get("config"),
            "incumbent_metrics_at_its_training": json.loads(inc_tr.get("metrics_json") or "null"),
            "equal_tolerance": EQUAL_TOLERANCE}
-    try:
-        stored = json.loads(inc_tr.get("feature_config_json") or "{}")["config"]
-        inc_cfg = ss.ModelSettings.model_validate({**stored, **{k: getattr(cand_cfg, k) for k in FOLD_KEYS}})
-    except Exception as e:  # noqa: BLE001 - old/unknown configuration: no comparison, never a guess
-        return {**out, "incumbent": None, "verdict": "INSUFFICIENT_DATA", "reason": "INCUMBENT_CONFIG_UNAVAILABLE",
-                "detail": type(e).__name__}
-    inc_bt = model.backtest(panel, inc_cfg, qcfg.mape_min_actual, cancel)
-    c, i = cand_bt["metrics"], inc_bt["metrics"]
+    inc_choice = selection_of(inc_tr)["chosen"]
+    out["incumbent_choice"] = inc_choice
+    if inc_choice == CANDIDATE_BASELINE:
+        inc_bt = {"folds": cand_bt["folds"], "metrics": cand_bt["baseline_metrics"]}
+    else:
+        try:
+            stored = json.loads(inc_tr.get("feature_config_json") or "{}")["config"]
+            inc_cfg = ss.ModelSettings.model_validate({**stored, **{k: getattr(cand_cfg, k) for k in FOLD_KEYS}})
+        except Exception as e:  # noqa: BLE001 - old/unknown configuration: no comparison, never a guess
+            return {**out, "incumbent": None, "verdict": "INSUFFICIENT_DATA", "reason": "INCUMBENT_CONFIG_UNAVAILABLE",
+                    "detail": type(e).__name__}
+        inc_bt = model.backtest(panel, inc_cfg, qcfg.mape_min_actual, cancel)
+    i = inc_bt["metrics"]
     out["incumbent"] = i
     n = c.get("n_points") or 0
     if not cand_bt["folds"] or not inc_bt["folds"] or n != (i.get("n_points") or 0) or n < qcfg.min_backtest_points \
@@ -112,12 +253,13 @@ def _publish_run(c, *, fr_id: str, training_run_id: str, version: str, scope: di
     methods = fc["methods"]
     counts = {str(k): int(v) for k, v in zip(*np.unique(methods, return_counts=True))}
     vals, metas = [], []
+    baseline = fc.get("kind") == "BASELINE"
     for s, (sku, fcid) in enumerate(panel.keys):
-        fb = None if methods[s] == model.METHOD_LGBM else methods[s]
+        fb = None if methods[s] in (model.METHOD_LGBM, model.METHOD_BASELINE) else methods[s]
         for h, dte in enumerate(fc["dates"]):
             vals.append((fr_id, sku, fcid, str(dte.date()), h + 1, float(round(fc["yhat"][s, h], 4)),
                          str(methods[s]), fb))
-        m = model.series_meta(panel, mcfg, details, s)
+        m = model.baseline_series_meta(panel, fc, s) if baseline else model.series_meta(panel, mcfg, details, s)
         metas.append((fr_id, sku, fcid, m["method"], m["reason_code"], json.dumps(m)))
     c.execute("INSERT INTO forecast_runs(id, training_run_id, model_version, scope_key, data_source, "
               "forecast_origin, data_as_of, horizons_json, max_horizon, n_series, method_counts_json, status, "
@@ -282,6 +424,11 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
         if booster is None:
             gate["passed"] = False
             gate["checks"].append({"check": "MODEL_TRAINED", "passed": False, "value": info.get("error")})
+        # 1.2.2: best candidate on the same backtest points, then the assessment (technical / quality / usage)
+        selection = select_candidate(bt["metrics"], bt["baseline_metrics"], len(bt["folds"]), booster is not None)
+        gate["selection"] = selection
+        gate["assessment"] = assess(gate, selection, qcfg, bool(bt["reliable"]), len(bt["folds"]), booster is not None)
+        usage = gate["assessment"]["usage"]
         bt_id = db.new_id("BT")
         common = dict(train_start=str(panel.dates[0].date()), train_end=str(panel.dates[-1].date()),
                       n_series=panel.n_series, n_rows=info["n_rows"],
@@ -294,15 +441,17 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
                       (bt_id, run_id, now_iso(), json.dumps(bt.get("config", {})), json.dumps(bt["folds"]),
                        json.dumps({"pooled": bt["metrics"], "baseline": bt["baseline_metrics"],
                                    "by_method": bt["by_method"]}), int(bt["reliable"]), json.dumps(bt["notes"])))
-        if not gate["passed"]:
+        if usage["status"] == "NOT_USABLE":
             if booster is not None:
-                # model file kept (hash recorded) so the run can be reviewed; it is published only through an
-                # explicit, documented gate exception for THIS run (release_with_gate_exception), never automatically
+                # model file kept (hash recorded) so the run can be reviewed; under the BLOCK policy it is published
+                # only through an explicit, documented gate exception for THIS run (release_with_gate_exception)
                 version, mpath, sha = _save_model(booster, names, panel, common["train_end"], scope, run_id, mcfg)
                 common.update(model_version=version, model_path=mpath.name, model_sha256=sha)
             finish("REJECTED", "QUALITY_GATE_FAILED", **common)
             return {"status": "REJECTED", "reason_code": "QUALITY_GATE_FAILED", "training_run_id": run_id,
                     "quality_gate": gate}
+        warn = usage["status"] == "USABLE_WITH_WARNING"
+        chosen = selection["chosen"]
 
         # forecast for the longest enabled horizon, starting the day after the last data day
         max_h = max(hcfg.enabled)
@@ -314,12 +463,17 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
             inc = incumbent(scope["scope_key"], c)
         promotion = {"policy": "MANUAL_REVIEW", "decided_at": now_iso()}
         if inc:
-            promotion.update(compare_with_incumbent(panel, bt, mcfg, inc["training_run"], qcfg, cancel))
+            promotion.update(compare_with_incumbent(panel, bt, mcfg, inc["training_run"], qcfg, cancel, chosen))
         else:
             promotion.update(decision="INITIAL_MODEL", note="no model in use for this scope: nothing to protect")
         gate["promotion"] = promotion
         common["quality_gate_json"] = json.dumps(gate)
-        version, mpath, sha = _save_model(booster, names, panel, common["train_end"], scope, run_id, mcfg)
+        if booster is not None:     # the LightGBM file is kept even when the baseline is chosen (review, comparison)
+            version, mpath, sha = _save_model(booster, names, panel, common["train_end"], scope, run_id, mcfg)
+            mname = mpath.name
+        else:
+            version, mname, sha = baseline_version(run_id), None, None
+        pub_version = version if chosen == CANDIDATE_LGBM or booster is None else baseline_version(run_id)
         if inc:
             promotion["decision"] = "REVIEW_REQUIRED"
             gate["promotion"] = promotion
@@ -329,24 +483,25 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
                           "model_path=?, model_sha256=?, train_start=?, train_end=?, n_series=?, n_rows=?, "
                           "metrics_json=?, baseline_metrics_json=?, quality_gate_json=?, feature_importance_json=? "
                           "WHERE id=?",
-                          (now_iso(), PENDING_REVIEW, version, mpath.name, sha, common["train_start"],
+                          (now_iso(), PENDING_REVIEW, version, mname, sha, common["train_start"],
                            common["train_end"], common["n_series"], common["n_rows"], common["metrics_json"],
                            common["baseline_metrics_json"], common["quality_gate_json"],
                            common["feature_importance_json"], run_id))
                 db.alert(c, "INFO", "CANDIDATE_READY_FOR_REVIEW",
                          {"training_run_id": run_id, "verdict": promotion.get("verdict"),
-                          "incumbent_training_run_id": inc["training_run"]["id"]}, "training_run", run_id)
+                          "incumbent_training_run_id": inc["training_run"]["id"], "usage": usage["status"]},
+                         "training_run", run_id)
                 db.audit(c, "TRAINING_CANDIDATE", "training_run", run_id,
-                         {"verdict": promotion.get("verdict"), "incumbent": inc["training_run"]["id"]})
+                         {"verdict": promotion.get("verdict"), "incumbent": inc["training_run"]["id"],
+                          "candidate": chosen, "usage": usage["status"]})
             log.info("candidate kept for review", extra={"ctx": {"training_run_id": run_id,
                                                                  "verdict": promotion.get("verdict")}})
             return {"status": "CANDIDATE", "reason_code": PENDING_REVIEW, "training_run_id": run_id,
-                    "model_version": version, "verdict": promotion.get("verdict"),
-                    "incumbent_training_run_id": inc["training_run"]["id"],
+                    "model_version": version, "verdict": promotion.get("verdict"), "candidate": chosen,
+                    "usage": usage["status"], "incumbent_training_run_id": inc["training_run"]["id"],
                     "published_forecast_run_id": inc["forecast_run"]["id"]}
         at("FORECASTING")
-        details = model.classification_details(panel, mcfg)
-        fc = model.forecast(panel, booster, mcfg, max_h, cancel)
+        fc, details = candidate_forecast(chosen, panel, booster, mcfg, max_h, cancel)
         if cancel and cancel():
             raise model.Cancelled()
         at("PUBLISHING")
@@ -355,15 +510,20 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
             c.execute("UPDATE training_runs SET status='ACCEPTED', finished_at=?, model_version=?, model_path=?, "
                       "model_sha256=?, train_start=?, train_end=?, n_series=?, n_rows=?, metrics_json=?, "
                       "baseline_metrics_json=?, quality_gate_json=?, feature_importance_json=? WHERE id=?",
-                      (now_iso(), version, mpath.name, sha, common["train_start"], common["train_end"],
+                      (now_iso(), version, mname, sha, common["train_start"], common["train_end"],
                        common["n_series"], common["n_rows"], common["metrics_json"], common["baseline_metrics_json"],
                        common["quality_gate_json"], common["feature_importance_json"], run_id))
-            n = _publish_run(c, fr_id=fr_id, training_run_id=run_id, version=version, scope=scope, panel=panel,
+            n = _publish_run(c, fr_id=fr_id, training_run_id=run_id, version=pub_version, scope=scope, panel=panel,
                              fc=fc, details=details, horizons=hcfg.enabled, max_h=max_h, job_id=job_id, mcfg=mcfg)
+            if warn:
+                _warn_published(c, fr_id, run_id, gate["assessment"])
         log.info("forecast published", extra={"ctx": {"forecast_run_id": fr_id, "training_run_id": run_id,
-                                                      "model_version": version, "rows": n}})
-        return {"status": "PUBLISHED", "reason_code": "FORECAST_PUBLISHED", "training_run_id": run_id,
-                "forecast_run_id": fr_id, "model_version": version, "training_status": "ACCEPTED"}
+                                                      "model_version": pub_version, "rows": n, "candidate": chosen,
+                                                      "usage": usage["status"]}})
+        return {"status": "PUBLISHED", "reason_code": "FORECAST_PUBLISHED_WITH_WARNING" if warn else "FORECAST_PUBLISHED",
+                "training_run_id": run_id, "forecast_run_id": fr_id, "model_version": pub_version,
+                "training_status": "ACCEPTED", "candidate": chosen, "usage": usage["status"],
+                "quality": gate["assessment"]["quality"]["status"]}
     except model.Cancelled:
         finish("FAILED", "TIMEOUT", error="cancelled (timeout)")
         raise
@@ -373,6 +533,21 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
         finish("FAILED", reason, error=f"{type(e).__name__}: {e}"[:2000])
         return {"status": "FAILED", "reason_code": reason, "failed_stage": current["stage"],
                 "training_run_id": run_id, "error": f"{type(e).__name__}: {e}"}
+
+
+def baseline_version(run_id: str) -> str:
+    """Version label of a forecast produced by the 28-day baseline (no model file)."""
+    return f"BL28-{now_vn():%Y%m%d-%H%M%S}-{run_id[-4:]}"
+
+
+def _warn_published(c, fr_id: str, run_id: str, assessment: dict) -> None:
+    """A published run that misses thresholds / has low confidence is visible as such (alert + audit), never hidden."""
+    detail = {"forecast_run_id": fr_id, "training_run_id": run_id, "candidate": assessment["candidate"],
+              "quality": assessment["quality"]["status"], "failed_checks": assessment["quality"]["failed_checks"],
+              "confidence": assessment["confidence"]["level"], "confidence_reasons": assessment["confidence"]["reasons"],
+              "policy": assessment["policy"]}
+    db.alert(c, "WARNING", "FORECAST_PUBLISHED_WITH_WARNING", detail, "forecast_run", fr_id)
+    db.audit(c, "FORECAST_PUBLISHED_WITH_WARNING", "forecast_run", fr_id, detail)
 
 
 def _save_model(booster, names: list[str], panel, train_end: str, scope: dict, run_id: str, mcfg):
@@ -409,16 +584,17 @@ def extend_forecast(run_id: str, job_id: str | None = None, cancel=None, progres
     new_max = max(want)
     if new_max <= run["max_horizon"]:
         raise AppError("NOTHING_TO_EXTEND", 409, detail=f"run covers {run['max_horizon']} days; configured {want}")
-    if not tr or tr["status"] != "ACCEPTED" or not tr["model_path"]:
+    baseline = is_baseline_run(run)        # 1.2.2: the published baseline needs no model file
+    if not tr or tr["status"] != "ACCEPTED" or not (tr["model_path"] or baseline):
         raise AppError("MODEL_ARTIFACT_MISSING", 409, detail="training run not accepted")
     if tr["data_fingerprint"] != cur_fp:
         raise AppError("DATA_CHANGED_SINCE_TRAINING", 409,
                        detail="the dataset changed after this model was trained - run Train & forecast instead")
-    mpath = paths.models_dir() / tr["model_path"]
-    if not mpath.exists() or hashlib.sha256(mpath.read_bytes()).hexdigest() != tr["model_sha256"]:
+    mpath = paths.models_dir() / (tr["model_path"] or "")
+    if not baseline and (not mpath.exists() or hashlib.sha256(mpath.read_bytes()).hexdigest() != tr["model_sha256"]):
         raise AppError("MODEL_ARTIFACT_MISSING", 409, detail=f"{tr['model_path']} missing or modified")
     mcfg = ss.ModelSettings.model_validate(json.loads(tr["feature_config_json"])["config"])
-    if is_direct(mcfg) and new_max > model.direct_max_horizon(mcfg):
+    if not baseline and is_direct(mcfg) and new_max > model.direct_max_horizon(mcfg):
         raise AppError("DIRECT_HORIZON_EXCEEDS_TRAINING", 409,
                        detail=f"{new_max} > {model.direct_max_horizon(mcfg)} days the model was trained for")
     if hcfg.max_forecast_rows < run["n_series"] * new_max:
@@ -428,10 +604,12 @@ def extend_forecast(run_id: str, job_id: str | None = None, cancel=None, progres
     if panel is None or str(panel.dates[-1].date()) != run["data_as_of"]:
         raise AppError("DATA_CHANGED_SINCE_TRAINING", 409, detail="data_as_of differs")
     stage("FORECASTING")
-    import lightgbm as lgb
-    booster = lgb.Booster(model_file=str(mpath))
-    details = model.classification_details(panel, mcfg)
-    fc = model.forecast(panel, booster, mcfg, new_max, cancel)
+    booster = None
+    if not baseline:
+        import lightgbm as lgb
+        booster = lgb.Booster(model_file=str(mpath))
+    fc, details = candidate_forecast(CANDIDATE_BASELINE if baseline else CANDIDATE_LGBM, panel, booster, mcfg,
+                                     new_max, cancel)
     # reproduction check: every published value of the original run must be reproduced exactly
     with db.read() as c:
         old = db.rows(c, "SELECT sku_id, fc_id, horizon_day, yhat, method FROM forecast_values WHERE run_id=?",
@@ -457,17 +635,45 @@ def extend_forecast(run_id: str, job_id: str | None = None, cancel=None, progres
             "previous_horizons": have, "reproduced_values": len(old)}
 
 
+def promotable(tr: dict | None, q=None) -> dict:
+    """Can the user put this training run in use with 'Use this model'?
+      * a candidate kept for review (REJECTED + PROMOTION_REVIEW_REQUIRED) - always (it was usable when trained);
+      * 1.2.2: a run REJECTED by the quality gate when the current policy is PUBLISH_WITH_WARNING and every failed
+        check is a quality threshold or an evaluation-confidence check (never a technical one), and the selected
+        candidate can be rebuilt (LightGBM needs its model file; the baseline needs none).
+    The data fingerprint and the model file hash are checked again by promote_candidate."""
+    if not tr:
+        return {"ok": False, "reason": "NOT_FOUND"}
+    if tr["status"] == "REJECTED" and tr.get("reject_reason") == PENDING_REVIEW:
+        return {"ok": True, "kind": "CANDIDATE"}
+    if tr["status"] != "REJECTED" or tr.get("reject_reason") != "QUALITY_GATE_FAILED":
+        return {"ok": False, "reason": f"{tr['status']} {tr.get('reject_reason') or ''}".strip()}
+    q = q or ss.get("quality")
+    if q.below_threshold_policy != "PUBLISH_WITH_WARNING":
+        return {"ok": False, "reason": "POLICY_BLOCK"}
+    gate = json.loads(tr.get("quality_gate_json") or "{}") or {}
+    failed = [c["check"] for c in gate.get("checks", []) if not c.get("passed")]
+    if not gate.get("checks") or any(c not in QUALITY_CHECKS + CONFIDENCE_CHECKS + ("MODEL_TRAINED",) for c in failed):
+        return {"ok": False, "reason": "TECHNICAL_CHECK_FAILED", "failed_checks": failed}
+    chosen = selection_of(tr)["chosen"]
+    if chosen == CANDIDATE_LGBM and not tr.get("model_path"):
+        return {"ok": False, "reason": "NO_MODEL_FILE"}
+    return {"ok": True, "kind": "BELOW_THRESHOLD", "candidate": chosen, "failed_checks": failed}
+
+
 def promote_candidate(training_run_id: str, cancel=None) -> dict:
-    """Explicit user decision: publish a candidate kept for review. Refused unless it is still a candidate, no newer
-    model was accepted for its scope, its data fingerprint equals the current data and its model file is intact.
-    The forecast is computed from the candidate's own panel (train_start..train_end) - exactly what would have been
-    published at training time. The previous model and all its forecasts are kept unchanged."""
+    """Explicit user decision: publish a run that promotable() allows. Refused unless no newer model was accepted for
+    its scope, its data fingerprint equals the current data and (LightGBM) its model file is intact. The forecast is
+    computed from the run's own panel (train_start..train_end) with its selected candidate - exactly what would have
+    been published at training time. The previous model and all its forecasts are kept unchanged."""
+    qcfg = ss.get("quality")
     with db.read() as c:
         tr = db.one(c, "SELECT * FROM training_runs WHERE id=?", (training_run_id,))
         if not tr:
             raise AppError("BATCH_NOT_FOUND", 404, detail=training_run_id)
-        if tr["status"] != "REJECTED" or tr["reject_reason"] != PENDING_REVIEW:
-            raise AppError("PROMOTION_NOT_ALLOWED", 409, detail=f"{tr['status']} {tr['reject_reason'] or ''}".strip())
+        ok = promotable(tr, qcfg)
+        if not ok["ok"]:
+            raise AppError("PROMOTION_NOT_ALLOWED", 409, detail=f"{ok['reason']}")
         newer = db.one(c, "SELECT id FROM training_runs WHERE scope_key=? AND status='ACCEPTED' AND rowid > "
                           "(SELECT rowid FROM training_runs WHERE id=?)", (tr["scope_key"], training_run_id))
         if newer:
@@ -479,10 +685,15 @@ def promote_candidate(training_run_id: str, cancel=None) -> dict:
         cur_fp = fingerprint(tr["scope_key"], c)
         hcfg = ss.get("horizons", c)
         inc = incumbent(tr["scope_key"], c)
+        bt_row = db.one(c, "SELECT reliable, folds_json FROM backtest_runs WHERE training_run_id=?", (training_run_id,))
     if tr["data_fingerprint"] != cur_fp:
         raise AppError("DATA_CHANGED_SINCE_TRAINING", 409, detail="the data changed after this candidate was trained")
+    gate = json.loads(tr["quality_gate_json"] or "{}")
+    sel = selection_of(tr)
+    chosen = sel["chosen"]
     mpath = paths.models_dir() / (tr["model_path"] or "")
-    if not tr["model_path"] or not mpath.exists() or hashlib.sha256(mpath.read_bytes()).hexdigest() != tr["model_sha256"]:
+    if chosen == CANDIDATE_LGBM and (not tr["model_path"] or not mpath.exists()
+                                     or hashlib.sha256(mpath.read_bytes()).hexdigest() != tr["model_sha256"]):
         raise AppError("MODEL_ARTIFACT_MISSING", 409, detail=f"{tr['model_path']} missing or modified")
     mcfg = ss.ModelSettings.model_validate(json.loads(tr["feature_config_json"])["config"])
     panel = panel_for_run(tr)
@@ -491,33 +702,46 @@ def promote_candidate(training_run_id: str, cancel=None) -> dict:
     max_h = max(hcfg.enabled)
     if panel.n_series * max_h > hcfg.max_forecast_rows:
         raise AppError("FORECAST_TOO_LARGE", 422)
-    import lightgbm as lgb
-    booster = lgb.Booster(model_file=str(mpath))
-    details = model.classification_details(panel, mcfg)
-    fc = model.forecast(panel, booster, mcfg, max_h, cancel)
-    gate = json.loads(tr["quality_gate_json"] or "{}")
+    if chosen == CANDIDATE_LGBM and is_direct(mcfg) and max_h > model.direct_max_horizon(mcfg):
+        raise AppError("DIRECT_HORIZON_EXCEEDS_TRAINING", 409, detail=f"{max_h} > {model.direct_max_horizon(mcfg)}")
+    booster = None
+    if chosen == CANDIDATE_LGBM:
+        import lightgbm as lgb
+        booster = lgb.Booster(model_file=str(mpath))
+    fc, details = candidate_forecast(chosen, panel, booster, mcfg, max_h, cancel)
+    # the assessment the run is published under = the CURRENT policy (a run trained before 1.2.2 has none yet)
+    n_folds = len(json.loads((bt_row or {}).get("folds_json") or "[]"))
+    trained = not any(c.get("check") == "MODEL_TRAINED" and not c.get("passed") for c in gate.get("checks", []))
+    gate["selection"] = sel
+    gate["assessment"] = assess(gate, sel, qcfg, bool((bt_row or {}).get("reliable")), n_folds, trained)
     prom = gate.get("promotion") or {}
-    prom.update(decision="PROMOTED_BY_USER", promoted_at=now_iso(),
+    prom.update(decision="PROMOTED_BY_USER", promoted_at=now_iso(), promoted_from=tr["reject_reason"],
                 replaced_training_run_id=(inc or {}).get("training_run", {}).get("id"))
     gate["promotion"] = prom
+    warn = gate["assessment"]["usage"]["status"] != "USABLE"
+    version = tr["model_version"] if chosen == CANDIDATE_LGBM else baseline_version(training_run_id)
     fr_id = db.new_id("FCR")
     scope = {"scope_key": tr["scope_key"], "data_source": tr["data_source"]}
     with db.tx() as c:
         cur = c.execute("UPDATE training_runs SET status='ACCEPTED', reject_reason=NULL, quality_gate_json=? "
                         "WHERE id=? AND status='REJECTED' AND reject_reason=?",
-                        (json.dumps(gate), training_run_id, PENDING_REVIEW))
+                        (json.dumps(gate), training_run_id, tr["reject_reason"]))
         if cur.rowcount != 1:
             raise AppError("PROMOTION_NOT_ALLOWED", 409, detail="state changed")
-        n = _publish_run(c, fr_id=fr_id, training_run_id=training_run_id, version=tr["model_version"], scope=scope,
+        n = _publish_run(c, fr_id=fr_id, training_run_id=training_run_id, version=version, scope=scope,
                          panel=panel, fc=fc, details=details, horizons=hcfg.enabled, max_h=max_h, job_id=None,
                          mcfg=mcfg)
         db.audit(c, "MODEL_PROMOTED", "training_run", training_run_id,
                  {"verdict": prom.get("verdict"), "replaced": prom.get("replaced_training_run_id"),
-                  "forecast_run_id": fr_id})
+                  "forecast_run_id": fr_id, "candidate": chosen, "promoted_from": tr["reject_reason"],
+                  "usage": gate["assessment"]["usage"]["status"]})
+        if warn:
+            _warn_published(c, fr_id, training_run_id, gate["assessment"])
     log.info("candidate promoted", extra={"ctx": {"training_run_id": training_run_id, "forecast_run_id": fr_id,
-                                                  "rows": n}})
+                                                  "rows": n, "candidate": chosen}})
     return {"status": "PUBLISHED", "reason_code": "MODEL_PROMOTED", "training_run_id": training_run_id,
-            "forecast_run_id": fr_id, "model_version": tr["model_version"], "verdict": prom.get("verdict"),
+            "forecast_run_id": fr_id, "model_version": version, "verdict": prom.get("verdict"), "candidate": chosen,
+            "usage": gate["assessment"]["usage"]["status"],
             "replaced_training_run_id": prom.get("replaced_training_run_id")}
 
 

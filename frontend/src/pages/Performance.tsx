@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { get, post } from "../api";
 import { useI18n } from "../i18n";
-import { Bars, Card, Code, Empty, ErrorBox, Loading, MethodLabel, OkBox, Pill, SourceBadge, Stat, Term, fmtDate, fmtNum, fmtPct, fmtSignedPct, fmtTime, useAction, useAsync } from "../components/ui";
+import { AssessmentBox, Bars, Card, Code, Empty, ErrorBox, Loading, MethodLabel, OkBox, Pill, SourceBadge, Stat, Term, fmtDate, fmtNum, fmtPct, fmtSignedPct, fmtTime, useAction, useAsync } from "../components/ui";
 
 function MetricsRow({ label, m }: { label: ReactNode; m: any }) {
   return (
@@ -37,8 +37,9 @@ const shownStatus = (r: any) => (r?.reject_reason === PENDING ? "CANDIDATE" : r?
 function Promotion({ d, onPromoted }: { d: any; onPromoted: () => void }) {
   const { t } = useI18n();
   const act = useAction();
-  const p = d?.quality_gate?.promotion;
+  const p = d?.quality_gate?.promotion ?? (d?.can_promote ? {} : null);
   if (!p) return null;
+  const below = d?.promotable?.kind === "BELOW_THRESHOLD";      // 1.2.2: usable under the policy, with a warning
   return (
     <Card title={t("perf.promotion")}>
       <ErrorBox error={act.error} />
@@ -65,10 +66,10 @@ function Promotion({ d, onPromoted }: { d: any; onPromoted: () => void }) {
       {d.can_promote && (
         <button className="primary" data-testid="promote" disabled={act.busy}
           onClick={async () => {
-            if (!window.confirm(t("perf.promote_confirm"))) return;
+            if (!window.confirm(t(below ? "perf.promote_below_confirm" : "perf.promote_confirm"))) return;
             const r = await act.run(() => post(`/api/training-runs/${d.id}/promote`, { confirm: true }), t("perf.promoted"));
             if (r) onPromoted();
-          }}>{t("perf.promote")}</button>
+          }}>{t(below ? "perf.promote_below" : "perf.promote")}</button>
       )}
     </Card>
   );
@@ -92,7 +93,8 @@ export function GateException({ d, onDone }: { d: any; onDone: () => void }) {
       </Card>
     );
   }
-  if (!d?.gate_exception?.eligible) return null;
+  // 1.2.2: under the policy "use with a warning" the run is put in use with 'Use this model'; no exception needed
+  if (!d?.gate_exception?.eligible || d?.can_promote) return null;
   const s = (k: string) => (e: any) => setF({ ...f, [k]: e.target.value });
   return (
     <Card title={t("perf.exception")}>
@@ -137,12 +139,13 @@ export default function Performance() {
         {!runs.data?.length ? <Empty text={t("common.not_available")} /> : (
           <div className="scroll">
             <table className="tbl click">
-              <thead><tr><th>{t("common.created")}</th><th>{t("common.status")}</th><th>{t("fc.model_version")}</th><th>{t("common.source")}</th><th className="num">WAPE</th><th className="num">Bias</th><th>{t("perf.reject_reason")}</th></tr></thead>
+              <thead><tr><th>{t("common.created")}</th><th>{t("common.status")}</th><th>{t("fc.model_version")}</th><th>{t("common.source")}</th><th className="num">WAPE</th><th className="num">Bias</th><th>{t("perf.usage_col")}</th><th>{t("perf.reject_reason")}</th></tr></thead>
               <tbody>
                 {runs.data.map((r: any) => (
                   <tr key={r.id} className={r.id === sel ? "sel" : ""} onClick={() => setSel(r.id)}>
                     <td>{fmtTime(r.started_at)}</td><td><Pill status={shownStatus(r)} /></td><td className="mono small">{r.model_version ?? "—"}</td>
                     <td><SourceBadge source={r.data_source} /></td><td className="num">{fmtPct(r.metrics?.wape)}</td><td className="num">{fmtSignedPct(r.metrics?.bias)}</td>
+                    <td>{r.status === "ACCEPTED" && r.assessment?.usage ? <Pill status={r.assessment.usage} /> : "—"}</td>
                     <td className="small"><Code code={r.reject_reason} showCode={false} /></td>
                   </tr>
                 ))}
@@ -164,6 +167,11 @@ export default function Performance() {
           </div>
           {bt?.notes?.some((n: any) => n.code === "BACKTEST_SPAN_BELOW_6_MONTHS") && (
             <div className="alert warn small" data-testid="bt-short">{t("perf.span_short")}</div>
+          )}
+          {d.assessment && (
+            <Card title={t("as.title")}>
+              <AssessmentBox a={d.assessment} />
+            </Card>
           )}
           <Promotion d={d} onPromoted={() => { det.reload(); runs.reload(); }} />
           <GateException d={d} onDone={() => { det.reload(); runs.reload(); }} />

@@ -159,6 +159,12 @@ export default function Config() {
             <Field label={<Term id="mape">{t("cfg.mape_min")}</Term>}><Num v={v} k="mape_min_actual" set={set} step={0.5} /></Field>
             <Field label={t("cfg.beat_baseline")}><Bool v={v} k="require_beat_baseline" set={set} /></Field>
             <Field label={t("cfg.approved")}><Bool v={v} k="approved_by_business" set={set} /></Field>
+            <Field label={t("cfg.below_policy")}>
+              <select data-testid="below-policy" value={v.below_threshold_policy ?? "PUBLISH_WITH_WARNING"} onChange={(e) => set({ below_threshold_policy: e.target.value })}>
+                <option value="PUBLISH_WITH_WARNING">{t("cfg.below_policy.PUBLISH_WITH_WARNING")}</option>
+                <option value="BLOCK">{t("cfg.below_policy.BLOCK")}</option>
+              </select>
+            </Field>
           </>
         )}
       </Section>

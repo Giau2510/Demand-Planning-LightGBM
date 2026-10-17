@@ -45,18 +45,36 @@ def run_training(body: TrainBody | None = None):
     return background.submit("TRAIN_PUBLISH", {"force": bool(body and body.force)})
 
 
+def _assessment_summary(a: dict | None) -> dict | None:
+    """The three statements of a training run in a compact form for lists (see pipeline.assess)."""
+    if not a:
+        return None
+    return {"candidate": a.get("candidate"), "technical": (a.get("technical") or {}).get("status"),
+            "quality": (a.get("quality") or {}).get("status"),
+            "failed_checks": (a.get("quality") or {}).get("failed_checks"),
+            "confidence": (a.get("confidence") or {}).get("level"), "usage": (a.get("usage") or {}).get("status"),
+            "usage_reason": (a.get("usage") or {}).get("reason"), "policy": a.get("policy"),
+            "exception": bool(a.get("exception"))}
+
+
 @router.get("/training-runs")
 def training_runs(limit: int = 50, scope_key: str | None = None):
+    q = ss.get("quality")
     with db.read() as c:
         sql = ("SELECT id, model_version, scope_key, data_source, status, started_at, finished_at, train_start, "
                "train_end, n_series, n_rows, metrics_json, baseline_metrics_json, quality_gate_json, reject_reason, "
-               "error, job_id FROM training_runs")
+               "error, job_id, model_path FROM training_runs")
         params: list = []
         if scope_key:
             sql += " WHERE scope_key=?"
             params.append(scope_key)
         rows = db.rows(c, sql + " ORDER BY started_at DESC, rowid DESC LIMIT ?", (*params, limit))
-    return [_decode(r) for r in rows]
+    out = []
+    for r in rows:
+        a = _assessment_summary(pipeline.run_assessment(r, q))
+        r.pop("model_path", None)
+        out.append({**_decode(r), "assessment": a})
+    return out
 
 
 @router.get("/training-runs/{run_id}")
@@ -71,8 +89,11 @@ def training_run(run_id: str):
         inc = pipeline.incumbent(r["scope_key"], c)
         r["in_use"] = bool(inc and inc["training_run"]["id"] == run_id)
         r["incumbent_training_run_id"] = inc["training_run"]["id"] if inc else None
-        r["can_promote"] = r["status"] == "REJECTED" and r["reject_reason"] == pipeline.PENDING_REVIEW
-        r["gate_exception"] = pipeline.exception_eligible(db.one(c, "SELECT * FROM training_runs WHERE id=?", (run_id,)))
+        raw = db.one(c, "SELECT * FROM training_runs WHERE id=?", (run_id,))
+        r["promotable"] = pipeline.promotable(raw)
+        r["can_promote"] = bool(r["promotable"]["ok"])
+        r["gate_exception"] = pipeline.exception_eligible(raw)
+        r["assessment"] = pipeline.run_assessment(raw)
     return r
 
 
@@ -112,23 +133,68 @@ def _run(c, run_id: str) -> dict:
 
 
 @router.get("/forecast-runs")
-def forecast_runs(limit: int = 50, scope_key: str | None = None):
+def forecast_runs(limit: int = 50, scope_key: str | None = None, data_source: str | None = None):
+    """Published runs, newest first. Every row says whether it belongs to the ACTIVE source's scope and carries the
+    assessment of its training run (quality / usage), so the UI never presents a run of another source (e.g. an
+    old DEMO run) as the current one."""
+    q = ss.get("quality")
     with db.read() as c:
+        try:
+            active = resolve_scope(c)["scope_key"]
+        except AppError:
+            active = None
         sql = "SELECT * FROM forecast_runs"
-        params: list = []
+        where, params = [], []
         if scope_key:
-            sql += " WHERE scope_key=?"
+            where.append("scope_key=?")
             params.append(scope_key)
-        return [_decode(r) for r in db.rows(c, sql + " ORDER BY created_at DESC, rowid DESC LIMIT ?", (*params, limit))]
+        if data_source:
+            where.append("data_source=?")
+            params.append(data_source)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        rows = [_decode(r) for r in db.rows(c, sql + " ORDER BY created_at DESC, rowid DESC LIMIT ?", (*params, limit))]
+        trs = {}
+        for r in rows:
+            if r["training_run_id"] not in trs:
+                trs[r["training_run_id"]] = db.one(c, "SELECT * FROM training_runs WHERE id=?", (r["training_run_id"],))
+    for r in rows:
+        r["active_scope"] = r["scope_key"] == active
+        r["assessment"] = _assessment_summary(pipeline.run_assessment(trs.get(r["training_run_id"]), q))
+    return rows
+
+
+def _lineage(tr: dict | None) -> dict | None:
+    """Which data the run was trained on (stored with the training run; metadata only, no credentials)."""
+    if not tr:
+        return None
+    fc = json.loads(tr.get("feature_config_json") or "{}") or {}
+    lin = fc.get("lineage") or {}
+    ref = lin.get("source_ref") or {}
+    last = ref.get("last_sync") or {}
+    return {"data_source": lin.get("data_source") or tr.get("data_source"), "scope_key": tr.get("scope_key"),
+            "table": ref.get("table"), "location": ref.get("location"), "batch_id": ref.get("id"),
+            "data_window": fc.get("data_window"), "demand_daily": lin.get("demand_daily"),
+            "fetched_at": lin.get("fetched_at"), "data_fingerprint": tr.get("data_fingerprint"),
+            "last_sync": {k: last.get(k) for k in ("synced_at", "watermark", "window_start", "window_end", "mode",
+                                                   "rows_read", "series_days_written")} if last else None,
+            "train_start": tr.get("train_start"), "train_end": tr.get("train_end")}
 
 
 @router.get("/forecast-runs/{run_id}")
 def forecast_run(run_id: str):
     with db.read() as c:
         r = _run(c, run_id)
+        raw = db.one(c, "SELECT * FROM training_runs WHERE id=?", (r["training_run_id"],))
         r["training_run"] = _decode(db.one(c, "SELECT id, model_version, status, metrics_json, quality_gate_json, "
                                               "train_start, train_end FROM training_runs WHERE id=?",
                                            (r["training_run_id"],)))
+        r["assessment"] = pipeline.run_assessment(raw)
+        r["lineage"] = _lineage(raw)
+        try:
+            r["active_scope"] = r["scope_key"] == resolve_scope(c)["scope_key"]
+        except AppError:
+            r["active_scope"] = False
         r["skus"] = [x["sku_id"] for x in db.rows(c, "SELECT DISTINCT sku_id FROM forecast_values WHERE run_id=? "
                                                      "ORDER BY sku_id", (run_id,))]
         r["fcs"] = [x["fc_id"] for x in db.rows(c, "SELECT DISTINCT fc_id FROM forecast_values WHERE run_id=? "
@@ -152,9 +218,10 @@ def _coverage(c, run: dict) -> dict:
         tr = db.one(c, "SELECT status, model_path, model_sha256, data_fingerprint FROM training_runs WHERE id=?",
                     (run["training_run_id"],))
         mp = paths.models_dir() / (tr["model_path"] or "") if tr else None
-        if not tr or tr["status"] != "ACCEPTED" or not tr["model_path"] or not mp.exists():
+        baseline = pipeline.is_baseline_run(run)       # 1.2.2: rebuilt from the data alone, no model file
+        if not tr or tr["status"] != "ACCEPTED" or (not baseline and (not tr["model_path"] or not mp.exists())):
             why = "MODEL_ARTIFACT_MISSING"
-        elif hashlib.sha256(mp.read_bytes()).hexdigest() != tr["model_sha256"]:
+        elif not baseline and hashlib.sha256(mp.read_bytes()).hexdigest() != tr["model_sha256"]:
             why = "MODEL_ARTIFACT_MISSING"
         elif fingerprint(run["scope_key"], c) != tr["data_fingerprint"]:
             why = "DATA_CHANGED_SINCE_TRAINING"

@@ -319,3 +319,17 @@ No commit / package / deploy (user's instruction). Production stays 1.2.0. Repor
 | Release 1.2.1 / deploy | DONE (16:37-16:58) | owner asked to deploy: train catch-up policy SKIP set first (PUT /api/schedules/train); local commit 94fd17b (no push); package 1BE9E270...4DC7; deploy 16:48-16:52, backups backup-20261017-164813-manual.zip + -165044-cli.zip; data / settings fingerprint unchanged; TRAIN_PUBLISH:2026-10-17 SKIPPED; rollback -To 1.2.0 -CheckOnly OK |
 | Remote link (production 1.2.1) | RUNNING | https://volumes-jean-angels-configurations.trycloudflare.com - reads 200, 10 writes 405, 10 admin 403, Edge headless 3 pages 0 errors; changes on every tunnel restart |
 | D-0 | WAITING (owner) | not touched: save + validate the D-0 table SQL, choose key policy BLOCK / SUM_ALL |
+
+
+# 1.2.2 P0: BigQuery end to end, quality gate = assessment, best evaluated candidate (2026-10-17 17:32 - )
+
+Owner's P0 request: the dashboard showed DEMO although the source is BIGQUERY. Link sent to the boss must stay up
+(cloudflared / proxy never stopped). Report `reports/demandforecast_v122_p0_bigquery_20261017.md`.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Root cause | DONE | quality gate was a publish switch: every BIGQUERY run REJECTED (latest TRN-20261017101340-EEDA47, WAPE 0.807 > 0.60, bias 0.058, baseline 0.844) so the BIGQUERY scope had no forecast; Results opened the newest run of any source (DEMO FCR-20261016073246-E18059) |
+| Source checkpoint | DONE | `checkpoints\checkpoint-20261017-p0-bigquery-before-1.2.2.zip` (git archive of HEAD b96f895, SHA-256 EAD13D48...AFB4) |
+| Code 1.2.2 | DONE | `quality.below_threshold_policy`, `pipeline.select_candidate / assess / promotable`, baseline method, APIs, UI; tests `test_v122_bigquery_policy.py` (14), `v122.test.tsx` (6) |
+| Found on production (not changed by Claude) | NOTE | 17:32:20 VN the BigQuery mapping was saved locally (`unit_price` OPTIONAL -> REQUIRED): production mode OFF -> D-1 / new training / D-0 need re-validation + activation by the owner |
+| Copy of production + real BigQuery | DONE | "Use this model" on TRN-...EEDA47 -> BIGQUERY forecast 17,125 series in 44.6 s; D-0 table SQL VALID (8,454 rows, 48 key repeats = 39 keys, 0 identical rows, all differ in price); live DB unchanged |

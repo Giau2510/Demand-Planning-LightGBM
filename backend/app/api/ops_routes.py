@@ -78,6 +78,21 @@ def system_status() -> dict:
                 c, "SELECT id, model_version, status, started_at, finished_at, reject_reason, error, metrics_json, "
                    "quality_gate_json FROM training_runs WHERE scope_key=? ORDER BY started_at DESC, rowid DESC LIMIT 1",
                 (scope["scope_key"],)))
+            # 1.2.2: the forecast state of the ACTIVE source only - a run of another source (e.g. an old DEMO run) is
+            # counted, never presented as the current forecast
+            from ..ml import pipeline
+            fr = out["latest_forecast_run"]
+            in_use = db.one(c, "SELECT * FROM training_runs WHERE id=?", (fr["training_run_id"],)) if fr else None
+            last = db.one(c, "SELECT * FROM training_runs WHERE scope_key=? ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                          (scope["scope_key"],))
+            q = ss.get("quality", c)
+            out["forecast_state"] = {
+                "status": "OK" if fr else "NO_FORECAST_FOR_ACTIVE_SOURCE", "data_source": scope["data_source"],
+                "model_in_use": pipeline.run_assessment(in_use, q),
+                "latest_attempt": {"id": last["id"], "status": last["status"], "reject_reason": last["reject_reason"],
+                                   "promotable": pipeline.promotable(last, q)} if last else None,
+                "other_source_runs": c.execute("SELECT COUNT(*) FROM forecast_runs WHERE scope_key<>?",
+                                               (scope["scope_key"],)).fetchone()[0]}
         out["latest_jobs"] = {jt: db.one(c, "SELECT id, job_type, status, trigger, reason_code, created_at, finished_at, "
                                             "next_attempt_at, attempt, max_attempts, stage, stage_updated_at "
                                             "FROM job_runs WHERE job_type=? ORDER BY created_at DESC, rowid DESC LIMIT 1", (jt,))

@@ -107,7 +107,8 @@ Toàn bộ dữ liệu ngắn hơn `min_total_history_days` (56) → **không hu
 
 Tối đa `backtest_folds` (12) fold; fold *k* có mốc `T − H − (F−1−k) × step` (H = 30, step = 30 ngày → các cửa sổ 30 ngày liền nhau, tối đa ~12 tháng). Fold có mốc với ít hơn `min_total_history_days` (56) ngày lịch sử bị bỏ, nên khoảng backtest là khoảng dài nhất mà cửa sổ dữ liệu cho phép (01/01–15/10/2026: 7 fold = 210 ngày); dưới 6 tháng thì ghi chú `BACKTEST_SPAN_BELOW_6_MONTHS`. Mỗi fold: huấn luyện chỉ
 với dữ liệu trước mốc → dự báo H ngày → so với thực tế. Không shuffle. Kết quả gộp các fold dùng cho quality gate; so
-sánh với baseline trung bình 28 ngày; tách theo phương pháp. Ít hơn 2 fold hợp lệ → *không đủ tin cậy* → không publish.
+sánh với baseline trung bình 28 ngày; tách theo phương pháp. Ít hơn 2 fold hợp lệ → *không đủ tin cậy* → từ 1.2.2 là
+*độ tin cậy thấp* (cảnh báo); chỉ chặn publish khi chính sách dưới ngưỡng là `BLOCK` (xem Quality gate).
 Lưu cấu hình và kết quả từng lần backtest.
 
 ## Chỉ số (định nghĩa giống hệt ở backend `backend/app/ml/metrics.py` và giao diện)
@@ -125,7 +126,38 @@ Mặc định (**ví dụ để kiểm thử, CHƯA được phê duyệt nghi�
 backtest đủ tin cậy; tùy chọn bắt buộc tốt hơn baseline. Ô *Đã được nghiệp vụ phê duyệt* chỉ là ghi nhận; cảnh báo
 luôn hiển thị cho tới khi được đánh dấu. Lịch sử thay đổi ngưỡng được lưu.
 
-Không đạt → không publish, giữ model và forecast hợp lệ trước đó, ghi lý do. Model mới không bao giờ xóa model cũ.
+Model mới không bao giờ xóa hay ghi đè model cũ.
+
+### Từ 1.2.2: quality gate là ĐÁNH GIÁ, không phải công tắc publish (quyết định của chủ dự án 17/10/2026)
+
+Dữ liệu thật (BigQuery) chưa sạch vẫn phải được dùng; chọn phương án tốt nhất có thể. Cài đặt
+`quality.below_threshold_policy`:
+- `PUBLISH_WITH_WARNING` (mặc định): lần huấn luyện **đúng kỹ thuật** được dùng kèm cảnh báo dù không đạt ngưỡng;
+- `BLOCK`: như trước 1.2.2 — không đạt ngưỡng thì không publish (khi đó vẫn dùng được *Ngoại lệ quality gate* bên dưới).
+
+Ngưỡng và kết quả gate **không đổi** và luôn hiển thị trung thực (WAPE 0,807 > 0,60 vẫn là "không đạt").
+
+**Chọn ứng viên** (`pipeline.select_candidate`): mỗi lần huấn luyện chấm điểm hai ứng viên trên **cùng các điểm backtest**
+(cùng fold, chuỗi, ngày, target): LightGBM (+ quy tắc dự phòng) và baseline trung bình 28 ngày. Ứng viên có WAPE gộp thấp
+hơn được chọn; bằng nhau (≤ 1e-9) giữ LightGBM; WAPE không xác định (tổng thực tế = 0) hoặc không có fold → giữ LightGBM
+(độ tin cậy thấp); LightGBM không huấn luyện được → baseline. Không dùng sai số trên tập huấn luyện. Ứng viên bị loại và
+lý do được lưu (`quality_gate.selection`). Baseline được publish với phương pháp `BASELINE_MOVING_AVERAGE` (giá trị =
+tổng 28 ngày gần nhất ÷ số ngày đã biết, giống hệt baseline đã chấm điểm), phiên bản `BL28-…`, không cần file model.
+
+**Ba trạng thái tách biệt** (`quality_gate.assessment`, hiển thị ở Tổng quan, Kết quả dự báo, Hiệu năng model):
+- *Kỹ thuật*: tạo được forecast an toàn hay không;
+- *Chất lượng*: `PASS` / `BELOW_THRESHOLD` (ngưỡng trên ứng viên được chọn) / `NOT_EVALUATED`; *độ tin cậy* `NORMAL` / `LOW`
+  (backtest không tin cậy, quá ít điểm, LightGBM không huấn luyện được);
+- *Sử dụng*: `USABLE` / `USABLE_WITH_WARNING` / `NOT_USABLE` (chỉ khi `BLOCK` hoặc lỗi kỹ thuật).
+
+**Chỉ chặn vì lý do kỹ thuật:** không có dữ liệu / lịch sử quá ngắn (`DATA_NOT_TRAINABLE`), dữ liệu cũ theo
+`data_policy` (`STALE_DATA_BLOCKED`), không tính được forecast (`TRAINING_FAILED` / `PUBLISH_FAILED`), BigQuery chưa
+sẵn sàng (`SOURCE_NOT_READY`, `BQ_VALIDATION_REQUIRED`) — **không bao giờ** chuyển sang DEMO.
+
+**Publish:** chưa có model đang dùng → publish ứng viên được chọn (`FORECAST_PUBLISHED_WITH_WARNING` + cảnh báo
+WARNING khi dưới ngưỡng / độ tin cậy thấp). Đã có model đang dùng → không tự thay (mục dưới); model mới chờ duyệt.
+Lần huấn luyện bị từ chối trước 1.2.2 (hoặc dưới `BLOCK`) chỉ vì ngưỡng / độ tin cậy, dữ liệu chưa đổi, file model còn
+nguyên → nút **Dùng model này (dưới ngưỡng — kèm cảnh báo)** publish nó mà không huấn luyện lại.
 
 ## Phiên bản & truy vết
 
@@ -403,6 +435,9 @@ Kết luận đúng phạm vi: hai feature giá hiện có **chưa cải thiện
   với số lượng.
 
 ## Ngoại lệ quality gate (1.2.0)
+
+Từ 1.2.2 chỉ cần khi chính sách dưới ngưỡng là `BLOCK`; với `PUBLISH_WITH_WARNING` lần huấn luyện đó được dùng bằng nút
+*Dùng model này* (biểu mẫu ngoại lệ không hiện).
 
 Ngưỡng chuẩn (`quality.wape_max`, `abs_bias_max`) **không đổi**.
 

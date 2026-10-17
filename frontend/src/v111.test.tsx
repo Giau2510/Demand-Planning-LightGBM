@@ -41,7 +41,8 @@ describe("method registry & algorithm page", () => {
     const anchors = Object.values(REGISTRY.methods).map((m: any) => m.anchor).sort();
     expect(anchors).toEqual(BACKEND_ANCHORS);
     const prod = Object.values(REGISTRY.methods).filter((m: any) => m.scope === "production").map((m: any) => m.code).sort();
-    expect(prod).toEqual(["FALLBACK_INACTIVE_ZERO", "FALLBACK_INTERMITTENT", "FALLBACK_NEW_SERIES", "LIGHTGBM"]);
+    // 1.2.2: the selected 28-day baseline can be published
+    expect(prod).toEqual(["BASELINE_MOVING_AVERAGE", "FALLBACK_INACTIVE_ZERO", "FALLBACK_INTERMITTENT", "FALLBACK_NEW_SERIES", "LIGHTGBM"]);
   });
 
   it("every method tooltip anchor exists on the algorithm page; backtest-only code is labelled as such", async () => {

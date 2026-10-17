@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { get, post, qs } from "../api";
+import { useSystem } from "../App";
 import { useI18n } from "../i18n";
-import { Card, DateInput, Empty, ErrorBox, Field, JobProgress, LineChart, Loading, MethodLabel, SourceBadge, Stat, Term, fmtDate, fmtNum, fmtPct, fmtSignedPct, fmtTime, useAction, useAsync } from "../components/ui";
+import { AssessmentBox, Card, DateInput, Empty, ErrorBox, Field, JobProgress, LineChart, Loading, MethodLabel, SourceBadge, Stat, Term, fmtDate, fmtNum, fmtPct, fmtSignedPct, fmtTime, useAction, useAsync } from "../components/ui";
 import { HorizonPicker } from "./Dashboard";
 import ExplainPanel from "./ExplainPanel";
 
@@ -51,8 +52,12 @@ export default function Results() {
   const [extendJob, setExtendJob] = useState<string | null>(null);
   const act = useAction();
 
+  const { status: sys } = useSystem();
+  // 1.2.2: the default run is the newest run of the ACTIVE source's scope - never a newer run of another source
+  // (e.g. an old DEMO run while the source is BIGQUERY); such runs stay selectable, clearly labelled
+  const activeRuns = (runs.data ?? []).filter((x: any) => x.active_scope !== false);
   useEffect(() => {
-    if (!runId && runs.data?.length) setRunId(runs.data[0].id);
+    if (!runId && activeRuns.length) setRunId(activeRuns[0].id);
   }, [runs.data, runId]);
   const run = useAsync(() => (runId ? get(`/api/forecast-runs/${runId}`) : Promise.resolve(null)), [runId]);
   useEffect(() => {
@@ -94,12 +99,21 @@ export default function Results() {
     <div className="stack">
       <h2>{t("nav.results")}</h2>
       <ErrorBox error={runs.error || run.error || summary.error || daily.error || act.error} />
+      {!activeRuns.length && (
+        <div className="alert warn" data-testid="no-run-active">{t("fc.no_run_active").replace("{src}", sys?.active_source ?? "—")}</div>
+      )}
+      {r && r.active_scope === false && (
+        <div className="alert warn" data-testid="other-source-run">
+          {t("fc.other_source_warn").replace("{run}", r.data_source).replace("{active}", sys?.active_source ?? "—")}
+        </div>
+      )}
       <Card>
         <div className="row wrap">
           <Field label={t("fc.select_run")}>
-            <select value={runId} onChange={(e) => setRunId(e.target.value)}>
+            <select value={runId} onChange={(e) => setRunId(e.target.value)} data-testid="run-select">
+              {!runId && <option value="">{t("fc.pick_run")}</option>}
               {runs.data.map((x: any) => (
-                <option key={x.id} value={x.id}>{fmtTime(x.created_at)} · {x.data_source} · {x.model_version} · {(x.horizons ?? []).join("/")} {t("common.days")}{x.derived_from_run_id ? ` · ${t("fc.extended")}` : ""}</option>
+                <option key={x.id} value={x.id}>{fmtTime(x.created_at)} · {x.data_source}{x.active_scope === false ? ` (${t("fc.other_source")})` : ""} · {x.model_version} · {(x.horizons ?? []).join("/")} {t("common.days")}{x.derived_from_run_id ? ` · ${t("fc.extended")}` : ""}{x.assessment?.usage === "USABLE_WITH_WARNING" ? ` · ⚠ ${t("fc.below_tag")}` : ""}</option>
               ))}
             </select>
           </Field>
@@ -147,6 +161,14 @@ export default function Results() {
           <Stat label={<Term id="origin">{t("fc.origin")}</Term>} value={fmtDate(r.forecast_origin)} sub={`${t("fc.data_as_of")}: ${fmtDate(r.data_as_of)} · ${t("fc.run_at")}: ${fmtTime(r.created_at)}`} />
         </div>
       )}
+      {r?.lineage && (
+        <p className="small muted" data-testid="lineage">
+          {t("fc.lineage")}: <SourceBadge source={r.lineage.data_source} /> {r.lineage.table ?? r.lineage.batch_id ?? r.scope_key}
+          {" · "}{fmtDate(r.lineage.train_start)} → {fmtDate(r.lineage.train_end)}
+          {r.lineage.last_sync?.synced_at ? ` · ${t("fc.lineage_sync")} ${fmtTime(r.lineage.last_sync.synced_at)}` : ""}
+        </p>
+      )}
+      {r?.assessment && <AssessmentBox a={r.assessment} />}
 
       {s && (
         <Card title={t("dash.trend")}>

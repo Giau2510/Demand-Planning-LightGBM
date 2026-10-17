@@ -5,6 +5,30 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.2.2 - 2026-10-17 (P0: BigQuery end to end, quality gate = assessment, best evaluated candidate) [reports/demandforecast_v122_p0_bigquery_20261017.md]
+
+Database schema unchanged (3); settings: new key `quality.below_threshold_policy` (ignored by 1.2.1: rollback needs no
+restore). Root cause of "DEMO on the dashboard": the quality gate was a publish switch, so no BIGQUERY run was ever
+published (WAPE 0.807 > 0.60), and the Results page opened the newest run of ANY source (an old DEMO run).
+
+* Quality policy `quality.below_threshold_policy` = `PUBLISH_WITH_WARNING` (owner decision 17/10/2026; changed default)
+  or `BLOCK` (behaviour before 1.2.2). Thresholds and gate results unchanged and shown honestly. A technically sound run
+  is used with a warning (`FORECAST_PUBLISHED_WITH_WARNING`, WARNING alert + audit); blocking only for technical reasons
+  (no data / too short history, stale data policy, forecast not computable, BigQuery not ready). Never a DEMO fallback.
+* Candidate selection on the SAME backtest points: LightGBM (+ fallback rules) vs the 28-day baseline, lower pooled WAPE
+  wins (tie / undefined WAPE keeps LightGBM). A selected baseline is published as `BASELINE_MOVING_AVERAGE` (version
+  `BL28-...`, no model file; explanation and extension supported). Selection, rejected candidate and reason are stored.
+* Assessment stored per run (`quality_gate.assessment`): technical / quality (PASS, BELOW_THRESHOLD, NOT_EVALUATED) /
+  confidence (NORMAL, LOW) / usage (USABLE, USABLE_WITH_WARNING, NOT_USABLE); APIs `/api/training-runs*`,
+  `/api/forecast-runs*`, `/api/system/status` (`forecast_state`) carry it; lineage of the data used on the forecast run.
+* A model in use is still never replaced automatically (review + "Use this model"); "Use this model" also publishes a run
+  rejected before 1.2.2 / under BLOCK only for thresholds or confidence, without retraining, when the data is unchanged.
+* UI: Results opens on the newest run of the ACTIVE source (other sources labelled "other source", never the default);
+  Overview says "No forecast from BIGQUERY yet" with the cause; D-0 snapshot history opens on the active source;
+  assessment box (Overview, Results, Model performance); policy selector in Configuration.
+* Changed defaults: `quality.below_threshold_policy="PUBLISH_WITH_WARNING"` (new key; production never saved the
+  `quality` section, so the new default applies there as soon as 1.2.2 runs).
+
 ## 1.2.1 - 2026-10-17 (D-0 own mapping + real BigQuery validation, training follows today's D-1, read-only remote link) [reports/demandforecast_v121_d0_d1_remote_20261017.md]
 
 Database schema unchanged (3); settings: new key `bigquery.d0_mapping` (ignored by 1.2.0: rollback to 1.2.0 needs no

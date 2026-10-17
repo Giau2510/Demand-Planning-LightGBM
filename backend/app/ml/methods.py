@@ -77,6 +77,19 @@ METHODS: dict[str, dict] = {
                "how": "Value = sum of the last 28 days ÷ number of known days.",
                "limits": "Only used to score that fold."},
     },
+    model.METHOD_BASELINE: {
+        "scope": "production", "anchor": "method-baseline-moving-average",
+        "vi": {"name": "Trung bình 28 ngày (baseline được chọn)", "short": "Trung bình nhu cầu mỗi ngày trong 28 ngày gần nhất, cho mọi chuỗi.",
+               "meaning": "Phương án so sánh (baseline) của backtest. Chỉ được publish khi nó có WAPE thấp hơn LightGBM trên CÙNG các điểm backtest của lần huấn luyện đó (chọn ứng viên tốt nhất).",
+               "when": "Lần huấn luyện đánh giá cả hai ứng viên trên cùng các fold walk-forward; baseline có WAPE gộp thấp hơn (hoặc LightGBM không huấn luyện được).",
+               "how": "Giá trị mỗi ngày = tổng số lượng 28 ngày gần nhất ÷ số ngày đã biết trong 28 ngày đó (ngày không có dữ liệu toàn hệ thống không được đếm); mọi ngày dự báo cùng một giá trị, cắt về ≥ 0.",
+               "limits": "Một mức trung bình phẳng: không có xu hướng, mùa vụ theo tuần hay ảnh hưởng của giá."},
+        "en": {"name": "28-day average (selected baseline)", "short": "Average daily demand over the last 28 days, for every series.",
+               "meaning": "The backtest's comparison method (baseline). Published only when it has a lower WAPE than LightGBM on the SAME backtest points of that training (best candidate wins).",
+               "when": "The training evaluated both candidates on the same walk-forward folds and the baseline had the lower pooled WAPE (or LightGBM could not be trained).",
+               "how": "Daily value = sum of the last 28 days ÷ number of known days in those 28 days (calendar days with no data at all are not counted); every forecast day gets the same value, clipped at ≥ 0.",
+               "limits": "A flat average: no trend, weekly seasonality or price effect."},
+    },
 }
 
 # Worked examples ("example") and how to read the number ("read"). Every number is verified against the real code in
@@ -112,6 +125,12 @@ _EXAMPLES = {
         "en": {"example": "A backtest fold could not train a model; the fold's last 28 days total 42 over 28 known days → 42 ÷ 28 = 1.5/day.",
                "read": "Only visible in backtest metrics by method; never in forecast results."},
     },
+    model.METHOD_BASELINE: {
+        "vi": {"example": "28 ngày gần nhất có tổng 84 trên 28 ngày đã biết → 84 ÷ 28 = 3/ngày; khoảng 7 ngày = 7 × 3 = 21.",
+               "read": "Mọi ngày trong kỳ có cùng một giá trị; được dùng vì trên dữ liệu backtest nó sai số ít hơn LightGBM."},
+        "en": {"example": "The last 28 days total 84 over 28 known days → 84 ÷ 28 = 3/day; a 7-day period = 7 × 3 = 21.",
+               "read": "Every day of the period has the same value; used because it had a smaller backtest error than LightGBM."},
+    },
 }
 for _code, _ex in _EXAMPLES.items():
     for _lang in ("vi", "en"):
@@ -122,6 +141,8 @@ REASONS = {
     "NEW_SERIES": ("Chuỗi mới: tuổi chuỗi nhỏ hơn ngưỡng lịch sử tối thiểu.", "New series: age is below the minimum series history."),
     "INTERMITTENT": ("Nhu cầu gián đoạn: tỷ lệ ngày bằng 0 vượt ngưỡng.", "Intermittent demand: zero-day share at or above the threshold."),
     "INACTIVE": ("Ngừng bán: không có đơn trong cửa sổ ngừng bán.", "Inactive: no order within the inactive window."),
+    "BASELINE_SELECTED": ("Baseline 28 ngày được chọn: WAPE thấp hơn LightGBM trên cùng các điểm backtest.",
+                          "28-day baseline selected: lower WAPE than LightGBM on the same backtest points."),
 }
 
 

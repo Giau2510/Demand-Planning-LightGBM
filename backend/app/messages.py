@@ -64,8 +64,14 @@ CATALOG: dict[str, tuple[str, str]] = {
     "DUPLICATE_COLUMN_MAPPING": ("Một cột nguồn được ánh xạ cho nhiều trường.", "One source column is mapped to several fields."),
     # --- training / publish
     "TRAINING_ACCEPTED": ("Model đạt ngưỡng chất lượng và đã được chấp nhận.", "Model passed the quality gate and was accepted."),
-    "QUALITY_GATE_FAILED": ("Model mới không đạt ngưỡng chất lượng — giữ forecast đã publish trước đó.",
-                            "New model failed the quality gate — previous published forecast kept."),
+    "QUALITY_GATE_FAILED": ("Model mới không đạt ngưỡng chất lượng và chính sách đang là CHẶN (BLOCK) — không publish; giữ forecast đã publish trước đó.",
+                            "New model failed the quality gate and the policy is BLOCK — not published; the previous published forecast is kept."),
+    "FORECAST_PUBLISHED_WITH_WARNING": ("Đã publish forecast mới KÈM CẢNH BÁO: chất lượng dưới ngưỡng đã cấu hình và/hoặc độ tin cậy đánh giá thấp. "
+                                        "Theo chính sách đã duyệt, dữ liệu thật vẫn được dùng; xem chi tiết ở trang Hiệu năng model.",
+                                        "New forecast published WITH A WARNING: quality below the configured thresholds and/or low evaluation "
+                                        "confidence. Under the approved policy the real data is still used; see Model performance for details."),
+    "NO_FORECAST_FOR_ACTIVE_SOURCE": ("Chưa có forecast nào từ nguồn dữ liệu đang dùng. Các lần forecast của nguồn khác (vd. DEMO) không được hiển thị như kết quả hiện tại.",
+                                      "No forecast from the active data source yet. Runs of another source (e.g. DEMO) are never shown as the current result."),
     "TRAINING_FAILED": ("Huấn luyện thất bại — giữ model và forecast hợp lệ trước đó.", "Training failed — previous valid model and forecast kept."),
     "DATA_NOT_TRAINABLE": ("Dữ liệu không đủ điều kiện huấn luyện.", "Data is not eligible for training."),
     "STALE_DATA_BLOCKED": ("Dữ liệu cũ — không publish forecast mới.", "Data is stale — new forecast not published."),
@@ -87,8 +93,8 @@ CATALOG: dict[str, tuple[str, str]] = {
     "TRACE_TIMEOUT": ("Tính trace TreeSHAP vượt giới hạn thời gian.", "Computing the TreeSHAP trace exceeded the time limit."),
     "UNSUPPORTED_MODEL": ("Định dạng mô hình không được bộ trace hỗ trợ.", "Model format not supported by the trace engine."),
     "FORECAST_PUBLISHED":("Đã publish forecast mới.", "New forecast published."),
-    "PROMOTION_REVIEW_REQUIRED": ("Model mới đạt quality gate nhưng KHÔNG tự thay model đang dùng (chưa có tiêu chí thay model được phê duyệt). Xem so sánh trên cùng các fold ở trang Hiệu năng model và bấm 'Dùng model này' nếu đồng ý.",
-                                  "The new model passed the quality gate but does NOT replace the model in use automatically (no approved promotion rule). Review the same-fold comparison on the Model performance page and click 'Use this model' to accept it."),
+    "PROMOTION_REVIEW_REQUIRED": ("Model mới dùng được nhưng KHÔNG tự thay model đang dùng (chưa có tiêu chí thay model được phê duyệt). Xem so sánh trên cùng các fold ở trang Hiệu năng model và bấm 'Dùng model này' nếu đồng ý.",
+                                  "The new model is usable but does NOT replace the model in use automatically (no approved promotion rule). Review the same-fold comparison on the Model performance page and click 'Use this model' to accept it."),
     "CANDIDATE_READY_FOR_REVIEW": ("Có model mới chờ duyệt — forecast đang publish vẫn từ model đang dùng.",
                                    "A new model is waiting for review — the published forecast still comes from the model in use."),
     "MODEL_PROMOTED": ("Model đã được người dùng duyệt và đưa vào sử dụng; forecast mới đã publish. Model cũ và forecast cũ được giữ nguyên.",
@@ -97,8 +103,8 @@ CATALOG: dict[str, tuple[str, str]] = {
                                   "Not enough common evaluation points to compare the two models (below the minimum backtest points)."),
     "INCUMBENT_CONFIG_UNAVAILABLE": ("Không dựng lại được cấu hình của model đang dùng (bản cũ) — không có so sánh.",
                                      "The configuration of the model in use (old version) cannot be rebuilt — no comparison."),
-    "PROMOTION_NOT_ALLOWED": ("Không thể dùng model này: không còn là model chờ duyệt hoặc đã có model mới hơn được chấp nhận.",
-                              "This model cannot be put in use: it is no longer a candidate or a newer model was accepted."),
+    "PROMOTION_NOT_ALLOWED": ("Không thể dùng model này: không còn là model chờ duyệt, đã có model mới hơn được chấp nhận, chính sách đang là CHẶN (BLOCK) hoặc có lỗi kỹ thuật.",
+                              "This model cannot be put in use: it is no longer a candidate, a newer model was accepted, the policy is BLOCK or a technical check failed."),
     "FORECAST_TOO_LARGE": ("Job dự báo vượt giới hạn an toàn (số dòng).", "Forecast job exceeds the safety limit (rows)."),
     "DIRECT_HORIZON_EXCEEDS_TRAINING": ("Model dự báo trực tiếp (DIRECT) chỉ được huấn luyện và kiểm định tới số ngày backtest; "
                                         "kỳ dự báo đang bật dài hơn — giảm kỳ dự báo hoặc tăng số ngày backtest rồi huấn luyện lại.",
@@ -295,7 +301,7 @@ def category(code: str) -> str:
                 "MODEL_ARTIFACT_MISSING", "DATA_CHANGED_SINCE_TRAINING", "REPRODUCTION_MISMATCH", "NOTHING_TO_EXTEND",
                 "NOT_LIGHTGBM", "TRACE_TOO_LARGE", "TRACE_TIMEOUT", "UNSUPPORTED_MODEL", "PROMOTION_REVIEW_REQUIRED",
                 "PROMOTION_NOT_ALLOWED", "DIRECT_HORIZON_EXCEEDS_TRAINING", "QUALITY_GATE_EXCEPTION_ACTIVE",
-                "RELEASED_WITH_GATE_EXCEPTION"):
+                "RELEASED_WITH_GATE_EXCEPTION", "FORECAST_PUBLISHED_WITH_WARNING", "NO_FORECAST_FOR_ACTIVE_SOURCE"):
         return "MODEL"
     if code in ("NO_ACTIVE_DATASET", "ACTIVE_DATASET_INCONSISTENT", "SOURCE_NOT_READY", "SCHEDULER_DISABLED",
                 "FLOW_NOT_READY", "D0_SCHEDULE_DISABLED", "D1_SCHEDULE_DISABLED", "TRAIN_SCHEDULE_DISABLED",

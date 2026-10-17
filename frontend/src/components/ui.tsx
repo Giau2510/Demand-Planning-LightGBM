@@ -208,6 +208,8 @@ const TONE: Record<string, string> = {
   RETRY_WAIT: "warn", SKIPPED: "muted", REPLACED: "muted", DELETED: "muted", CANCELLED: "muted",
   STALE: "bad", NEEDS_CONFIG: "warn", INSUFFICIENT: "warn",
   ERROR: "bad", WARNING: "warn", INFO: "info", DUPLICATE: "muted",
+  USABLE: "ok", USABLE_WITH_WARNING: "warn", NOT_USABLE: "bad", PASS: "ok", BELOW_THRESHOLD: "warn",
+  NOT_EVALUATED: "muted", LOW: "warn", NORMAL: "ok",
 };
 
 export function Pill({ status, label }: { status: string; label?: string }) {
@@ -220,6 +222,54 @@ export function Pill({ status, label }: { status: string; label?: string }) {
 export function SourceBadge({ source }: { source?: string | null }) {
   if (!source) return null;
   return <span className={`src src-${source}`} title={source}>{source}</span>;
+}
+
+const checkValue = (c: any) => {
+  const f = (v: any) => (typeof v !== "number" ? "—" : c.check.includes("POINTS") || c.check === "BACKTEST_RELIABLE" ? fmtNum(v) : c.check === "ABS_BIAS_MAX" ? fmtSignedPct(v) : fmtPct(v));
+  return c.threshold === null || c.threshold === undefined ? f(c.value) : `${f(c.value)} / ${f(c.threshold)}`;
+};
+
+/** 1.2.2: the separate statements about the model behind a forecast - technical, quality vs the configured
+ * thresholds, evaluation confidence, usage under the policy - and the candidate that was selected. A result below
+ * the thresholds is shown as a warning: never hidden, never presented as "good". */
+export function AssessmentBox({ a, compact = false }: { a: any; compact?: boolean }) {
+  const { t } = useI18n();
+  if (!a) return null;
+  const usage = a.usage?.status;
+  const failed = (a.quality?.checks ?? []).filter((c: any) => !c.passed);
+  const sel = a.selection;
+  const cands = sel?.candidates ? Object.entries(sel.candidates) as [string, any][] : [];
+  return (
+    <div className={`alert ${usage === "NOT_USABLE" ? "error" : usage === "USABLE_WITH_WARNING" ? "warn" : "info"} small`} data-testid="assessment">
+      <div className="row wrap">
+        <span>{t("as.usage")}: <Pill status={usage ?? "NOT_EVALUATED"} /></span>
+        <span>{t("as.quality")}: <Pill status={a.quality?.status ?? "NOT_EVALUATED"} /></span>
+        <span>{t("as.confidence")}: <Pill status={a.confidence?.level ?? "NOT_EVALUATED"} /></span>
+        <span>{t("as.technical")}: <Pill status={a.technical?.status === "FAILED" ? "FAILED" : "OK"} /></span>
+        {a.candidate && <span>{t("as.candidate")}: <b data-testid="as-candidate">{t(`as.cand.${a.candidate}`)}</b></span>}
+      </div>
+      {failed.length > 0 && (
+        <div data-testid="as-failed">{failed.map((c: any) => `${t(`perf.check.${c.check}`)}: ${checkValue(c)}`).join(" · ")}</div>
+      )}
+      {a.confidence?.level === "LOW" && <div>{t("as.low_conf")}: {(a.confidence.reasons ?? []).map((r: string) => t(`perf.check.${r}`)).join(", ")}</div>}
+      {usage === "USABLE_WITH_WARNING" && <div data-testid="as-warning">{a.exception ? t("as.exception_text") : t("as.warn_text")}</div>}
+      {usage === "NOT_USABLE" && <div>{t(`as.usage_reason.${a.usage?.reason ?? "QUALITY_GATE_FAILED"}`)}</div>}
+      {!compact && cands.length > 0 && (
+        <table className="tbl small" data-testid="as-candidates">
+          <thead><tr><th>{t("as.candidate")}</th><th className="num">WAPE</th><th className="num">Bias</th><th className="num">{t("perf.points")}</th><th></th></tr></thead>
+          <tbody>
+            {cands.map(([k, c]) => (
+              <tr key={k}><td>{t(`as.cand.${k}`)}</td><td className="num">{fmtPct(c.metrics?.wape)}</td><td className="num">{fmtSignedPct(c.metrics?.bias)}</td>
+                <td className="num">{fmtNum(c.metrics?.n_points)}</td>
+                <td>{k === sel.chosen ? <Pill status="OK" label={t("as.chosen")} /> : <Pill status="SKIPPED" label={t("as.rejected")} />}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {!compact && sel?.reason && <div className="muted">{t("as.rule")} — {t(`as.reason.${sel.reason}`)}</div>}
+      {!compact && a.policy && <div className="muted">{t(`as.policy.${a.policy}`)}</div>}
+    </div>
+  );
 }
 
 /** Open/close behaviour shared by all explanation tooltips: mouse hover, keyboard focus (Enter/Space/Escape) and

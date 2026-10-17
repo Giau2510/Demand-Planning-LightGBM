@@ -18,6 +18,9 @@ FB_NEW = "FALLBACK_NEW_SERIES"            # too little history for lag features
 FB_INTERMITTENT = "FALLBACK_INTERMITTENT"  # mostly-zero demand
 FB_INACTIVE = "FALLBACK_INACTIVE_ZERO"     # no orders for a long time
 FB_MODEL_UNAVAILABLE = "FALLBACK_MODEL_UNAVAILABLE"
+# 1.2.2: the backtest baseline as a publishable candidate (chosen only when it scored better on the same points)
+METHOD_BASELINE = "BASELINE_MOVING_AVERAGE"
+BASELINE_WINDOW_DAYS = 28
 SIX_MONTHS_DAYS = 182
 
 
@@ -198,13 +201,41 @@ def _forecast_direct(p: Panel, booster, cfg, horizon: int, methods, rate, cancel
     return {"dates": future, "yhat": yhat, "methods": methods, "captured": captured}
 
 
-def baseline_forecast(p: Panel, horizon: int, window: int = 28) -> np.ndarray:
+def _baseline_window(p: Panel, window: int) -> tuple[np.ndarray, np.ndarray]:
+    """(known days, sum) of every series over the last `window` days of the panel (NaN = unknown day, not 0)."""
     T = p.Y.shape[1]
     with np.errstate(all="ignore"):
         w = p.Y[:, max(0, T - window):]
-        cnt = np.sum(~np.isnan(w), axis=1)
-        r = np.where(cnt > 0, np.nansum(w, axis=1) / np.maximum(cnt, 1), 0.0)
+        return np.sum(~np.isnan(w), axis=1), np.nansum(w, axis=1)
+
+
+def baseline_forecast(p: Panel, horizon: int, window: int = BASELINE_WINDOW_DAYS) -> np.ndarray:
+    cnt, tot = _baseline_window(p, window)
+    with np.errstate(all="ignore"):
+        r = np.where(cnt > 0, tot / np.maximum(cnt, 1), 0.0)
     return np.repeat(r[:, None], horizon, axis=1)
+
+
+def baseline_run(p: Panel, horizon: int) -> dict:
+    """The baseline candidate as a forecast: for every series the mean of the known days in the last
+    BASELINE_WINDOW_DAYS days of the panel, the same value on every forecast day (exactly what backtest() scores as
+    'baseline'; clipped at 0 like every published value). Same shape as forecast()."""
+    cnt, tot = _baseline_window(p, BASELINE_WINDOW_DAYS)
+    return {"dates": pd.date_range(p.dates[-1] + pd.Timedelta(days=1), periods=horizon, freq="D"),
+            "yhat": np.clip(baseline_forecast(p, horizon), 0, None),
+            "methods": np.array([METHOD_BASELINE] * p.n_series, dtype=object), "captured": [],
+            "kind": "BASELINE", "window_count": cnt, "window_sum": tot}
+
+
+def baseline_series_meta(p: Panel, fc: dict, s: int) -> dict:
+    """series_meta() for a baseline run: the window, its known days and sum, and the resulting daily value."""
+    start = int(p.start_idx[s])
+    cnt, tot = int(fc["window_count"][s]), float(fc["window_sum"][s])
+    rate = tot / cnt if cnt else 0.0
+    return {"method": METHOD_BASELINE, "reason_code": "BASELINE_SELECTED",
+            "series_start_date": str(p.dates[start].date()) if start < p.T else None, "age_days": int(p.T - start),
+            "fallback_window": {"days": BASELINE_WINDOW_DAYS, "known_days": cnt, "sum": tot, "rate": rate},
+            "rate_used": rate, "rule": {"baseline_window_days": BASELINE_WINDOW_DAYS}}
 
 
 def backtest(p: Panel, cfg, mape_min_actual: float = 1.0, cancel=None, collect: bool = False) -> dict:

@@ -142,7 +142,9 @@ def test_train_and_publish_end_to_end(small_demo):
 def test_quality_gate_failure_keeps_previous_forecast(small_demo):
     first = train_and_publish()
     assert first["status"] == "PUBLISHED"
-    ss.update("quality", {"wape_max": 0.0001})
+    # 1.2.2: a failed gate rejects only under the BLOCK policy (the default PUBLISH_WITH_WARNING is tested in
+    # test_v122_bigquery_policy.py); the BLOCK behaviour itself must stay exactly as before
+    ss.update("quality", {"wape_max": 0.0001, "below_threshold_policy": "BLOCK"})
     second = train_and_publish(force=True)
     assert second["status"] == "REJECTED" and second["reason_code"] == "QUALITY_GATE_FAILED"
     with db.read() as c:

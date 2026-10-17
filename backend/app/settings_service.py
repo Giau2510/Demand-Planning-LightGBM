@@ -62,13 +62,21 @@ class HorizonSettings(BaseModel):
 
 
 class QualitySettings(BaseModel):
-    """Quality gate. Initial values are EXAMPLES for testing only — not business-approved."""
+    """Quality gate. Initial values are EXAMPLES for testing only — not business-approved.
+
+    below_threshold_policy (1.2.2) decides what a run that misses the thresholds may still be used for:
+      PUBLISH_WITH_WARNING - owner decision of 2026-10-17: the real (BigQuery) data must be used even when it is not
+                             clean. A technically sound run is used with its warning recorded: the best evaluated
+                             candidate is published when the scope has no model in use, or kept for review when it has.
+      BLOCK                - the behaviour before 1.2.2: a failed gate rejects the run.
+    The thresholds themselves and the gate result are never changed by the policy."""
     wape_max: float = Field(0.60, gt=0, le=10)
     abs_bias_max: float = Field(0.20, ge=0, le=10)
     min_backtest_points: int = Field(200, ge=1)
     require_beat_baseline: bool = False
     mape_min_actual: float = Field(1.0, gt=0)
     approved_by_business: bool = False
+    below_threshold_policy: Literal["PUBLISH_WITH_WARNING", "BLOCK"] = "PUBLISH_WITH_WARNING"
 
 
 class ModelSettings(BaseModel):

@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { get, post } from "../api";
 import { useSystem } from "../App";
 import { useI18n } from "../i18n";
-import { Bars, Card, Code, Empty, ErrorBox, JobProgress, LineChart, Loading, MethodLabel, OkBox, Pill, SourceBadge, Stat, Term, fmtDate, fmtNum, fmtPct, fmtSignedPct, fmtTime, useAction, useAsync } from "../components/ui";
+import { AssessmentBox, Bars, Card, Code, Empty, ErrorBox, JobProgress, LineChart, Loading, MethodLabel, OkBox, Pill, SourceBadge, Stat, Term, fmtDate, fmtNum, fmtPct, fmtSignedPct, fmtTime, useAction, useAsync } from "../components/ui";
 
 export function HorizonPicker({ value, onChange, options }: { value: number; onChange: (h: number) => void; options: number[] }) {
   const { t } = useI18n();
@@ -60,6 +60,7 @@ export default function Dashboard() {
   const latest = s?.latest_training_attempt;
   const accepted = s?.latest_accepted_training;
   const run = s?.latest_forecast_run;
+  const fs = s?.forecast_state;
   const rejectedLatest = latest && run && latest.status !== "ACCEPTED" && latest.id !== run.training_run_id;
 
   return (
@@ -106,8 +107,20 @@ export default function Dashboard() {
       )}
 
       <Card title={t("dash.latest_run")} actions={f && <HorizonPicker value={Math.min(horizon, run?.max_horizon ?? horizon)} onChange={setH} options={Array.from(new Set([...(run?.horizons ?? []), run?.max_horizon].filter(Boolean))).sort((a: any, b: any) => a - b) as number[]} />}>
-        {!f ? <Empty text={t("dash.no_run")} /> : (
+        {!f && fs?.status === "NO_FORECAST_FOR_ACTIVE_SOURCE" ? (
+          <div className="alert warn" data-testid="dash-no-forecast">
+            <b>{t("dash.no_fc_active").replace("{src}", s?.active_source ?? "—")}</b>
+            {fs.latest_attempt && (
+              <p className="small">{t("dash.no_fc_last")}: <span className="mono">{fs.latest_attempt.id}</span> <Pill status={fs.latest_attempt.status} />{" "}
+                {fs.latest_attempt.reject_reason && <Code code={fs.latest_attempt.reject_reason} />}</p>
+            )}
+            {fs.latest_attempt?.promotable?.ok && <p className="small">{t("dash.no_fc_promotable")} <Link to="/performance">{t("nav.performance")} →</Link></p>}
+            <p className="small">{t("dash.no_fc_train").replace("{src}", s?.active_source ?? "—")}</p>
+            {fs.other_source_runs > 0 && <p className="small muted">{t("dash.no_fc_other").replace("{n}", String(fs.other_source_runs))}</p>}
+          </div>
+        ) : !f ? <Empty text={t("dash.no_run")} /> : (
           <>
+            {fs?.model_in_use && <AssessmentBox a={fs.model_in_use} compact />}
             <div className="grid4">
               <Stat label={`${t("dash.horizon_total")} (${f.horizon} ${t("common.days")})`} value={fmtNum(f.grand_total)} sub={`${f.n_series} ${t("common.series")}`} />
               <Stat label={`${t("fc.start")} → ${t("fc.end")}`} value={<span className="small">{fmtDate(f.start_date)} → {fmtDate(f.end_date)}</span>} />

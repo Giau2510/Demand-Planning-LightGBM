@@ -47,7 +47,7 @@ def test_stage_history_follows_the_real_pipeline(client, demo_run):
 
 
 def test_quality_gate_fail_and_training_failure_are_distinct(client, demo_run, monkeypatch):
-    ss.update("quality", {"wape_max": 0.0001})
+    ss.update("quality", {"wape_max": 0.0001, "below_threshold_policy": "BLOCK"})     # 1.2.2: rejection = BLOCK only
     j = _train(client, force=True)
     assert j["status"] == "SUCCEEDED" and j["reason_code"] == "QUALITY_GATE_FAILED"
     assert [h["stage"] for h in j["stage_history"]][-2:] == ["QUALITY_GATE", "DONE"]
@@ -406,7 +406,8 @@ def test_method_registry_covers_every_code_in_model():
     codes = {v for k, v in vars(model).items() if k.startswith(("METHOD_", "FB_")) and isinstance(v, str)}
     assert codes == set(methods.METHODS)
     assert {k for k, v in methods.METHODS.items() if v["scope"] == "production"} == {
-        "LIGHTGBM", "FALLBACK_NEW_SERIES", "FALLBACK_INTERMITTENT", "FALLBACK_INACTIVE_ZERO"}
+        "LIGHTGBM", "FALLBACK_NEW_SERIES", "FALLBACK_INTERMITTENT", "FALLBACK_INACTIVE_ZERO",
+        "BASELINE_MOVING_AVERAGE"}          # 1.2.2: the selected 28-day baseline can be published
     for v in methods.METHODS.values():
         for lang in ("vi", "en"):
             assert all(v[lang][k] for k in ("name", "short", "meaning", "when", "how", "limits"))

@@ -87,7 +87,7 @@ def _input_source(name: str, t: int, T: int, direct: bool = False) -> str:
     return "FORECAST" if t - w >= T else "MIXED"
 
 
-def _reproduce(run: dict, tr: dict, sku: str, fc_id: str) -> dict:
+def _reproduce(run: dict, tr: dict, sku: str, fc_id: str, method: str | None = None) -> dict:
     """Rebuild the panel + reload the model; return reproduction state for one series (cached)."""
     with db.read() as c:
         cur_fp = fingerprint(run["scope_key"], c)
@@ -110,7 +110,9 @@ def _reproduce(run: dict, tr: dict, sku: str, fc_id: str) -> dict:
                 s = panel.keys.index((sku, fc_id))
                 details = model.classification_details(panel, mcfg)
                 out.update(panel=panel, s=s, mcfg=mcfg, details=details, booster=None)
-                if details["methods"][s] == model.METHOD_LGBM:
+                if method == model.METHOD_BASELINE:     # 1.2.2: the 28-day baseline, no model file involved
+                    out.update(yhat=model.baseline_run(panel, run["max_horizon"])["yhat"][s])
+                elif details["methods"][s] == model.METHOD_LGBM:
                     mpath = paths.models_dir() / (tr.get("model_path") or "")
                     if not tr.get("model_path") or not mpath.exists() or \
                             hashlib.sha256(mpath.read_bytes()).hexdigest() != tr.get("model_sha256"):
@@ -151,7 +153,7 @@ def explain(run_id: str, sku: str, fc_id: str, target_date: str) -> dict:
                      "scope_key": run["scope_key"], "derived_from_run_id": run.get("derived_from_run_id"),
                      "run_created_at": run["created_at"], "training_run_id": run["training_run_id"]},
         "result": {"yhat": val["yhat"], "unit": "order_qty", "method": method}, "notes": []}
-    rep = _reproduce(run, tr, sku, fc_id)
+    rep = _reproduce(run, tr, sku, fc_id, method)
     out["reproduction"] = {"status": rep["status"]}
 
     # ---- method selection
@@ -177,7 +179,8 @@ def explain(run_id: str, sku: str, fc_id: str, target_date: str) -> dict:
         lo = max(0, T - window)
         # days the fallback calculation actually used (same windows as model.classification_details)
         calc_lo = {model.FB_NEW: int(p.start_idx[s]), model.FB_INTERMITTENT: T - mc.fallback_window_days,
-                   model.FB_INACTIVE: T - mc.inactive_days}.get(method)
+                   model.FB_INACTIVE: T - mc.inactive_days,
+                   model.METHOD_BASELINE: T - model.BASELINE_WINDOW_DAYS}.get(method)
         t_idx = T + h - 1                      # target day index; days >= T are forecasts, not history
         direct = is_direct(mc)
         ref = T if direct else t_idx           # DIRECT: history features are read relative to the origin T
@@ -233,7 +236,7 @@ def explain(run_id: str, sku: str, fc_id: str, target_date: str) -> dict:
             if method == model.FB_NEW:
                 calc.update(window="SINCE_SERIES_START", known_days=sel["history"]["known_days"],
                             sum=sel["history"]["sum"], rate=sel["history"]["rate"])
-            elif method == model.FB_INTERMITTENT:
+            elif method in (model.FB_INTERMITTENT, model.METHOD_BASELINE):
                 fw = sel["fallback_window"]
                 calc.update(window=f"LAST_{fw['days']}_DAYS", known_days=fw["known_days"], sum=fw["sum"], rate=fw["rate"])
             elif method == model.FB_INACTIVE:

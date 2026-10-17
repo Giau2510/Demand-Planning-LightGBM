@@ -200,7 +200,11 @@ discount, promotion, voucher and source-update fields switch feature groups on o
 4. **`demand_daily` = aggregate of `order_lines`** for DEMO/MANUAL_IMPORT batches; checked by `data-check`.
 5. **Forecast completeness** (`n_series x max_horizon` values per run); checked by `data-check`.
 6. **Quality-gate thresholds** (`wape_max` 0.6, `abs_bias_max` 0.2, `min_backtest_points` 200) are examples, flagged
-   `approved_by_business=false`. They are not business standards.
+   `approved_by_business=false`. They are not business standards. Since 1.2.2 `below_threshold_policy`
+   (`PUBLISH_WITH_WARNING` default, owner decision 17/10/2026, or `BLOCK`) decides whether a run below them may be used;
+   the per-run decision (selected candidate, technical / quality / confidence / usage) is stored in
+   `training_runs.quality_gate_json` (`selection`, `assessment`); a published 28-day baseline has method
+   `BASELINE_MOVING_AVERAGE`, `model_version` `BL28-...` and possibly no model file (`training_runs.model_path` NULL).
 7. **Feature registry / feature_set_version** (`ml/feature_registry.py`) defines which features exist; the resolved set is
    stored per training run in `feature_config_json`.
 
