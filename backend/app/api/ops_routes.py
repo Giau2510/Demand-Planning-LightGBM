@@ -252,6 +252,13 @@ def scheduler_status():
         hb = db.one(c, "SELECT value_json FROM sync_state WHERE name='scheduler_heartbeat'")
     s["heartbeat"] = json.loads(hb["value_json"]) if hb else None
     s["config"] = ss.get("schedule").model_dump()
+    # 1.2.3: the EFFECTIVE state per flow (switch + scheduler + readiness), the same as the schedule page - a switch
+    # that is on is not "running": e.g. training ON while BigQuery production mode is off is ON_NOT_READY
+    from ..jobs import flows
+    sv = {"running": s.get("running"), "loaded": s.get("loaded")}
+    with db.read() as c:
+        s["flow_states"] = {k: {x: v[x] for x in ("enabled", "state", "readiness", "manual_readiness")}
+                            for k, v in ((k, flows.flow_view(k, c, sched_view=sv)) for k in flows.FLOWS)}
     return s
 
 
@@ -437,7 +444,9 @@ def bq_mapping(body: MappingBody):
         patch["partition_column"] = body.partition_column
     saved = ss.save("bigquery", {**cur.model_dump(), **patch}, note="field mapping saved")
     connector._set_status("mapping", True)
-    return {"settings": saved.model_dump(), "check": check}
+    # 1.2.3: say it - a saved mapping always needs a new full-period validation + activation (D-1, BigQuery training
+    # and D-0 are refused with SOURCE_NOT_READY until then)
+    return {"settings": saved.model_dump(), "check": check, "production_switched_off": cur.production_enabled}
 
 
 @router.post("/bigquery/activate")
@@ -453,11 +462,14 @@ def bq_activate():
 
 @router.post("/bigquery/deactivate")
 def bq_deactivate():
+    """Production mode off. 1.2.3: the active source is kept - it used to be switched to DEMO here, i.e. a silent DEMO
+    fallback shown as 'the forecast'. The BigQuery flows now report SOURCE_NOT_READY (with since when / why) until
+    production is enabled again; changing the source stays an explicit user action."""
     ss.update("bigquery", {"production_enabled": False}, note="production mode disabled")
-    g = ss.get("general")
-    if g.active_source == "BIGQUERY":
-        ss.update("general", {"active_source": "DEMO"}, note="BigQuery deactivated -> DEMO")
-    return {"ok": True}
+    with db.tx() as c:
+        db.audit(c, "BIGQUERY_DEACTIVATED", "settings", "bigquery",
+                 {"active_source_kept": ss.get("general", c).active_source})
+    return {"ok": True, "active_source": ss.get("general").active_source}
 
 
 # ------------------------------------------------------------------ storage paths & diagnostics

@@ -358,7 +358,8 @@ export default function BigQuery() {
         <div className="row">
           {v.production_enabled ? <Pill status="ACTIVE" /> : <Pill status="NEEDS_CONFIG" />}
           <button className="primary" onClick={() => call("/api/bigquery/activate")} disabled={act.busy || !st.data?.activation?.ready || v.production_enabled}>{t("bq.activate")}</button>
-          <button onClick={() => call("/api/bigquery/deactivate")} disabled={act.busy || !v.production_enabled}>{t("bq.deactivate")}</button>
+          <button data-testid="bq-deactivate" onClick={() => { if (window.confirm(t("bq.deactivate_confirm"))) call("/api/bigquery/deactivate"); }}
+            disabled={act.busy || !v.production_enabled}>{t("bq.deactivate")}</button>
         </div>
       </Card>
     </div>

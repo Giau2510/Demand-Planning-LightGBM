@@ -325,6 +325,14 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
     stage("VALIDATING_DATA")
     with db.read() as c:
         scope = resolve_scope(c, source)
+        if scope["data_source"] == "BIGQUERY":
+            # 1.2.3: the source state is checked BEFORE the data fingerprint (about 35 s on the real table) and the
+            # exact reason (since when production is off, which change switched it off, how to fix) is kept
+            from ..jobs import flows
+            blockers: list[dict] = []
+            flows._bq_ready(c, blockers)
+            if blockers:
+                raise AppError(blockers[0]["code"], 409, detail=blockers[0]["detail"])
         mcfg_settings = ss.get("model", c)
         qcfg = ss.get("quality", c)
         hcfg = ss.get("horizons", c)
@@ -335,13 +343,6 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
                          (scope["scope_key"], PENDING_REVIEW))
         cov = registry.coverage(c, scope["scope_key"])
         window = data_window(c)
-    if scope["data_source"] == "BIGQUERY":
-        from ..bq import connector
-        bq = ss.get("bigquery")
-        if not bq.production_enabled:
-            raise AppError("SOURCE_NOT_READY", 409)
-        if not connector.validation_ok_for_current():
-            raise AppError("BQ_VALIDATION_REQUIRED", 409, mapping_hash=connector.mapping_hash(bq))
     if not force and last_ok and last_ok["data_fingerprint"] == fp:
         return {"status": "SKIPPED", "reason_code": "NO_NEW_DATA", "training_run_id": last_ok["id"]}
     # feature groups without real data in this scope are removed (never filled with invented values); the RESOLVED

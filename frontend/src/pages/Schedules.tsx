@@ -85,8 +85,8 @@ function FlowCard({ flow, v, title, intro, children, onSaved, confirmOn }: {
             : <button className="primary" data-testid={`toggle-${flow}`} disabled={act.busy || dirty || !v.readiness.ready}
                 title={!v.readiness.ready ? t("sch.cannot_enable") : dirty ? t("sch.save_first") : undefined}
                 onClick={() => { if (confirmOn && !window.confirm(confirmOn)) return; save({ enabled: true }, t("sch.saved_on")); }}>{t("sch.turn_on")}</button>}
-          <button data-testid={`run-${flow}`} disabled={act.busy || running || !v.readiness.ready}
-            title={!v.readiness.ready ? t("sch.cannot_run") : undefined}
+          <button data-testid={`run-${flow}`} disabled={act.busy || running || !(v.manual_readiness ?? v.readiness).ready}
+            title={!(v.manual_readiness ?? v.readiness).ready ? t("sch.cannot_run") : undefined}
             onClick={async () => {
               if (!window.confirm(t("sch.run_confirm"))) return;
               const r = await act.run(() => post(`/api/schedules/${flow}/run`));

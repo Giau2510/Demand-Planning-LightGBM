@@ -5,6 +5,29 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.2.3 - 2026-10-17 (P0: SOURCE_NOT_READY explained, effective flow state, manual training not tied to schedules) [reports/demandforecast_v123_p0_source_not_ready_20261017.md]
+
+Database schema unchanged (3); no new setting (rollback to 1.2.2 needs no restore). Root cause of the skipped manual
+trainings JOB-20261017121625-661B96 / -121820-57FB9B / -122150-90EEDA (19:16-19:22 VN): the BigQuery field mapping was
+saved at 17:32 (unit_price OPTIONAL -> REQUIRED); a mapping save always switches production mode off and changes the
+mapping hash (new full-period validation + activation needed). The job reported a bare code after ~35 s of data
+fingerprint, and the Jobs page showed "On - loaded by the scheduler" for the training flow from its switch alone.
+
+* `SOURCE_NOT_READY` now says since when and by which saved change production mode is off and how to fix it (settings
+  history); `BQ_VALIDATION_REQUIRED` names the mapping hash. The training checks the BigQuery source BEFORE the data
+  fingerprint.
+* A manual training (Overview, Model performance, Jobs) on a BigQuery source that is not ready is refused at once
+  (409 + reason), no skipped job is created. The schedule switches never block a manual run: "Run once now" of the
+  training flow ignores the schedule-only condition "waits for today's D-1" (`manual_readiness` in `/api/schedules`).
+* Jobs page and `/api/scheduler/status` (`flow_states`): the EFFECTIVE state per flow (ON / ON_NOT_READY / ...) with
+  the reason, never the switch alone.
+* Mapping page: confirmation before a save that switches production off, message after it, permanent note of the
+  production state (`production_switched_off` in the save response).
+* "Disable production mode" keeps the active source (it used to switch to DEMO silently) and asks for confirmation.
+* Tests: conftest keeps process-wide temporary `DF_DATA_DIR` / `DF_STORAGE_CONFIG`, so a test that calls
+  `monkeypatch.undo()` can never resolve the real installation (incident 17/10 19:49: one settings write reached the
+  live database, see the report).
+
 ## 1.2.2 - 2026-10-17 (P0: BigQuery end to end, quality gate = assessment, best evaluated candidate) [reports/demandforecast_v122_p0_bigquery_20261017.md]
 
 Database schema unchanged (3); settings: new key `quality.below_threshold_policy` (ignored by 1.2.1: rollback needs no

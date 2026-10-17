@@ -137,7 +137,12 @@ CATALOG: dict[str, tuple[str, str]] = {
                           "No dataset for the selected source yet. Click 'Generate DEMO data' (DEMO source) or import an Excel file and select it as dataset (MANUAL_IMPORT)."),
     "ACTIVE_DATASET_INCONSISTENT": ("Cấu hình đang trỏ tới một lô không còn hoạt động. Hệ thống không tự chọn lô khác — vào 'Lịch sử lô import' và chọn lại bộ dữ liệu.",
                                     "Settings point at a batch that is no longer active. No other batch is chosen automatically — pick the dataset again in 'Import Batch History'."),
-    "SOURCE_NOT_READY": ("Nguồn BigQuery chưa được cấu hình/kiểm tra đầy đủ.", "BigQuery source is not fully configured/verified."),
+    "SOURCE_NOT_READY": ("Nguồn BigQuery chưa sẵn sàng: chế độ sản xuất (production) đang TẮT hoặc chưa qua đủ các bước kiểm tra "
+                         "— thường do vừa lưu ánh xạ trường / SQL nguồn. Trang Kết nối BigQuery: chạy 'Kiểm tra dữ liệu toàn kỳ' "
+                         "rồi bấm 'Kích hoạt chế độ sản xuất'. Chi tiết (từ lúc nào, do thay đổi nào) ở dòng bên dưới.",
+                         "BigQuery source not ready: production mode is OFF or not every check has passed — usually right "
+                         "after saving the field mapping / source SQL. BigQuery page: run 'Validate full period', then "
+                         "'Enable production mode'. The detail below says since when and which change."),
     # --- jobs
     "NOT_APPLICABLE_FOR_SOURCE": ("Job không áp dụng cho nguồn dữ liệu đang hoạt động.", "Job does not apply to the active data source."),
     "MISSED_SLOT_NO_BACKFILL": ("Đã lỡ mốc giờ (máy tắt/ứng dụng không chạy). Không tạo snapshot giả cho mốc đã qua.",

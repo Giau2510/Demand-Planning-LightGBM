@@ -155,8 +155,10 @@ def test_bigquery_not_ready_is_an_error_never_a_silent_demo_fallback(client, fas
     with pytest.raises(AppError) as e:
         pipeline.train_and_publish(force=True)
     assert e.value.code == "SOURCE_NOT_READY"
-    j = client.post("/api/training/run", json={"force": True}).json()
-    assert j["status"] in ("FAILED", "SKIPPED") and j["reason_code"] == "SOURCE_NOT_READY", j
+    # 1.2.3: the manual route refuses at once with the reason (409) instead of creating a job skipped later - the
+    # expectation changed with the behaviour, the point is the same: an error, never a DEMO fallback
+    r = client.post("/api/training/run", json={"force": True})
+    assert r.status_code == 409 and r.json()["code"] == "SOURCE_NOT_READY", r.text
     assert _count("SELECT COUNT(*) FROM training_runs") == 0 and _count("SELECT COUNT(*) FROM forecast_runs") == 0
     assert ss.get("general").active_source == "BIGQUERY"                        # never switched to DEMO
     ss.update("bigquery", {"dataset_id": "", "source_table": ""})

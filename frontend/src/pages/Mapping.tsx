@@ -73,9 +73,17 @@ export default function Mapping() {
     const r = await act.run(() => post("/api/bigquery/suggest-mapping"));
     if (r) { setCols(r.columns); setM(r.field_mapping); setRef(r.reference_mapping); setCheck(r.check); setNotes(r.notes); }
   };
+  // 1.2.3: saving a mapping always switches BigQuery production mode off until a new full-period validation and
+  // activation - say it BEFORE (confirm) and AFTER (warning), the 17/10 SOURCE_NOT_READY came from a silent switch-off
+  const prodOn = !!st.data?.settings?.production_enabled;
   const save = async () => {
+    if (prodOn && !window.confirm(t("map.save_prod_confirm"))) return;
     const r = await act.run(() => post("/api/bigquery/mapping", { field_mapping: m, reference_mapping: ref }), t("common.saved"));
-    if (r) { setCheck(r.check); st.reload(); }
+    if (r) {
+      setCheck(r.check);
+      if (r.production_switched_off) act.setOk(`${t("common.saved")} — ${t("map.prod_switched_off")}`);
+      st.reload();
+    }
   };
   const types = Object.fromEntries(cols.map((c) => [c.name, c.type]));
   const hasDrift = drift && (drift.removed.length || drift.added.length || drift.type_changed.length);
@@ -84,6 +92,8 @@ export default function Mapping() {
       <h2>{t("nav.mapping")}</h2>
       <p className="small">{t("map.help")}</p>
       {!configured && <div className="alert warn">{t("bq.not_configured")} {t("bq.blocked_note")}</div>}
+      {configured && <div className="alert warn small" data-testid="map-prod-state">
+        {prodOn ? t("map.prod_on_note") : t("map.prod_off_note")}</div>}
       <ErrorBox error={act.error || st.error} />
       <OkBox text={act.ok} />
       {hasDrift ? <div className="alert bad">{t("map.drift")}: {JSON.stringify(drift)}</div> : null}

@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from .. import db
 from .. import settings_service as ss
 from ..messages import AppError, msg
-from ..timeutil import now_iso, now_vn, parse_iso, vn_slot
+from ..timeutil import VN_TZ, now_iso, now_vn, parse_iso, vn_slot
 
 FLOWS = {"d1": {"job_type": "D1_SYNC", "flag": "d1_enabled"},
          "d0": {"job_type": "D0_SYNC", "flag": "d0_enabled"},
@@ -41,13 +41,51 @@ def _reason(code: str, detail: str | None = None) -> dict:
     return {**msg(code), "detail": detail}
 
 
+def production_off_detail(conn) -> str:
+    """Why BigQuery production mode is off, from the settings history: since when and which saved change turned it off
+    (1.2.3 - a bare 'not ready' sent the user hunting; e.g. a mapping save always switches it off until re-validation)."""
+    rows = conn.execute("SELECT value_json, changed_at, note FROM settings_history WHERE section='bigquery' "
+                        "ORDER BY id DESC LIMIT 200").fetchall()
+    off, was_on = None, False
+    for value_json, at, note in rows:            # newest first: the oldest 'off' entry after the last 'on' one
+        if json.loads(value_json).get("production_enabled"):
+            was_on = True
+            break
+        off = (at, note)
+    fix = "fix: BigQuery page -> run the full-period validation -> enable production mode"
+    if off is None:
+        return f"bigquery.production_enabled=false; {fix}"
+    t = parse_iso(off[0])
+    when = t.astimezone(VN_TZ).strftime("%Y-%m-%d %H:%M") if t else off[0]
+    why = f"switched off by: {off[1] or 'a settings change'}" if was_on else "never enabled"
+    return f"bigquery.production_enabled=false since {when} (Vietnam), {why}; {fix}"
+
+
 def _bq_ready(conn, reasons: list) -> None:
     from ..bq import connector
     bq = ss.get("bigquery", conn)
     if not bq.production_enabled:
-        reasons.append(_reason("SOURCE_NOT_READY", "bigquery.production_enabled=false"))
+        reasons.append(_reason("SOURCE_NOT_READY", production_off_detail(conn)))
     elif not connector.validation_ok_for_current(conn):
-        reasons.append(_reason("BQ_VALIDATION_REQUIRED"))
+        reasons.append(_reason("BQ_VALIDATION_REQUIRED", f"mapping {connector.mapping_hash(bq, conn)} has no passing "
+                                                         "full-period validation; fix: BigQuery page -> validate"))
+
+
+def source_blockers(conn=None) -> list[dict]:
+    """1.2.3: what stops a MANUAL training on the active source right now - the BigQuery source state only. Never the
+    schedule switches and never 'waits for today's D-1' (those decide when the SCHEDULE runs, not whether the user may
+    train by hand). Checked before a manual job is created, so the user gets the exact reason at once instead of a job
+    skipped after the data fingerprint was computed."""
+    own = conn is None
+    c = conn or db.connect()
+    try:
+        reasons: list[dict] = []
+        if ss.get("general", c).active_source == "BIGQUERY":
+            _bq_ready(c, reasons)
+        return reasons
+    finally:
+        if own:
+            c.close()
 
 
 def readiness(flow: str, conn=None) -> dict:
@@ -79,7 +117,7 @@ def readiness(flow: str, conn=None) -> dict:
             else:
                 bq = ss.get("bigquery", c)
                 if not bq.production_enabled:
-                    reasons.append(_reason("SOURCE_NOT_READY", "bigquery.production_enabled=false"))
+                    reasons.append(_reason("SOURCE_NOT_READY", production_off_detail(c)))
                 # 1.2.1: the D-0 feed's own mapping + a BigQuery validation (SQL) / table check made for THAT mapping
                 from ..bq import d0_feed
                 r0, n0 = d0_feed.readiness(c)
@@ -105,6 +143,21 @@ def readiness(flow: str, conn=None) -> dict:
     finally:
         if own:
             c.close()
+
+
+# conditions that only decide WHEN the schedule runs a flow; a manual "run once now" is never refused for them
+SCHEDULE_ONLY = {"train": ("TRAIN_WAITS_FOR_D1",)}
+
+
+def _manual(flow: str, r: dict) -> dict:
+    reasons = [x for x in r["reasons"] if x["code"] not in SCHEDULE_ONLY.get(flow, ())]
+    return {**r, "ready": not reasons, "reasons": reasons}
+
+
+def manual_readiness(flow: str, conn=None) -> dict:
+    """1.2.3: can the user run this flow ONCE by hand now? The readiness of the flow without the schedule-only
+    conditions (training: 'waits for today's D-1', which depends on the D-1 switch)."""
+    return _manual(flow, readiness(flow, conn))
 
 
 def _vn_day_start_utc(now: datetime) -> str:
@@ -216,7 +269,7 @@ def flow_view(flow: str, conn=None, now: datetime | None = None, sched_view: dic
         config = {k: getattr(sched, s) for k, s in FIELDS[flow].items()}
         return {"flow": flow, "job_type": f["job_type"], "enabled": on, "state": state, "config": config,
                 "enabled_at": getattr(sched, f"{flow}_enabled_at"),
-                "timezone": TIMEZONE, "readiness": ready,
+                "timezone": TIMEZONE, "readiness": ready, "manual_readiness": _manual(flow, ready),
                 "next_runs": next_runs(_times(flow, sched), now, 3) if on else [],
                 "planned_times_if_enabled": next_runs(_times(flow, sched), now, 3),
                 "last_run": next((r for r in rows if r["status"] != "SKIPPED"), None),
@@ -287,9 +340,9 @@ def update_flow(flow: str, body: dict) -> dict:
 
 
 def run_now(flow: str) -> dict:
-    """Manual run of one flow (same job and locks as the schedule); only when the flow is ready."""
+    """Manual run of one flow (same job and locks as the schedule); only when the flow is ready for a manual run."""
     _check(flow)
-    r = readiness(flow)
+    r = manual_readiness(flow)
     if not r["ready"]:
         raise AppError("FLOW_NOT_READY", 409, detail="; ".join(x["code"] for x in r["reasons"]), reasons=r["reasons"])
     from ..api import background

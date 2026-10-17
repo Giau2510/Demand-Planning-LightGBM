@@ -5,6 +5,9 @@ import { useI18n } from "../i18n";
 import { Card, Code, Empty, ErrorBox, Field, Loading, OkBox, Pill, Term, fmtDatesInText, fmtDuration, fmtTime, jobOutcome, useAction, useAsync } from "../components/ui";
 
 const TYPES = ["D1_SYNC", "D0_SYNC", "TRAIN_PUBLISH"];
+/** Pill tone per effective flow state (same as the schedule page). */
+const STATE_PILL: Record<string, string> = { OFF: "SKIPPED", ON: "OK", ON_NOT_READY: "RETRY_WAIT", ON_NOT_LOADED: "PENDING",
+  ON_SCHEDULER_STOPPED: "FAILED" };
 const ALL_TYPES = [...TYPES, "FORECAST_EXTEND"];
 
 export default function Jobs() {
@@ -42,10 +45,18 @@ export default function Jobs() {
         {s && (
           <p className="small" data-testid="jobs-flows">
             <b>{t("job.flows")}:</b>{" "}
-            {([["d1_enabled", "D1_SYNC", s.config.d1_signal_poll_start], ["d0_enabled", "D0_SYNC", s.config.d0_times.join(", ")],
-               ["train_enabled", "TRAIN_PUBLISH", s.config.train_time]] as [string, string, string][]).map(([k, jt, times]) => (
-              <span key={k}>{t(`job.${jt}`)} <Pill status={s.config[k] ? "OK" : "SKIPPED"} label={t(s.config[k] ? "sch.state.ON" : "sch.state.OFF")} /> <span className="muted">{times}</span> · </span>
-            ))}
+            {([["d1_enabled", "D1_SYNC", s.config.d1_signal_poll_start, "d1"], ["d0_enabled", "D0_SYNC", s.config.d0_times.join(", "), "d0"],
+               ["train_enabled", "TRAIN_PUBLISH", s.config.train_time, "train"]] as [string, string, string, string][]).map(([k, jt, times, fl]) => {
+              // 1.2.3: the backend's EFFECTIVE state (switch + scheduler + readiness), never the switch alone
+              const fs = s.flow_states?.[fl];
+              const state = fs?.state ?? (s.config[k] ? "ON" : "OFF");
+              const why = fs && !fs.readiness?.ready ? fs.readiness.reasons?.[0] : null;
+              return (
+                <span key={k} data-testid={`jobs-flow-${fl}`}>{t(`job.${jt}`)} <Pill status={STATE_PILL[state] ?? "PENDING"} label={t(`sch.state.${state}`)} />
+                  {why && state !== "OFF" && <span className="small bad-t" title={why.detail ?? undefined} data-testid={`jobs-flow-why-${fl}`}> <Code code={why.code} /></span>}
+                  {" "}<span className="muted">{times}</span> · </span>
+              );
+            })}
             <Link to="/schedules">{t("nav.schedules")} →</Link>
           </p>
         )}

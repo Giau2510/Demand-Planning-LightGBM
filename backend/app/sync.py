@@ -104,6 +104,13 @@ def check_output(rows: list[dict]) -> dict:
     return {"rows": len(rows), "qty": total}
 
 
+def _production_off() -> AppError:
+    """SOURCE_NOT_READY with since when / by which change production mode is off and how to fix it (1.2.3)."""
+    from .jobs import flows
+    with db.read() as c:
+        return AppError("SOURCE_NOT_READY", 409, detail=flows.production_off_detail(c))
+
+
 def run_d1_sync(job_id: str | None = None, fallback_mode: bool | None = None, backfill_start: str | None = None,
                 backfill_end: str | None = None) -> dict:
     """Daily history load (D-1 and older). Never touches today's data (D0 is a separate job and table).
@@ -113,7 +120,7 @@ def run_d1_sync(job_id: str | None = None, fallback_mode: bool | None = None, ba
         raise NotApplicable(g.active_source)
     bq = ss.get("bigquery")
     if not bq.production_enabled:
-        raise AppError("SOURCE_NOT_READY", 409)
+        raise _production_off()
     if not connector.validation_ok_for_current():
         raise AppError("BQ_VALIDATION_REQUIRED", 409, mapping_hash=connector.mapping_hash(bq))
     snap = sql_sources.snapshot("history")     # the SQL text used from start to end of THIS job
@@ -340,7 +347,7 @@ def run_d0_snapshot(job_id: str | None = None, scheduled_slot: str | None = None
     else:
         bq = ss.get("bigquery")
         if not bq.production_enabled:
-            raise AppError("SOURCE_NOT_READY", 409)
+            raise _production_off()
         scope_key = bigquery_scope_key(bq)
         # the D0 SQL / table, D-0 mapping and key rules used from start to end of THIS job (1.2.1: refused when the
         # validation was made for another D-0 mapping); only TODAY's rows (Vietnam) are counted, never D-1 data

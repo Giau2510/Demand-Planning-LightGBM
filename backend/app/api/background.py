@@ -22,6 +22,13 @@ def submit(job_type: str, params: dict | None = None, wait: bool | None = None) 
     (flag already_active) instead of creating a duplicate - repeated clicks never start a second run."""
     if job_type not in runner.JOB_TYPES:
         raise AppError("BATCH_NOT_FOUND", 404, detail=job_type)
+    if job_type == "TRAIN_PUBLISH":
+        # 1.2.3: a manual training on a BigQuery source that is not ready is refused at once with the exact reason
+        # (never a job skipped later); the schedule switches play no part in a manual run
+        from ..jobs import flows
+        blockers = flows.source_blockers()
+        if blockers:
+            raise AppError(blockers[0]["code"], 409, detail=blockers[0]["detail"], reasons=blockers)
     params = params or {}
     group = EXCLUSIVE_GROUP.get(job_type, (job_type,))
     with db.tx() as c:   # check + insert atomically (IMMEDIATE transaction)

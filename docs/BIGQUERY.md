@@ -260,6 +260,12 @@ Trang **SQL nguồn & đồng bộ** quản lý hai nguồn độc lập:
 - Mỗi job **chụp** phiên bản SQL (id + sha256 + nội dung) lúc bắt đầu và dùng bản chụp đó đến khi kết thúc. Phiên bản được ghi trong kết quả job; với D0, phiên bản cũng nằm trong `source_batch_id` của snapshot.
 - **Đổi SQL không đổi feature của mô hình.** Feature registry quyết định riêng.
 - Đổi SQL lịch sử hoặc tùy chọn khóa làm mã ánh xạ thay đổi: phải kiểm tra dữ liệu toàn kỳ lại và chế độ sản xuất tự tắt.
+- Lưu ánh xạ trường (kể cả chỉ đổi *Bắt buộc/Tùy chọn*, ví dụ `unit_price` OPTIONAL → REQUIRED lúc 17:32 ngày
+  17/10/2026) luôn **tắt chế độ sản xuất** và đổi mapping hash. `REQUIRED` chỉ có nghĩa "phải được ánh xạ tới một cột có
+  thật, đúng kiểu"; dòng thiếu giá trị của trường đó **không** bị loại khỏi nhu cầu. Từ 1.2.3 trang Ánh xạ hỏi xác nhận
+  trước khi lưu và báo sau khi lưu; `SOURCE_NOT_READY` ghi rõ tắt từ lúc nào, do thay đổi nào, cách khắc phục (*Kiểm tra
+  dữ liệu toàn kỳ* → *Kích hoạt chế độ sản xuất*). *Tắt chế độ sản xuất* giữ nguyên nguồn đang dùng (trước 1.2.3 nút này
+  tự chuyển sang DEMO).
 
 ## 10. SQL D0 do người dùng cung cấp — các điểm cần xác nhận
 

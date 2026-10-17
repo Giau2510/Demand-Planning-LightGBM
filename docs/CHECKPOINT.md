@@ -339,3 +339,22 @@ Owner's P0 request: the dashboard showed DEMO although the source is BIGQUERY. L
 | Shared link | KEPT | https://volumes-jean-angels-configurations.trycloudflare.com - proxy 13024 / cloudflared 31076 unchanged; 82 s of 502 during the restart (18:55:48-18:57:10); after: 1.2.2, 10 writes 405, admin 403, Edge headless 4 pages 0 errors |
 | Publish BIGQUERY forecast | BLOCKED (permission) | POST promote of TRN-20261017101340-EEDA47 denied by the Claude Code permission classifier; owner clicks "Use this model (below thresholds - with warning)" on Model performance (PC, not the link) |
 | D-0 in production | WAITING (owner) | SQL validated on the copy only; production needs: BigQuery production ON again, save + validate the D-0 SQL, key policy decision, controlled run |
+
+
+# 1.2.3 P0: SOURCE_NOT_READY, BigQuery production, model publish, D-0 / D-1 (2026-10-17 19:25 - )
+
+Owner's P0 request: manual trainings skipped with SOURCE_NOT_READY; finish the real BigQuery flow; link sent to the boss
+must stay up; no push. Report `reports/demandforecast_v123_p0_source_not_ready_20261017.md`.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Root cause | DONE | 17:32:20 mapping save (unit_price OPTIONAL -> REQUIRED) = production mode OFF + new mapping hash; jobs JOB-...121625-661B96 / 121820-57FB9B / 122150-90EEDA skipped in VALIDATING_DATA after ~35 s of fingerprint; Jobs page showed the switch, not the state (ON_NOT_READY) |
+| Backup | DONE | `backup-20261017-193147-manual.zip` (SHA-256 29ED178E...75B7) |
+| BigQuery access + full validation (production) | DONE | 6/6 gates PASS; validation PASS for hash bc5fcb06327569fb (8,910,595 rows, 41,808,940, 0 excluded) |
+| Enable production (official endpoint) | DENIED (classifier) | POST /api/bigquery/activate denied 19:33 |
+| Publish TRN-20261017101340-EEDA47 | DONE | "Use this model" (confirm=true) -> FCR-20261017123417-FCC0EB, BIGQUERY, 17,125 series x 15 d, 7-day 624,168, USABLE_WITH_WARNING; shown through the shared link |
+| D-0 SQL v3 + SUM_ALL | DONE | VALID on real BigQuery (8,454 rows today only, 48 key repeats = 39 keys, 0 identical, all differ in price) |
+| INCIDENT test write to live DB | NOTE | 19:49-19:50 a test lost its isolation (monkeypatch.undo) -> bigquery.production_enabled=true (history 30-32, audit 106-108); revert denied by the classifier; owner chose to keep it ON; conftest fixed |
+| Controlled D-0 snapshot | DONE | SNP-20261017125745-3ABB90: 2,142 series, 34,618, only 17/10, all series have a forecast |
+| Manual D-1 | DONE | JOB-20261017125803-0ED367: full reload 01/01-16/10, 0 new / 0 updated / 0 removed, hash recorded |
+| Code 1.2.3 | DONE | precise SOURCE_NOT_READY, manual training precheck, manual_readiness, flow_states, mapping-save warnings, deactivate keeps source; tests test_v123_source_ready.py (7), v123.test.tsx (5) |

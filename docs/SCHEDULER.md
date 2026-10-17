@@ -40,6 +40,11 @@ nhật ký riêng. Không còn công tắc chung cho mọi job.
 - Lần chạy theo lịch, chạy bù hay thử lại của một luồng đang TẮT không bao giờ thực thi: được ghi *bỏ qua* với
   `D1_SCHEDULE_DISABLED` / `D0_SCHEDULE_DISABLED` / `TRAIN_SCHEDULE_DISABLED`. *Chạy ngay 1 lần* (thủ công) vẫn có thể
   khi luồng sẵn sàng.
+- 1.2.3: *Chạy ngay 1 lần* xét `manual_readiness` = điều kiện của nguồn, **không** xét điều kiện chỉ dành cho lịch
+  (`TRAIN_WAITS_FOR_D1` phụ thuộc công tắc D-1). Huấn luyện thủ công (Tổng quan, Chất lượng mô hình, Job & Scheduler)
+  trên nguồn BigQuery chưa sẵn sàng bị từ chối ngay (409 + lý do, không tạo job bị bỏ qua). Trang *Job & Scheduler* và
+  `/api/scheduler/status` (`flow_states`) hiển thị trạng thái hiệu lực: luồng bật nhưng nguồn chưa sẵn sàng là *Đã bật
+  nhưng hiện chưa sẵn sàng* kèm lý do — không bao giờ *Đang bật — scheduler đã nạp* chỉ vì công tắc đang bật.
 - Nâng cấp từ 1.1.7 trở về trước: D-1 và D-0 **TẮT**; huấn luyện giữ trạng thái của công tắc chung cũ. Không luồng nào
   từ TẮT chuyển sang BẬT. (Với nguồn DEMO, snapshot D0 tổng hợp trước đây chạy theo công tắc chung sẽ dừng cho tới khi
   bật D-0.)
