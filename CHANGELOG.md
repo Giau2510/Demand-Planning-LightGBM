@@ -5,11 +5,14 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
-## 1.2.1 - not released (D-0 own mapping + real BigQuery validation, training follows today's D-1, read-only remote link) [reports/demandforecast_v121_d0_d1_remote_20261017.md]
+## 1.2.1 - 2026-10-17 (D-0 own mapping + real BigQuery validation, training follows today's D-1, read-only remote link) [reports/demandforecast_v121_d0_d1_remote_20261017.md]
 
-Source only: not committed, not packaged, not deployed (the user's instruction for this batch: no commit). Database schema
-unchanged (3); settings: new key `bigquery.d0_mapping` (ignored by 1.2.0, so a rollback keeps working). Production still
-runs 1.2.0. QA and evidence: see the report.
+Database schema unchanged (3); settings: new key `bigquery.d0_mapping` (ignored by 1.2.0: rollback to 1.2.0 needs no
+restore, checked). Package built 2026-10-17 16:46 from local commit 94fd17b (SHA-256 1BE9E270...4DC7; QA 391 incl. real
+BigQuery + 69 vitest). Deployed to production 2026-10-17 16:48-16:52 (deploy-upgrade.ps1, backup
+backup-20261017-164813-manual.zip); data and every settings section unchanged. Before the deploy the training catch-up
+policy was set to SKIP (owner's instruction), so today's missed 09:00 slot was recorded SKIPPED, no training ran. D-0
+SQL / key policy / schedule untouched (D-0 still OFF, SQL_NOT_VALIDATED until a version is validated).
 
 * D-0 feed: its own mapping `bigquery.d0_mapping` (SKU, FC, quantity, day; optional order id / update time), edited on
   *SQL sources -> D-0 -> D-0 mapping* (`GET/PUT /api/bigquery/d0-mapping`, suggestion from the real schema

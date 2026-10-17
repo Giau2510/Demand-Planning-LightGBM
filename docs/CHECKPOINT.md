@@ -316,4 +316,6 @@ No commit / package / deploy (user's instruction). Production stays 1.2.0. Repor
 | Isolated check on a DB copy, real BigQuery | DONE | new D-0 SQL on the D-0 table VALID (8,454 rows, 2,142 series, 48 key repeats); live DB fingerprint unchanged |
 | Remote link (Quick Tunnel + read-only proxy) | DONE | two real HTTPS links verified then stopped; tests `test_v121_remote_proxy.py` (43) |
 | Handoff ZIP | DONE | `dist\DemandForecast-RemoteAccess-1.2.1-20261017.zip` (SHA-256 7EEC7A1F...558B) |
-| Release 1.2.1 / deploy | NOT RUN | needs the user's commit + deploy authorization |
+| Release 1.2.1 / deploy | DONE (16:37-16:58) | owner asked to deploy: train catch-up policy SKIP set first (PUT /api/schedules/train); local commit 94fd17b (no push); package 1BE9E270...4DC7; deploy 16:48-16:52, backups backup-20261017-164813-manual.zip + -165044-cli.zip; data / settings fingerprint unchanged; TRAIN_PUBLISH:2026-10-17 SKIPPED; rollback -To 1.2.0 -CheckOnly OK |
+| Remote link (production 1.2.1) | RUNNING | https://volumes-jean-angels-configurations.trycloudflare.com - reads 200, 10 writes 405, 10 admin 403, Edge headless 3 pages 0 errors; changes on every tunnel restart |
+| D-0 | WAITING (owner) | not touched: save + validate the D-0 table SQL, choose key policy BLOCK / SUM_ALL |
