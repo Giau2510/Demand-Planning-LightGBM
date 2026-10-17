@@ -358,3 +358,8 @@ must stay up; no push. Report `reports/demandforecast_v123_p0_source_not_ready_2
 | Controlled D-0 snapshot | DONE | SNP-20261017125745-3ABB90: 2,142 series, 34,618, only 17/10, all series have a forecast |
 | Manual D-1 | DONE | JOB-20261017125803-0ED367: full reload 01/01-16/10, 0 new / 0 updated / 0 removed, hash recorded |
 | Code 1.2.3 | DONE | precise SOURCE_NOT_READY, manual training precheck, manual_readiness, flow_states, mapping-save warnings, deactivate keeps source; tests test_v123_source_ready.py (7), v123.test.tsx (5) |
+| Release 1.2.3 | DONE | local commit 87f6fce (no push); QA 405 + 7 real BigQuery + vitest 80 + build; package `dist\DemandForecast-1.2.3-win64-portable.zip` SHA-256 39C1DA4A...3410 |
+| Rehearsal with a live link | DONE 22/22 | official 1.2.2 on a DB copy + proxy + own Quick Tunnel; deploy to 1.2.3: same PIDs / URL, 502 for 82 s, 405 / 403 kept, deactivate keeps BIGQUERY, manual training 409 SOURCE_NOT_READY with detail and no job (body read with Python), rollback -CheckOnly OK |
+| Deploy production 1.2.2 -> 1.2.3 | DONE 20:32-20:37 | UPGRADE OK, app pid 24100; backups `backup-20261017-203230-manual.zip` (SHA-256 25E71FB8...86EF) + `-203501-cli.zip`; fingerprint: data + settings identical (audit +1); data-check WARN (old DEMO meta only); rollback -To 1.2.2 -CheckOnly OK; storage.json 8D79DBDD unchanged |
+| Shared link | KEPT | same URL, proxy 13024 / cloudflared 31076 unchanged; 502 for ~87 s (20:35:00-20:36:28); after: 1.2.3, BIGQUERY forecast FCR-...FCC0EB, 10 writes 405, admin 403, Edge headless 4 pages 0 errors |
+| Schedules | UNCHANGED | D-1 OFF, D-0 OFF (08-18 every 2 h), training ON 09:00 SKIP; all three flows ready; enabling D-1 / D-0 is the owner's decision |

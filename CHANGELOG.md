@@ -12,6 +12,11 @@ trainings JOB-20261017121625-661B96 / -121820-57FB9B / -122150-90EEDA (19:16-19:
 saved at 17:32 (unit_price OPTIONAL -> REQUIRED); a mapping save always switches production mode off and changes the
 mapping hash (new full-period validation + activation needed). The job reported a bare code after ~35 s of data
 fingerprint, and the Jobs page showed "On - loaded by the scheduler" for the training flow from its switch alone.
+Package built 2026-10-17 20:21 from local commit 87f6fce (SHA-256 39C1DA4A...3410; QA 405 + 7 real BigQuery + 80 vitest
++ build). Rehearsal with its own Quick Tunnel 22/22 (one check re-run with Python to read the 409 body). Deployed to
+production 20:32-20:37 (deploy-upgrade.ps1, backups backup-20261017-203230-manual.zip + -203501-cli.zip): shared link,
+proxy (pid 13024) and cloudflared (pid 31076) kept; the link answered 502 for ~87 s (20:35:00-20:36:28). Data and
+settings unchanged by the deploy; rollback to 1.2.2 needs no restore.
 
 * `SOURCE_NOT_READY` now says since when and by which saved change production mode is off and how to fix it (settings
   history); `BQ_VALIDATION_REQUIRED` names the mapping hash. The training checks the BigQuery source BEFORE the data
