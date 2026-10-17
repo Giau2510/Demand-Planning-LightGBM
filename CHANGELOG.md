@@ -11,6 +11,13 @@ Database schema unchanged (3); settings: new keys `bigquery.product_names_table 
 `dim_sku` / `sku_code` / `product_name`, ignored by 1.2.3: rollback needs no restore). Cause of the empty "How was the
 forecast produced?" and "Demand history and Excel export" areas: the manual D-1 of 17/10 19:58 rewrote every row with
 identical values; the data fingerprint includes `MAX(loaded_at)`, so the published run was declared "data changed".
+Package built 2026-10-17 22:30 from local commit 1750f8d (SHA-256 030418A5...1F2D; QA 418 + 7 real BigQuery + 86 vitest
++ build; the first 1.2.4 build from addbfb9 was only rehearsed and is kept as `...-superseded-20261017-223024`).
+Rehearsal with its own Quick Tunnel 34/34. Deployed 22:52-22:59 (backups backup-20261017-225247-manual.zip +
+-225648-cli.zip): shared link, proxy (pid 13024) and cloudflared (pid 31076) kept; the link answered 502 for ~130 s
+(22:56:47-22:58:58). Then on production: TRN-20261017101340-EEDA47 attested from backup-20261017-193147-manual.zip
+(SAME_CONTENT, 1,349,388 rows), product names read (9,657 / 9,657 SKUs, 22.9 MB), D-1 and D-0 switched ON
+(owner request; times unchanged). Demand data unchanged; no job, training or forecast was started.
 
 * Data identity (`data/identity.py`): SHA-256 of the values the model reads, per day and per window, never loaded_at.
   Stored with each training run; explanations (calculation, history + Excel, TreeSHAP trace) and the model page's

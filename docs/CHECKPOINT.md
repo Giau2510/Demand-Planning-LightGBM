@@ -377,3 +377,8 @@ Jobs page; link kept, no push. Report `reports/demandforecast_v124_history_names
 | Name source | DONE | dim_sku: 298,517 rows = 298,517 distinct sku_code, 0 empty names; ~23 MB per read |
 | Code 1.2.4 | DONE | data/identity.py, bq/product_names.py, explain / training_explain / pipeline / sync / routes / export; UI Results, ExplainPanel, Jobs; tests 12 backend + 6 frontend |
 | Tests | DONE | backend 417 passed + 7 real BigQuery; vitest 86; typecheck + build OK; live DB untouched (history id 32, newest job unchanged) |
+| Release 1.2.4 | DONE | local commits addbfb9 + 1750f8d (no push); QA 418 + 7 real BigQuery + vitest 86 + build; package SHA-256 030418A5...1F2D (first build D2A13503... superseded, never deployed) |
+| Rehearsal | DONE 34/34 | 1.2.3 on a DB copy + proxy + own tunnel -> 1.2.4: same PIDs / URL; attestation on the copy SAME_CONTENT; names from real BigQuery 9,657/9,657; search, Excel, switches; 405 through the URL; rollback OK |
+| Deploy production 1.2.3 -> 1.2.4 | DONE 22:52-22:59 | UPGRADE OK, app pid 35168; backups backup-20261017-225247-manual.zip (SHA-256 7190A546...13E4) + -225648-cli.zip; data + settings identical (audit +1); rollback -To 1.2.3 -CheckOnly OK |
+| Shared link | KEPT | same URL, proxy 13024 / cloudflared 31076; 502 for ~130 s (22:56:47-22:58:58); 23/23 link checks, Edge 5 pages 0 errors |
+| Production actions | DONE | EEDA47 attested (sha cbd943c0..., SAME_CONTENT); names refreshed 9,657/9,657; explanation OK (33.8 s cold, ~8.5 s next; 7.7 s through the link); D-1 ON (next 18/10 03:00), D-0 ON (next 18/10 08:00); off/on tested; no job started |
