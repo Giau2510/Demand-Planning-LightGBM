@@ -7,7 +7,8 @@ import { ProductName } from "./Results";
 
 const PAGE = 100;
 const MAX_RANGE_DAYS = 400;     // same limit as the API (forecast_history.MAX_RANGE_DAYS)
-const STATUSES = ["COMPLETE", "PROVISIONAL", "NO_ACTUAL"];
+const STATUSES = ["COMPLETE", "CLOSED", "PROVISIONAL", "NO_ACTUAL"];
+const SOURCES = ["PRIMARY", "SNAPSHOT"];       // 1.2.6 official session / end-of-day backup snapshot
 const SORTS = ["date", "abs_error", "forecast", "actual", "sku"];
 
 /** YYYY-MM-DD + n days (calendar arithmetic, no time zone involved); "" when there is no valid date yet. */
@@ -27,8 +28,23 @@ export function ActualStatus({ status, reason }: { status?: string | null; reaso
   return <span title={reason ? t(`fh.reason.${reason}`) : undefined} data-testid="actual-status"><Pill status={status} label={t(`fh.st.${status}`)} /></span>;
 }
 
+/** 1.2.6: where a run date's forecast comes from - its official session, or the end-of-day backup snapshot (with the
+ *  snapshot day, its creation time and the source run in the tooltip). */
+export function ForecastSource({ r }: { r: any }) {
+  const { t } = useI18n();
+  if (r.forecast_source !== "SNAPSHOT")
+    return <span title={`${fmtTime(r.session_started_at)} · ${t("fh.run_id")}: ${r.forecast_run_id} · ${r.model_version}`}>{fmtTime(r.session_started_at).slice(11)}</span>;
+  return (
+    <span data-testid="fh-backup" title={t("fh.backup_tip").replace("{d}", fmtDate(r.snapshot_business_date)).replace("{t}", fmtTime(r.snapshot_created_at))
+      .replace("{run}", r.forecast_run_id).replace("{m}", r.model_version ?? "")}>
+      <Pill status="SNAPSHOT" label={t("fh.src.SNAPSHOT_short")} /> <span className="small muted">{fmtDate(r.snapshot_business_date).slice(0, 5)}</span>
+    </span>
+  );
+}
+
 /** 1.2.5 "Forecast & actual history": for each run date the stored D+1 forecast of its official session, compared with
- *  the actual of that day. Read-only page: it never starts a job, a training or a forecast. */
+ *  the actual of that day; 1.2.6: a run date without a session shows its end-of-day backup, labelled as such. Read-only
+ *  page: it never starts a job, a training or a forecast. */
 export default function ForecastHistory() {
   const { t, lang } = useI18n();
   const [scopeKey, setScopeKey] = useState("");
@@ -38,6 +54,7 @@ export default function ForecastHistory() {
   const [to, setTo] = useState("");
   const [fc, setFc] = useState("");
   const [status, setStatus] = useState("");
+  const [fsrc, setFsrc] = useState("");
   const [q, setQ] = useState("");
   const [qd, setQd] = useState("");
   useEffect(() => { const id = setTimeout(() => setQd(q.trim()), 300); return () => clearTimeout(id); }, [q]);
@@ -45,19 +62,21 @@ export default function ForecastHistory() {
   const [page, setPage] = useState(0);
 
   const o = ov.data;
-  const days: any[] = o?.days ?? [];
+  // run dates with a stored forecast: official sessions and (1.2.6) days covered by the end-of-day backup, newest first
+  const days: any[] = [...(o?.days ?? []).map((d: any) => ({ ...d, source: "PRIMARY" })),
+    ...(o?.backup_days ?? []).map((d: any) => ({ ...d, source: "SNAPSHOT" }))].sort((a, b) => (a.run_date < b.run_date ? 1 : -1));
   const latest = days[0]?.run_date ?? o?.today ?? "";
   const oldest = days[days.length - 1]?.run_date ?? latest;
   const range = mode === "last30" ? [addDays(latest, -29), latest] : mode === "last7" ? [addDays(latest, -6), latest]
     : mode === "all" ? [oldest > addDays(latest, 1 - MAX_RANGE_DAYS) ? oldest : addDays(latest, 1 - MAX_RANGE_DAYS), latest] : mode === "custom" ? [from || addDays(latest, -29), to || latest] : [mode, mode];
   const [runFrom, runTo] = range[0] <= range[1] ? range : [range[1], range[0]];
-  const f = { scope_key: o?.scope_key, run_from: runFrom, run_to: runTo, fc_id: fc, q: qd, actual_status: status };
+  const f = { scope_key: o?.scope_key, run_from: runFrom, run_to: runTo, fc_id: fc, q: qd, actual_status: status, forecast_source: fsrc };
   const ready = !!o?.scope_key && days.length > 0;      // nothing stored -> nothing to ask for
-  useEffect(() => setPage(0), [o?.scope_key, runFrom, runTo, fc, qd, status, sort]);
+  useEffect(() => setPage(0), [o?.scope_key, runFrom, runTo, fc, qd, status, fsrc, sort]);
   const summary = useAsync(() => (ready ? get(`/api/history/summary${qs(f)}`) : Promise.resolve(null)),
-    [o?.scope_key, runFrom, runTo, fc, qd, status]);
+    [o?.scope_key, runFrom, runTo, fc, qd, status, fsrc]);
   const rows = useAsync(() => (ready ? get(`/api/history/rows${qs({ ...f, sort, limit: PAGE, offset: page * PAGE })}`) : Promise.resolve(null)),
-    [o?.scope_key, runFrom, runTo, fc, qd, status, sort, page]);
+    [o?.scope_key, runFrom, runTo, fc, qd, status, fsrc, sort, page]);
 
   const exportHref = `/api/history/export.xlsx${qs({ ...f, sort, lang })}`;
   const header = (
@@ -72,12 +91,14 @@ export default function ForecastHistory() {
 
   const s = summary.data;
   const k = s?.kpi;
-  const nFilters = [fc, qd, status, mode !== "last30" ? "1" : ""].filter(Boolean).length;
-  const clear = () => { setFc(""); setQ(""); setQd(""); setStatus(""); setMode("last30"); setFrom(""); setTo(""); };
+  const nFilters = [fc, qd, status, fsrc, mode !== "last30" ? "1" : ""].filter(Boolean).length;
+  const clear = () => { setFc(""); setQ(""); setQd(""); setStatus(""); setFsrc(""); setMode("last30"); setFrom(""); setTo(""); };
   const official = (s?.sessions ?? []).filter((x: any) => x.official);
+  const backups: any[] = s?.backup_days ?? [];
   const missing = (s?.daily ?? []).filter((d: any) => !d.has_history).length;
-  const kpiProv = k?.status === "PROVISIONAL";
-  const provTag = kpiProv ? <> <Pill status="PROVISIONAL" label={t("fh.st.PROVISIONAL")} /></> : null;
+  // the KPI says when its actual is not final: provisional (intraday / not closed) or closed but not verified
+  const provTag = k?.status === "PROVISIONAL" || k?.status === "CLOSED" ? <> <Pill status={k.status} label={t(`fh.st.${k.status}`)} /></> : null;
+  const tb = o.today_backup;
   const scopeChoices = [...(o.scopes ?? [])];
   if (o.active_scope_key && !scopeChoices.some((x: any) => x.scope_key === o.active_scope_key))
     scopeChoices.unshift({ scope_key: o.active_scope_key, data_source: o.active_data_source ?? o.data_source, n_days: 0, active: true });
@@ -90,6 +111,9 @@ export default function ForecastHistory() {
         {o.today_session
           ? t("fh.today_session").replace("{d}", fmtDate(o.today)).replace("{t}", fmtTime(o.today_session.session_started_at))
             .replace("{target}", fmtDate(o.today_session.target_date))
+          : tb ? <span data-testid="fh-today-backup">{t("fh.no_valid_today").replace("{d}", fmtDate(o.today))} {t("fh.today_backup")
+              .replace("{s}", fmtDate(tb.snapshot_business_date)).replace("{t}", fmtTime(tb.snapshot_created_at))
+              .replace("{run}", tb.forecast_run_id).replace("{target}", fmtDate(tb.target_date))}</span>
           : <>{t("fh.no_valid_today").replace("{d}", fmtDate(o.today))} {t("fh.sessions_when")}</>}
       </div>
 
@@ -109,7 +133,7 @@ export default function ForecastHistory() {
                 <option value="all">{t("fh.all")}</option>
                 <option value="custom">{t("fh.custom")}</option>
                 <optgroup label={t("fh.one_day")}>
-                  {days.map((d) => <option key={d.run_date} value={d.run_date}>{fmtDate(d.run_date)} → {fmtDate(d.target_date)}</option>)}
+                  {days.map((d) => <option key={d.run_date} value={d.run_date}>{fmtDate(d.run_date)} → {fmtDate(d.target_date)}{d.source === "SNAPSHOT" ? ` (${t("fh.src.SNAPSHOT_short")})` : ""}</option>)}
                 </optgroup>
               </select>
             </Field>
@@ -134,6 +158,12 @@ export default function ForecastHistory() {
                 {STATUSES.map((x) => <option key={x} value={x}>{t(`fh.st.${x}`)}</option>)}
               </select>
             </Field>
+            <Field label={t("fh.src")}>
+              <select value={fsrc} onChange={(e) => setFsrc(e.target.value)} aria-label={t("fh.src")} data-testid="fh-source">
+                <option value="">{t("common.all")}</option>
+                {SOURCES.map((x) => <option key={x} value={x}>{t(`fh.src.${x}`)}</option>)}
+              </select>
+            </Field>
           </FilterBar>
           <p className="small muted" data-testid="fh-range">
             {t("fh.run_date")}: <b>{fmtDate(runFrom)}</b>{runTo !== runFrom && <> → <b>{fmtDate(runTo)}</b></>} · {t("fh.target_date")}: <b>{fmtDate(addDays(runFrom, 1))}</b>
@@ -144,7 +174,8 @@ export default function ForecastHistory() {
           {summary.loading && !s ? <Loading /> : k && (
             <div className="grid4" data-testid="fh-kpi">
               <Stat icon="chart" label={t("fh.kpi.forecast")} value={fmtNum(k.forecast_total)}
-                sub={t("fh.kpi.rows").replace("{n}", fmtNum(k.n_rows)).replace("{d}", fmtNum(k.days_with_history))} />
+                sub={<>{t("fh.kpi.rows").replace("{n}", fmtNum(k.n_rows)).replace("{d}", fmtNum(k.days_with_history))}
+                  {k.days_backup > 0 && <span data-testid="fh-kpi-backup"> · {t("fh.kpi.backup_days").replace("{n}", fmtNum(k.days_backup))}</span>}</>} />
               <Stat icon="actual" label={t("fh.kpi.actual")} value={<>{k.actual_total === null ? "—" : fmtNum(k.actual_total)}{provTag}</>}
                 sub={k.actual_total === null ? t("fh.kpi.no_actual") : t("fh.kpi.on_rows").replace("{n}", fmtNum(k.n_rows_compared))} />
               <Stat icon="deviation" label={t("fh.kpi.deviation")} value={<>{signed(k.deviation, 0)}{k.deviation !== null && provTag}</>}
@@ -157,12 +188,13 @@ export default function ForecastHistory() {
 
           {s && (
             <Card icon="chart" title={t("fh.chart")}>
-              <CompareChart label={t("fh.chart")} legend={{ forecast: t("fh.legend.forecast"), actual: t("fh.legend.actual"), provisional: t("fh.legend.prov") }}
+              <CompareChart label={t("fh.chart")} legend={{ forecast: t("fh.legend.forecast"), actual: t("fh.legend.actual"), provisional: t("fh.legend.prov"), backup: t("fh.legend.backup") }}
                 points={s.daily.map((d: any) => ({
                   x: d.target_date, forecast: d.has_history && d.n_rows ? d.forecast : null, actual: d.actual,
-                  provisional: d.actual_status === "PROVISIONAL",
+                  provisional: d.actual_status === "PROVISIONAL" || d.actual_status === "CLOSED", backup: d.forecast_source === "SNAPSHOT",
                   tip: [`${t("fh.target_date")}: ${fmtDate(d.target_date)}`, `${t("fh.run_date")}: ${fmtDate(d.run_date)}`,
                     !d.has_history ? t("fh.no_history_day") : `${t("fh.tip.forecast")}: ${d.n_rows ? fmtNum(d.forecast, 1) : t("fh.filtered_out")}`,
+                    ...(d.forecast_source === "SNAPSHOT" ? [`${t("fh.src")}: ${t("fh.src.SNAPSHOT")} ${fmtDate(d.snapshot.snapshot_business_date)} · ${d.forecast_run_id}`] : []),
                     ...(d.has_history && d.n_rows ? [d.actual === null ? `${t("fh.tip.actual")}: ${t("fh.st.NO_ACTUAL")}`
                       : `${t("fh.tip.actual")}: ${fmtNum(d.actual, 1)} (${t(`fh.st.${d.actual_status}`)})`] : []),
                     ...(d.deviation !== null && d.deviation !== undefined ? [`${t("fh.tip.dev")}: ${signed(d.deviation)}`] : [])],
@@ -173,7 +205,7 @@ export default function ForecastHistory() {
 
           {s && (
             <Card icon="history" title={t("fh.sessions")}>
-              {official.length === 0 ? <Empty text={t("fh.no_history_day")} /> : (
+              {official.length === 0 ? (backups.length === 0 && <Empty text={t("fh.no_history_day")} />) : (
                 <div className="scroll">
                   <table className="tbl" data-testid="fh-sessions">
                     <thead><tr><th>{t("fh.run_date")}</th><th>{t("fh.target_date")}</th><th>{t("fh.session_time")}</th><th>{t("fh.run_id")}</th>
@@ -196,6 +228,27 @@ export default function ForecastHistory() {
                       })}
                     </tbody>
                   </table>
+                </div>
+              )}
+              {backups.length > 0 && (
+                <div className="stack tight" data-testid="fh-backups">
+                  <p className="small"><b>{t("fh.backups")}</b> — <span className="muted">{t("fh.backups_help")}</span></p>
+                  <div className="scroll">
+                    <table className="tbl">
+                      <thead><tr><th>{t("fh.run_date")}</th><th>{t("fh.target_date")}</th><th>{t("fh.snap_day")}</th><th>{t("fh.snap_created")}</th>
+                        <th>{t("fh.src_run")}</th><th>{t("fc.model_version")}</th><th>{t("fh.snap_id")}</th></tr></thead>
+                      <tbody>
+                        {backups.map((x: any) => (
+                          <tr key={x.run_date}>
+                            <td className="nowrap">{fmtDate(x.run_date)}</td><td className="nowrap">{fmtDate(x.target_date)}</td>
+                            <td className="nowrap">{fmtDate(x.snapshot_business_date)}</td><td className="nowrap">{fmtTime(x.snapshot_created_at)}</td>
+                            <td className="mono small nowrap" title={`${t("fh.session_time")}: ${fmtTime(x.session_started_at)}`}>{x.forecast_run_id} ({fmtDate(x.source_run_date)})</td>
+                            <td className="mono small">{x.model_version}</td><td className="mono small nowrap">{x.snapshot_id}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
             </Card>
@@ -221,8 +274,7 @@ export default function ForecastHistory() {
                         <tr key={`${r.run_date}|${r.sku_id}|${r.fc_id}`}>
                           <td className="sku">{r.sku_id}</td><td className="pname"><ProductName name={r.product_name} /></td><td>{r.fc_id}</td>
                           <td className="nowrap">{fmtDate(r.run_date)}</td><td className="nowrap">{fmtDate(r.target_date)}</td>
-                          <td className="nowrap" title={`${fmtTime(r.session_started_at)} · ${t("fh.run_id")}: ${r.forecast_run_id} · ${r.model_version}`}>
-                            {fmtTime(r.session_started_at).slice(11)}</td>
+                          <td className="src-cell"><ForecastSource r={r} /></td>
                           <td className="num">{fmtNum(r.yhat, 1)}</td>
                           <td className="num" title={r.actual === null ? t("fh.st.NO_ACTUAL") : `${t("actual.as_of")} ${fmtTime(r.actual_as_of)}`}>
                             {r.actual === null ? <span className="muted">—</span> : fmtNum(r.actual, 1)}</td>
@@ -245,6 +297,8 @@ export default function ForecastHistory() {
         <ul className="small" data-testid="fh-rules">
           <li>{t("fh.rule_d1")}</li>
           <li>{t("fh.rule_actual")}</li>
+          <li>{t("fh.rule_backup")}</li>
+          <li>{t("fh.rule_close")}</li>
           <li>{o.completion_signal_configured ? t("fh.signal_ok") : o.data_source === "BIGQUERY" ? t("fh.signal_missing") : t("fh.signal_none")}</li>
         </ul>
       </Card>

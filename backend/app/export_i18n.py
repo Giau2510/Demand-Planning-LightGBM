@@ -154,16 +154,29 @@ HISTORY = {
                  "forecast_compared": "Tổng forecast trên các dòng có thực tế",
                  "deviation": "Sai lệch Forecast - Thực tế (các dòng có thực tế)", "wape": "WAPE (các dòng có thực tế)",
                  "kpi_status": "Trạng thái số liệu thực tế", "rule_d1": "Quy tắc lưu forecast",
-                 "rule_actual": "Quy tắc thực tế", "rule_wape": "Cách tính"},
+                 "rule_actual": "Quy tắc thực tế", "rule_wape": "Cách tính", "source_filter": "Lọc nguồn forecast",
+                 "days_primary": "Số ngày dùng forecast chính", "days_backup": "Số ngày dùng snapshot dự phòng",
+                 "rule_backup": "Quy tắc snapshot dự phòng", "rule_close": "Quy tắc chốt thực tế 23:59"},
+        "rule_backup": ("Ngày chạy không có phiên forecast hợp lệ dùng snapshot cuối ngày (7 ngày kế tiếp) hoàn chỉnh mới nhất "
+                        "còn bao phủ ngày được dự báo; luôn ưu tiên forecast chính. Không có snapshot bao phủ = thiếu dữ "
+                        "liệu forecast (không điền 0, không tạo số mới)."),
+        "rule_close": ("Lúc 23:59 (giờ Việt Nam) thực tế của ngày được chốt thành một bản lưu riêng. Nguồn chưa có tín hiệu "
+                       "hoàn tất thì là 'Đã chốt - cần xác minh', không phải 'Đã hoàn tất'. Dữ liệu đến muộn tạo bản chốt "
+                       "bổ sung (revision) có số trước/sau; bản chốt cũ không bị sửa."),
+        "source": {"PRIMARY": "Forecast chính", "SNAPSHOT": "Snapshot dự phòng", "MISSING": "Thiếu dữ liệu forecast"},
         "rule_d1": ("Mỗi ngày chạy chỉ lưu forecast của ngày hôm sau (D+1) từ phiên forecast hợp lệ mới nhất của ngày đó "
                     "(phiên = một lần forecast đã publish thành công). Forecast đã lưu không bao giờ bị sửa."),
         "rule_actual": ("Thực tế đọc từ dữ liệu D-1 đã nạp (SKU x FC không có dòng trong ngày đã nạp = 0); trước khi D-1 nạp "
                         "ngày đó: số lũy kế của snapshot D0 mới nhất. 'Đã hoàn tất' chỉ khi D-1 nạp ngày đó theo tín hiệu "
-                        "hoàn tất của nguồn; còn lại là 'Tạm tính'. Ô trống = chưa có dữ liệu thực tế (không phải 0)."),
+                        "hoàn tất của nguồn; ngày đã chốt lúc 23:59 mà nguồn chưa xác nhận là 'Đã chốt - cần xác minh'; "
+                        "còn lại là 'Tạm tính'. Ô trống = chưa có dữ liệu thực tế (không phải 0)."),
         "rule_wape": ("Sai lệch = Forecast - Thực tế; WAPE = tổng |Forecast - Thực tế| / tổng Thực tế, chỉ trên các dòng đã "
                       "có thực tế; không tính khi tổng thực tế = 0. WAPE theo dòng = |F - T| / T khi T > 0."),
-        "status": {"COMPLETE": "Đã hoàn tất", "PROVISIONAL": "Tạm tính", "NO_ACTUAL": "Chưa có dữ liệu thực tế"},
+        "status": {"COMPLETE": "Đã hoàn tất", "CLOSED": "Đã chốt - cần xác minh", "PROVISIONAL": "Tạm tính",
+                   "NO_ACTUAL": "Chưa có dữ liệu thực tế"},
         "reason": {"COMPLETION_SIGNAL": "D-1 đã nạp theo tín hiệu hoàn tất của nguồn",
+                   "CLOSED_D0": "Đã chốt 23:59 theo snapshot D0 cuối ngày; nguồn chưa xác nhận đầy đủ",
+                   "CLOSED_D1": "Đã chốt; D-1 đã nạp nhưng nguồn chưa có tín hiệu hoàn tất",
                    "D1_NO_COMPLETION_SIGNAL": "D-1 đã nạp, nguồn chưa có tín hiệu hoàn tất",
                    "D0_INTRADAY": "Lũy kế trong ngày (snapshot D0)",
                    "D0_LAST_READ": "Snapshot D0 cuối của ngày, D-1 chưa nạp",
@@ -177,12 +190,16 @@ HISTORY = {
                           "n_rows": "Số dòng D+1", "usage_status": "Đánh giá sử dụng"},
         "cols_daily": {"run_date": "Ngày chạy forecast", "target_date": "Ngày được dự báo", "forecast": "Forecast",
                        "actual": "Thực tế", "deviation": "Sai lệch (F - T)", "wape": "WAPE",
-                       "forecast_run_id": "Mã phiên (run ID)", "status": "Trạng thái thực tế", "reason": "Chi tiết"},
+                       "forecast_run_id": "Mã phiên (run ID)", "status": "Trạng thái thực tế", "reason": "Chi tiết",
+                       "forecast_source": "Nguồn forecast", "snapshot_id": "Mã snapshot dự phòng",
+                       "snapshot_business_date": "Ngày nghiệp vụ của snapshot"},
         "cols_rows": {"run_date": "Ngày chạy forecast", "target_date": "Ngày được dự báo", "forecast_run_id": "Mã phiên (run ID)",
                       "model_version": "Phiên bản mô hình", "session_started_at": "Thời điểm phiên được chọn", "sku_id": "SKU",
                       "product_name": "Tên sản phẩm", "fc_id": "FC/kho", "forecast": "Forecast", "actual": "Thực tế",
                       "deviation": "Sai lệch (F - T)", "row_wape": "WAPE dòng", "status": "Trạng thái thực tế",
-                      "reason": "Chi tiết", "actual_as_of": "Thực tế tính đến"},
+                      "reason": "Chi tiết", "actual_as_of": "Thực tế tính đến", "forecast_source": "Nguồn forecast",
+                      "snapshot_id": "Mã snapshot dự phòng", "snapshot_business_date": "Ngày nghiệp vụ của snapshot",
+                      "snapshot_created_at": "Snapshot tạo lúc"},
         "no_history": "Chưa có lịch sử forecast được lưu cho ngày này",
         "yes": "Có", "no": "Không", "language_name": "Tiếng Việt", "no_product_name": "Chưa có tên sản phẩm",
         "date_fmt": "%d/%m/%Y", "excel_date_fmt": "DD/MM/YYYY", "time_suffix": "giờ Việt Nam, UTC+7",
@@ -199,16 +216,29 @@ HISTORY = {
                  "forecast_compared": "Forecast on the rows with an actual",
                  "deviation": "Deviation forecast - actual (rows with an actual)", "wape": "WAPE (rows with an actual)",
                  "kpi_status": "Actual figures status", "rule_d1": "Forecast storage rule", "rule_actual": "Actual rule",
-                 "rule_wape": "Formulas"},
+                 "rule_wape": "Formulas", "source_filter": "Forecast source filter",
+                 "days_primary": "Run dates using the official forecast", "days_backup": "Run dates using the backup snapshot",
+                 "rule_backup": "Backup snapshot rule", "rule_close": "23:59 actual close rule"},
+        "rule_backup": ("A run date without a valid forecast session uses the newest complete end-of-day snapshot (next 7 "
+                        "days) that still covers its forecast date; the official forecast always wins. No covering snapshot "
+                        "= forecast data missing (never 0, no new number is made)."),
+        "rule_close": ("At 23:59 (Vietnam time) the actual of the day is closed into a separate copy. Without a completion "
+                       "signal from the source it is 'Closed - needs verification', not 'Complete'. Late data adds a revision "
+                       "with before/after figures; an earlier close is never changed."),
+        "source": {"PRIMARY": "Official forecast", "SNAPSHOT": "Backup snapshot", "MISSING": "Forecast data missing"},
         "rule_d1": ("For each run date only the forecast of the next day (D+1) of the newest valid forecast session of that "
                     "day is kept (session = one successfully published forecast). A stored forecast is never changed."),
         "rule_actual": ("Actual comes from the loaded D-1 data (a SKU x FC without a row on a loaded day = 0); before D-1 has "
                         "loaded the day: the cumulative quantity of the latest D0 snapshot. 'Complete' only when D-1 loaded "
-                        "that day on the source's completion signal; otherwise 'Provisional'. Empty = no actual yet (not 0)."),
+                        "that day on the source's completion signal; a day closed at 23:59 without that confirmation is "
+                        "'Closed - needs verification'; otherwise 'Provisional'. Empty = no actual yet (not 0)."),
         "rule_wape": ("Deviation = forecast - actual; WAPE = sum |forecast - actual| / sum actual, only over the rows that "
                       "have an actual; not computed when that sum is 0. Row WAPE = |F - A| / A when A > 0."),
-        "status": {"COMPLETE": "Complete", "PROVISIONAL": "Provisional", "NO_ACTUAL": "No actual data yet"},
+        "status": {"COMPLETE": "Complete", "CLOSED": "Closed - needs verification", "PROVISIONAL": "Provisional",
+                   "NO_ACTUAL": "No actual data yet"},
         "reason": {"COMPLETION_SIGNAL": "D-1 loaded on the source's completion signal",
+                   "CLOSED_D0": "Closed at 23:59 from the last D0 snapshot; not confirmed complete by the source",
+                   "CLOSED_D1": "Closed; D-1 loaded without a completion signal from the source",
                    "D1_NO_COMPLETION_SIGNAL": "D-1 loaded, no completion signal from the source",
                    "D0_INTRADAY": "Cumulative so far today (D0 snapshot)",
                    "D0_LAST_READ": "Last D0 snapshot of the day, D-1 not loaded yet",
@@ -221,12 +251,16 @@ HISTORY = {
                           "captured_at": "Recorded at", "n_rows": "D+1 rows", "usage_status": "Usage assessment"},
         "cols_daily": {"run_date": "Forecast run date", "target_date": "Forecast date", "forecast": "Forecast",
                        "actual": "Actual", "deviation": "Deviation (F - A)", "wape": "WAPE",
-                       "forecast_run_id": "Session (run ID)", "status": "Actual status", "reason": "Detail"},
+                       "forecast_run_id": "Session (run ID)", "status": "Actual status", "reason": "Detail",
+                       "forecast_source": "Forecast source", "snapshot_id": "Backup snapshot ID",
+                       "snapshot_business_date": "Snapshot business date"},
         "cols_rows": {"run_date": "Forecast run date", "target_date": "Forecast date", "forecast_run_id": "Session (run ID)",
                       "model_version": "Model version", "session_started_at": "Selected session time", "sku_id": "SKU",
                       "product_name": "Product name", "fc_id": "FC/warehouse", "forecast": "Forecast", "actual": "Actual",
                       "deviation": "Deviation (F - A)", "row_wape": "Row WAPE", "status": "Actual status",
-                      "reason": "Detail", "actual_as_of": "Actual as of"},
+                      "reason": "Detail", "actual_as_of": "Actual as of", "forecast_source": "Forecast source",
+                      "snapshot_id": "Backup snapshot ID", "snapshot_business_date": "Snapshot business date",
+                      "snapshot_created_at": "Snapshot created at"},
         "no_history": "No stored forecast history for this day",
         "yes": "Yes", "no": "No", "language_name": "English", "no_product_name": "No product name yet",
         "date_fmt": "%d/%m/%Y", "excel_date_fmt": "DD/MM/YYYY", "time_suffix": "Vietnam time, UTC+7",

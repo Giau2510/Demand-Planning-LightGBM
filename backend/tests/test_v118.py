@@ -181,7 +181,8 @@ def test_restart_restores_the_saved_state(client, small_demo):
     client.put("/api/schedules/d0", json={"enabled": True, "times": ["09:00"]})
     fresh = Scheduler()                                       # a new process: nothing in memory
     assert fresh.status()["loaded"] is None
-    assert fresh.reload()["flows"] == {"d1": False, "d0": True, "train": True}
+    # 1.2.6: the end-of-day backup and the 23:59 close are flows too (ON by default)
+    assert fresh.reload()["flows"] == {"d1": False, "d0": True, "train": True, "eod": True, "close": True}
     now = datetime.now(VN_TZ).replace(hour=9, minute=1, second=0, microsecond=0)
     _freeze(now)
     ss.update("schedule", {"d0_enabled_at": None})             # switched on long ago

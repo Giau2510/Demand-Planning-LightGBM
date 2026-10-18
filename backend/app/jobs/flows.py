@@ -3,6 +3,8 @@
   d1     D-1 sync: closed Vietnam days (up to yesterday) from BigQuery          job D1_SYNC     schedule.d1_enabled
   d0     D-0 snapshot: today's partial day (DEMO synthetic or BigQuery)          job D0_SYNC     schedule.d0_enabled
   train  daily training on closed days (candidate / first publication)          job TRAIN_PUBLISH schedule.train_enabled
+  eod    1.2.6 end-of-day backup of the next 7 forecast days (local copy)       job EOD_FORECAST_SNAPSHOT schedule.eod_enabled
+  close  1.2.6 actual close of the day at 23:59 + late-data revisions (local)   job ACTUAL_CLOSE  schedule.close_enabled
 
 A flow can be switched ON only when it is READY for the active data source. Saving times never runs a job.
 On BIGQUERY the daily training follows TODAY's D-1: a D1_SYNC that succeeded today (scheduled, retried or run by hand,
@@ -23,12 +25,16 @@ from ..timeutil import VN_TZ, now_iso, now_vn, parse_iso, vn_slot
 
 FLOWS = {"d1": {"job_type": "D1_SYNC", "flag": "d1_enabled"},
          "d0": {"job_type": "D0_SYNC", "flag": "d0_enabled"},
-         "train": {"job_type": "TRAIN_PUBLISH", "flag": "train_enabled"}}
+         "train": {"job_type": "TRAIN_PUBLISH", "flag": "train_enabled"},
+         "eod": {"job_type": "EOD_FORECAST_SNAPSHOT", "flag": "eod_enabled"},
+         "close": {"job_type": "ACTUAL_CLOSE", "flag": "close_enabled"}}
 # editable fields per flow: API name -> schedule setting
 FIELDS = {"d1": {"time": "d1_signal_poll_start", "fallback_time": "d1_fallback_time",
                  "poll_interval_minutes": "d1_poll_interval_minutes"},
           "d0": {"times": "d0_times", "catchup_policy": "d0_catchup_policy"},
-          "train": {"time": "train_time", "catchup_policy": "train_catchup_policy"}}
+          "train": {"time": "train_time", "catchup_policy": "train_catchup_policy"},
+          "eod": {"time": "eod_time"},
+          "close": {"time": "close_time"}}
 TIMEZONE = "Asia/Ho_Chi_Minh"
 
 
@@ -123,6 +129,16 @@ def readiness(flow: str, conn=None) -> dict:
                 r0, n0 = d0_feed.readiness(c)
                 reasons += r0
                 notes += n0
+        elif flow in ("eod", "close"):
+            # local copies of the active scope's own data: they need a dataset, never a BigQuery connection
+            from ..data.demand import resolve_scope
+            if flow == "close" and src == "MANUAL_IMPORT":
+                reasons.append(_reason("CLOSE_SOURCE_MANUAL_IMPORT"))
+            else:
+                try:
+                    resolve_scope(c)
+                except AppError as e:
+                    reasons.append(_reason(e.code, e.detail))
         else:
             from ..data.demand import resolve_scope
             try:
@@ -202,7 +218,8 @@ def _active_valid(src) -> bool:
 
 
 def _times(flow: str, sched) -> list[str]:
-    return {"d1": [sched.d1_signal_poll_start], "d0": list(sched.d0_times), "train": [sched.train_time]}[flow]
+    return {"d1": [sched.d1_signal_poll_start], "d0": list(sched.d0_times), "train": [sched.train_time],
+            "eod": [sched.eod_time], "close": [sched.close_time]}[flow]
 
 
 def next_runs(times: list[str], now: datetime, n: int) -> list[str]:
@@ -227,7 +244,9 @@ def _job_rows(c, job_type: str, limit: int) -> list[dict]:
         res = (json.loads(r.pop("result_json") or "{}") or {}).get("result") or {}
         r["summary"] = {k: res[k] for k in ("rows_read", "rows_valid", "series", "series_days_written",
                                             "series_days_new", "series_days_updated", "window_start", "window_end",
-                                            "snapshot_id", "verdict", "forecast_run_id", "training_run_id")
+                                            "snapshot_id", "verdict", "forecast_run_id", "training_run_id",
+                                            "business_date", "snapshot_status", "days_covered", "rows", "close_status",
+                                            "revision")
                         if k in res}
         r["result_status"] = res.get("status")     # e.g. a training job that SUCCEEDED as a job but REJECTED/FAILED the model
         r["error"] = (r["error"] or "")[:300] or None

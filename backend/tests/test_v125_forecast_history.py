@@ -480,7 +480,9 @@ def test_migration_0004_on_a_v3_database_keeps_every_row_and_records_old_runs(tm
         _run("2026-10-18 09:00")
         before = {t: _count(t) for t in ("training_runs", "forecast_runs", "forecast_values", "job_runs")}
         res = db.migrate(target)
-        assert res["from"] == 3 and res["to"] == 4 and res["applied"] == ["0004_forecast_history.sql"]
+        # 1.2.6 adds 0005 (additive): a v3 database now goes through 0004 first, then every later migration
+        assert res["from"] == 3 and res["applied"][0] == "0004_forecast_history.sql"
+        assert res["to"] == db.available_migrations()[-1][0] and len(res["applied"]) == res["to"] - 3
         assert {t: _count(t) for t in before} == before
         assert fh.reconcile()["recorded"][0]["decision"] == "SELECTED"
         assert data_checks.run(target)["status"] in ("OK", "WARN")

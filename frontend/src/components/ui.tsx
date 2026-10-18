@@ -215,6 +215,7 @@ const TONE: Record<string, string> = {
   USABLE: "ok", USABLE_WITH_WARNING: "warn", NOT_USABLE: "bad", PASS: "ok", BELOW_THRESHOLD: "warn",
   NOT_EVALUATED: "muted", LOW: "warn", NORMAL: "ok",
   COMPLETE: "ok", PROVISIONAL: "warn", NO_ACTUAL: "muted",          // 1.2.5 actual status (forecast history)
+  CLOSED: "info", SNAPSHOT: "info",                                 // 1.2.6 closed at 23:59 / backup forecast
 };
 
 export function Pill({ status, label }: { status: string; label?: string }) {
@@ -533,13 +534,14 @@ export function LineChart({ points, height = 240, label, actual, forecastLegend 
   );
 }
 
-export interface ComparePoint { x: string; forecast: number | null; actual: number | null; provisional?: boolean; tip: string[] }
+export interface ComparePoint { x: string; forecast: number | null; actual: number | null; provisional?: boolean; backup?: boolean; tip: string[] }
 
 /** 1.2.5: stored forecast (blue line + dots) against actual (orange squares) per date. A missing value stays a gap -
  *  nothing is interpolated or invented to join the line. A provisional actual is a hollow square on a dashed segment,
- *  a complete one a filled square; the tooltip says which. Same pixel / label rules as LineChart. */
+ *  a complete one a filled square; the tooltip says which. 1.2.6: a forecast taken from the end-of-day backup is a
+ *  tinted dot on a dashed segment. Same pixel / label rules as LineChart. */
 export function CompareChart({ points, height = 260, label, legend }: {
-  points: ComparePoint[]; height?: number; label?: string; legend: { forecast: string; actual: string; provisional: string };
+  points: ComparePoint[]; height?: number; label?: string; legend: { forecast: string; actual: string; provisional: string; backup?: string };
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const box = useRef<HTMLDivElement>(null);
@@ -563,19 +565,21 @@ export function CompareChart({ points, height = 260, label, legend }: {
   const showLabel = (i: number) => i === n - 1 || (i % step === 0 && n - 1 - i >= step);
   const anchor = (i: number) => (n > 1 && i === n - 1 ? "end" : n > 1 && i === 0 ? "start" : "middle");
   // only consecutive known values are joined: a gap in the data is a gap in the line
-  const segs = (get: (p: ComparePoint) => number | null) => points.slice(1).map((p, k) => {
+  const segs = (get: (p: ComparePoint) => number | null, flag: (p: ComparePoint) => boolean | undefined) => points.slice(1).map((p, k) => {
     const a = get(points[k]), b = get(p);
     return a === null || a === undefined || b === null || b === undefined ? null
-      : { i: k + 1, d: `M${x(k).toFixed(1)},${y(a).toFixed(1)} L${x(k + 1).toFixed(1)},${y(b).toFixed(1)}`, prov: !!(points[k].provisional || p.provisional) };
+      : { i: k + 1, d: `M${x(k).toFixed(1)},${y(a).toFixed(1)} L${x(k + 1).toFixed(1)},${y(b).toFixed(1)}`, prov: !!(flag(points[k]) || flag(p)) };
   }).filter(Boolean) as { i: number; d: string; prov: boolean }[];
   const tip = hover === null ? [] : points[hover].tip;
   const tipW = Math.max(0, ...tip.map((s) => s.length)) * 7 + 16;
   const tipX = hover === null ? 0 : x(hover) + 12 + tipW > W - P.r ? x(hover) - 12 - tipW : x(hover) + 12;
   const anyProv = points.some((p) => p.actual !== null && p.provisional);
+  const anyBackup = points.some((p) => p.forecast !== null && p.backup);
   return (
     <div className="chart" ref={box} data-testid="compare-chart">
       <div className="legend small">
         <span><i className="lg-line" /> {legend.forecast}</span>
+        {anyBackup && legend.backup && <span><i className="lg-line bk" /> {legend.backup}</span>}
         <span><i className="lg-actual" /> {legend.actual}</span>
         {anyProv && <span><i className="lg-actual prov" /> {legend.provisional}</span>}
       </div>
@@ -590,10 +594,11 @@ export function CompareChart({ points, height = 260, label, legend }: {
           <text key={p.x} x={x(i)} y={H - 8} textAnchor={anchor(i)} className="axis">{fmtDate(p.x)}</text>
         ))}
         {hover !== null && <line x1={x(hover)} x2={x(hover)} y1={P.t} y2={H - P.b} className="guide" />}
-        {segs((p) => p.forecast).map((s) => <path key={`f${s.i}`} d={s.d} className="line" />)}
-        {segs((p) => p.actual).map((s) => <path key={`a${s.i}`} d={s.d} className={s.prov ? "actual-line prov" : "actual-line"} />)}
+        {segs((p) => p.forecast, (p) => p.backup).map((s) => <path key={`f${s.i}`} d={s.d} className={s.prov ? "line bk" : "line"} />)}
+        {segs((p) => p.actual, (p) => p.provisional).map((s) => <path key={`a${s.i}`} d={s.d} className={s.prov ? "actual-line prov" : "actual-line"} />)}
         {points.map((p, i) => p.forecast !== null && (
-          <circle key={`fp${p.x}`} cx={x(i)} cy={y(p.forecast)} r={3} className="pt" data-testid="cmp-forecast-pt" />
+          <circle key={`fp${p.x}`} cx={x(i)} cy={y(p.forecast)} r={3} className={p.backup ? "pt bk" : "pt"} data-testid="cmp-forecast-pt"
+            data-source={p.backup ? "backup" : "primary"} />
         ))}
         {points.map((p, i) => p.actual !== null && (
           <rect key={`ap${p.x}`} x={x(i) - 5} y={y(p.actual) - 5} width={10} height={10} rx={2}

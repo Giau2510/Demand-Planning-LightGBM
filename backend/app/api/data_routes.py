@@ -53,7 +53,8 @@ def put_settings(section: str, body: dict):
     return ss.save(section, body, note="updated via UI").model_dump()
 
 
-SCHEDULE_SWITCHES = ("d1_enabled", "d0_enabled", "train_enabled", "d1_enabled_at", "d0_enabled_at", "train_enabled_at")
+SCHEDULE_SWITCHES = ("d1_enabled", "d0_enabled", "train_enabled", "d1_enabled_at", "d0_enabled_at", "train_enabled_at",
+                     "eod_enabled", "close_enabled", "eod_enabled_at", "close_enabled_at")
 
 
 @router.post("/settings/{section}/reset")

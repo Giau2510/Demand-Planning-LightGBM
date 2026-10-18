@@ -360,6 +360,11 @@ details > summary { cursor: pointer; color: var(--text-strong); font-weight: 600
 .fh-tbl th.num { min-width: 64px; }
 .fh-tbl th.w-time { min-width: 84px; }
 .chart .lg-actual.prov { background: var(--panel); border: 2px solid var(--actual); box-sizing: border-box; }
+/* 1.2.6 forecast taken from the end-of-day backup snapshot: dashed segment, tinted dot */
+.chart .line.bk { stroke-dasharray: 6 4; }
+.chart .pt.bk { fill: var(--forecast); fill-opacity: .35; }
+.chart .lg-line.bk { background: repeating-linear-gradient(90deg, var(--forecast) 0 5px, transparent 5px 8px); }
+.fh-tbl td.src-cell { white-space: nowrap; }
 .bars { display: flex; flex-direction: column; gap: 6px; }
 .bar-row { display: grid; grid-template-columns: minmax(120px, 220px) 1fr 84px; gap: 10px; align-items: center; font-size: var(--fs-sm); }
 .bar-l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

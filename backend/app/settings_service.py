@@ -182,8 +182,17 @@ class ScheduleSettings(BaseModel):
     retry_max_seconds: int = Field(1800, ge=1, le=86400)
     timeout_seconds: int = Field(3600, ge=30, le=6 * 3600)
     max_catchup_jobs_per_tick: int = Field(1, ge=1, le=10)
+    # 1.2.6: end-of-day forecast backup (next 7 days) and actual close of the day. Local copies only (no BigQuery read,
+    # no training, no forecast). ON by default; slots before this version first ran are never caught up
+    # (sync_state 'flows_first_seen'); a missed slot of yesterday is caught up once.
+    eod_enabled: bool = True
+    close_enabled: bool = True
+    eod_enabled_at: str | None = None
+    close_enabled_at: str | None = None
+    eod_time: str = "23:55"
+    close_time: str = "23:59"
 
-    @field_validator("d1_signal_poll_start", "d1_fallback_time", "train_time")
+    @field_validator("d1_signal_poll_start", "d1_fallback_time", "train_time", "eod_time", "close_time")
     @classmethod
     def _hhmm(cls, v):
         if not HHMM.match(v):
@@ -213,6 +222,15 @@ class ScheduleSettings(BaseModel):
     def _d0_needs_times(self):
         if self.d0_enabled and not self.d0_times:
             raise ValueError("D-0 is enabled but has no time")
+        return self
+
+    @model_validator(mode="after")
+    def _day_end_times(self):
+        # 1.2.6: the backup snapshot and the close stand for the END of their business day; an earlier time would
+        # snapshot / close a day that is still running (and both records are immutable once complete)
+        for f in ("eod_time", "close_time"):
+            if getattr(self, f) < "20:00":
+                raise ValueError(f"{f} must be between 20:00 and 23:59 (end of the business day, Vietnam time)")
         return self
 
 

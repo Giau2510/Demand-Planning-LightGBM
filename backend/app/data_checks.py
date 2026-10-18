@@ -144,6 +144,35 @@ def _run(c, db_path: Path, models_dir: Path | None) -> dict:
             "app start or 'app.cli history-reconcile')",
             _q(c, "SELECT r.id, r.created_at FROM forecast_runs r LEFT JOIN forecast_history_sessions s "
                   "ON s.forecast_run_id = r.id WHERE s.forecast_run_id IS NULL"), fail=False))
+    has_eod = bool(_q(c, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='forecast_eod_snapshots'"))
+    if has_eod:         # 1.2.6 (migration 0005): end-of-day forecast backup + actual close
+        out.append(_check(
+            "eod_snapshot_complete",
+            "a COMPLETE end-of-day snapshot covers every day with n_days x source series rows (values counted for the "
+            "last 14 business days); any other snapshot holds no value",
+            _q(c, "SELECT s.id, s.status, s.n_rows FROM forecast_eod_snapshots s WHERE s.status = 'COMPLETE' AND "
+                  "(s.n_rows != s.n_days * s.source_n_series OR s.days_covered != s.n_days)")
+            + _q(c, "SELECT s.id, s.status, s.n_rows, (SELECT COUNT(*) FROM forecast_eod_snapshot_values v "
+                    "WHERE v.snapshot_id = s.id) AS n FROM forecast_eod_snapshots s "
+                    "WHERE s.business_date >= date('now', '-14 days') AND s.status = 'COMPLETE' AND n != s.n_rows")
+            + _q(c, "SELECT s.id, s.status FROM forecast_eod_snapshots s WHERE s.status != 'COMPLETE' "
+                    "AND EXISTS (SELECT 1 FROM forecast_eod_snapshot_values v WHERE v.snapshot_id = s.id)")))
+        out.append(_check(
+            "eod_snapshot_values_match_source",
+            "every value of the snapshots of the last 14 business days equals the published forecast value of its "
+            "source run (same SKU, FC, date, quantity, method)",
+            _q(c, "SELECT s.id, COUNT(*) FROM forecast_eod_snapshots s JOIN forecast_eod_snapshot_values v "
+                  "ON v.snapshot_id = s.id LEFT JOIN forecast_values f ON f.run_id = s.source_run_id "
+                  "AND f.sku_id = v.sku_id AND f.fc_id = v.fc_id AND f.target_date = v.target_date "
+                  "WHERE s.business_date >= date('now', '-14 days') AND (f.run_id IS NULL OR ABS(f.yhat - v.yhat) > 1e-9 "
+                  "OR f.method != v.method) GROUP BY s.id")))
+        out.append(_check(
+            "actual_close_revisions",
+            "per scope and day the close revisions are 1..n without gap and each holds its n_rows values",
+            _q(c, "SELECT scope_key, business_date, MIN(revision), MAX(revision), COUNT(*) FROM actual_closes "
+                  "GROUP BY scope_key, business_date HAVING MIN(revision) != 1 OR MAX(revision) != COUNT(*)")
+            + _q(c, "SELECT a.id, a.n_rows, (SELECT COUNT(*) FROM actual_close_values v WHERE v.close_id = a.id) AS n "
+                    "FROM actual_closes a WHERE n != a.n_rows")))
     model_bad = []
     if models_dir is not None:
         for rid, mv, mp, sha in _q(c, "SELECT id, model_version, model_path, model_sha256 FROM training_runs "
@@ -175,6 +204,8 @@ def _run(c, db_path: Path, models_dir: Path | None) -> dict:
     counts = {t: c.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0] for t in
               ("import_batches", "order_lines", "demand_daily", "training_runs", "forecast_runs", "forecast_values",
                "d0_snapshots", "job_runs") + (("forecast_history_sessions", "forecast_history_values",
-                                                "forecast_history_days") if has_history else ())}
+                                                "forecast_history_days") if has_history else ())
+              + (("forecast_eod_snapshots", "forecast_eod_snapshot_values", "actual_closes", "actual_close_values")
+                 if has_eod else ())}
     return {"db": str(db_path), "schema_version": ver, "checked_at": now.isoformat(timespec="seconds"),
             "status": status, "row_counts": counts, "checks": out}

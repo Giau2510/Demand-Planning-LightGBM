@@ -1,7 +1,8 @@
 """Forecast & actual history (1.2.5): read-only views of the stored D+1 forecasts (see forecast_history.py).
 
 GET only. Opening the page never starts a job, a training or a forecast and never writes: the history is recorded
-when a forecast is published, the actual is read from the D-1 / D0 data at request time."""
+when a forecast is published, the actual is read from the D-1 / D0 data at request time. 1.2.6: fields are only added
+(forecast source / backup snapshot per day and row, the 23:59 close of the actual, filter `forecast_source`)."""
 from __future__ import annotations
 
 from fastapi import APIRouter
@@ -42,45 +43,50 @@ def overview(scope_key: str | None = None):
     with db.read() as c:
         sk, src, scopes, active = _scope(c, scope_key)
         dl = fh.days(c, sk) if sk else []
+        backup = fh.fallback_days(c, sk) if dl else []
         fcs = fh.Query(c, sk).fcs() if dl else []
         bq = ss.get("bigquery", c)
         today = str(fh.today_vn())
     return {"scope_key": sk, "data_source": src, "active_scope_key": (active or {}).get("scope_key"),
             "active_data_source": (active or {}).get("data_source"),
             "scopes": [{**s, "active": s["scope_key"] == (active or {}).get("scope_key")} for s in scopes],
-            "days": dl, "fcs": fcs, "today": today,
+            "days": dl, "backup_days": backup, "fcs": fcs, "today": today,
             "today_session": next((d for d in dl if d["run_date"] == today), None),
+            "today_backup": next((d for d in backup if d["run_date"] == today), None),
             "completion_signal_configured": bool(bq.completion_table and bq.completion_date_column)
             if src == "BIGQUERY" else False}
 
 
-def _query(c, scope_key, run_from, run_to, fc_id, q, actual_status):
+def _query(c, scope_key, run_from, run_to, fc_id, q, actual_status, forecast_source=None):
     sk, _src, _s, _a = _scope(c, scope_key)
-    return fh.Query(c, sk, run_from, run_to, fc_id, q, actual_status) if sk else None
+    return fh.Query(c, sk, run_from, run_to, fc_id, q, actual_status, forecast_source=forecast_source) if sk else None
 
 
 @router.get("/summary")
 def summary(scope_key: str | None = None, run_from: str | None = None, run_to: str | None = None,
-            fc_id: str | None = None, q: str | None = None, actual_status: str | None = None):
-    """KPI, one chart point per run date of the range (gaps stay gaps) and the sessions of those run dates."""
+            fc_id: str | None = None, q: str | None = None, actual_status: str | None = None,
+            forecast_source: str | None = None):
+    """KPI, one chart point per run date of the range (gaps stay gaps), the sessions of those run dates and the
+    end-of-day backups used for run dates without a session of their own."""
     with db.read() as c:
-        qy = _query(c, scope_key, run_from, run_to, fc_id, q, actual_status)
+        qy = _query(c, scope_key, run_from, run_to, fc_id, q, actual_status, forecast_source)
         if qy is None:
-            return {"scope_key": None, "kpi": None, "daily": [], "sessions": [], "actual_context": [], "filters": {}}
+            return {"scope_key": None, "kpi": None, "daily": [], "sessions": [], "backup_days": [],
+                    "actual_context": [], "filters": {}}
         daily = qy.daily()
         return {"scope_key": qy.scope_key, "data_source": qy.data_source, "filters": qy.filters, "today": str(qy.today),
                 "kpi": qy.kpi(daily), "daily": daily, "sessions": fh.sessions(c, qy.scope_key, qy.run_from, qy.run_to),
-                "actual_context": list(qy.ctx.values()),
+                "backup_days": qy.backup_in_range, "actual_context": list(qy.ctx.values()),
                 "matching_skus": len(qy.skus) if qy.skus is not None else None}
 
 
 @router.get("/rows")
 def rows(scope_key: str | None = None, run_from: str | None = None, run_to: str | None = None,
          fc_id: str | None = None, q: str | None = None, actual_status: str | None = None, sort: str = "date",
-         limit: int = 100, offset: int = 0):
+         limit: int = 100, offset: int = 0, forecast_source: str | None = None):
     """SKU x FC detail of the same filter, one page (limit <= 1000)."""
     with db.read() as c:
-        qy = _query(c, scope_key, run_from, run_to, fc_id, q, actual_status)
+        qy = _query(c, scope_key, run_from, run_to, fc_id, q, actual_status, forecast_source)
         if qy is None:
             return {"total": 0, "rows": [], "filters": {}}
         return {"total": qy.count(), "rows": list(qy.rows(sort, max(1, min(int(limit), 1000)), max(0, int(offset)))),
@@ -90,12 +96,12 @@ def rows(scope_key: str | None = None, run_from: str | None = None, run_to: str 
 @router.get("/export.xlsx")
 def export(scope_key: str | None = None, run_from: str | None = None, run_to: str | None = None,
            fc_id: str | None = None, q: str | None = None, actual_status: str | None = None, sort: str = "date",
-           lang: str = "vi"):
+           lang: str = "vi", forecast_source: str | None = None):
     """Excel of ALL rows of the current filter (Info, sessions, per day, SKU x FC detail) in the UI language."""
     from ..export_i18n import history_labels
     lang, L = history_labels(lang)
     with db.read() as c:
-        qy = _query(c, scope_key, run_from, run_to, fc_id, q, actual_status)
+        qy = _query(c, scope_key, run_from, run_to, fc_id, q, actual_status, forecast_source)
         if qy is None:
             raise AppError("NO_ACTIVE_DATASET", 409)
         content = fh.export_xlsx(qy, L, sort)

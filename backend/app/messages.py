@@ -103,6 +103,38 @@ CATALOG: dict[str, tuple[str, str]] = {
                                  "FC hoặc SKU rồi xuất lại — file không bao giờ bị cắt bớt.",
                                  "The current filter has too many rows for one Excel file (at most 1,000,000). Narrow the dates, FC or "
                                  "SKU and export again — the file is never truncated."),
+    # --- 1.2.6 end-of-day forecast backup and actual close
+    "EOD_SNAPSHOT_INCOMPLETE": ("Snapshot forecast cuối ngày KHÔNG đầy đủ: phiên forecast hợp lệ mới nhất không bao phủ đủ 7 ngày "
+                                "kế tiếp cho mọi SKU × FC. Không lưu giá trị nào và snapshot này không được dùng làm dự phòng.",
+                                "The end-of-day forecast snapshot is NOT complete: the newest valid forecast session does not cover "
+                                "the next 7 days for every SKU × FC. No value was stored and this snapshot is never used as backup."),
+    "EOD_NO_VALID_FORECAST": ("Không có phiên forecast hợp lệ nào cho bộ dữ liệu đang dùng — không tạo snapshot forecast cuối ngày "
+                              "(không dùng dữ liệu demo, không điền 0).",
+                              "There is no valid forecast session for the active dataset — no end-of-day forecast snapshot was "
+                              "made (no demo data, no zeros)."),
+    "EOD_SNAPSHOT_VERIFY_FAILED": ("Bản sao snapshot cuối ngày không khớp forecast nguồn (số dòng hoặc tổng) — không lưu gì; job sẽ thử lại.",
+                                   "The end-of-day snapshot copy does not match its source forecast (rows or total) — nothing was "
+                                   "stored; the job retries."),
+    "ACTUAL_CLOSE_NO_DATA": ("Chốt thực tế 23:59: ngày này chưa có dữ liệu thực tế (không có D-1 và không có snapshot D0) — đã ghi "
+                             "nhận 'không có dữ liệu', không coi là 0.",
+                             "23:59 actual close: this day has no actual data (no D-1 load and no D0 snapshot) — recorded as "
+                             "'no data', never as 0."),
+    "ACTUAL_CLOSE_TOO_EARLY": ("Chưa tới giờ chốt thực tế của ngày này (giờ Việt Nam).",
+                               "The actual of this day cannot be closed before its close time (Vietnam time)."),
+    "CLOSE_SOURCE_MANUAL_IMPORT": ("Nguồn MANUAL_IMPORT là lịch sử tĩnh từ file Excel — không có ngày đang diễn ra để chốt thực tế.",
+                                   "MANUAL_IMPORT is static history from an Excel file — there is no running day to close."),
+    "EOD_SCHEDULE_DISABLED": ("Lịch snapshot forecast cuối ngày đang TẮT — lần chạy theo lịch được ghi là bỏ qua.",
+                              "The end-of-day forecast snapshot schedule is OFF — the scheduled run is recorded as skipped."),
+    "CLOSE_SCHEDULE_DISABLED": ("Lịch chốt thực tế 23:59 đang TẮT — lần chạy theo lịch được ghi là bỏ qua.",
+                                "The 23:59 actual close schedule is OFF — the scheduled run is recorded as skipped."),
+    "WAITING_FOR_FORECAST_JOB": ("Đang chờ job huấn luyện / forecast đang chạy kết thúc trước khi lấy snapshot cuối ngày.",
+                                 "Waiting for the running training / forecast job to finish before the end-of-day snapshot."),
+    "WAITING_FOR_D0_JOB": ("Đang chờ lần đọc D-0 đang chạy kết thúc trước khi chốt thực tế.",
+                           "Waiting for the running D-0 read to finish before closing the actual."),
+    "ALREADY_COMPLETE": ("Snapshot của ngày này đã hoàn chỉnh từ trước — giữ nguyên, không ghi lại.",
+                         "The snapshot of this day was already complete — kept as is, nothing rewritten."),
+    "ALREADY_CLOSED": ("Ngày này đã được chốt — bản chốt giữ nguyên; chỉ đối soát dữ liệu đến muộn.",
+                       "This day was already closed — the close is kept; only late data is reconciled."),
     "PROMOTION_REVIEW_REQUIRED": ("Model mới dùng được nhưng KHÔNG tự thay model đang dùng (chưa có tiêu chí thay model được phê duyệt). Xem so sánh trên cùng các fold ở trang Hiệu năng model và bấm 'Dùng model này' nếu đồng ý.",
                                   "The new model is usable but does NOT replace the model in use automatically (no approved promotion rule). Review the same-fold comparison on the Model performance page and click 'Use this model' to accept it."),
     "CANDIDATE_READY_FOR_REVIEW": ("Có model mới chờ duyệt — forecast đang publish vẫn từ model đang dùng.",
@@ -321,7 +353,7 @@ def category(code: str) -> str:
     if code in ("NO_ACTIVE_DATASET", "ACTIVE_DATASET_INCONSISTENT", "SOURCE_NOT_READY", "SCHEDULER_DISABLED",
                 "FLOW_NOT_READY", "D0_SCHEDULE_DISABLED", "D1_SCHEDULE_DISABLED", "TRAIN_SCHEDULE_DISABLED",
                 "SCHEDULE_SWITCH_VIA_FLOW_API", "SCHEDULER_NOT_RUNNING", "D0_MAPPING_INCOMPLETE", "D0_REVALIDATE_REQUIRED",
-                "TRAIN_WAITS_FOR_D1"):
+                "TRAIN_WAITS_FOR_D1", "EOD_SCHEDULE_DISABLED", "CLOSE_SCHEDULE_DISABLED", "CLOSE_SOURCE_MANUAL_IMPORT"):
         return "CONFIG"
     if code in ("INTERNAL_ERROR",):
         return "INTERNAL"

@@ -17,7 +17,11 @@ that day. Rules confirmed by the owner; full description in docs/LICH-SU-FORECAS
                else the latest successful D0 snapshot of that day (cumulative so far);
                else none ("no actual data yet") - never 0.
              COMPLETE only when the D-1 load of that day ran on the configured completion signal (bigquery.completion_table);
-             every other actual is PROVISIONAL.
+             1.2.6: a day closed at 23:59 (actual_close.py) without that signal is CLOSED ("closed - needs
+             verification"); every other actual is PROVISIONAL. The figure always comes from the source above.
+  backup     1.2.6: a run date WITHOUT an official session shows the D+1 of the newest COMPLETE end-of-day snapshot that
+             covers it (forecast_backup.py, fallback_days), labelled SNAPSHOT with its snapshot and source run; an
+             official session always wins. No snapshot covering it -> no forecast for that day (a gap, never 0).
 Recording runs right after a run is published, outside its transaction (a history failure can never undo a forecast),
 and is retried idempotently from the immutable runs at the next publish, at app start and by
 `python -m app.cli history-reconcile`. Showing the history only reads.
@@ -36,8 +40,10 @@ from .timeutil import VN_TZ, now_iso, parse_iso, today_vn
 log = logging.getLogger("df.history")
 
 SELECTED, OLDER, NOT_ELIGIBLE = "SELECTED", "OLDER_THAN_SELECTED", "NOT_ELIGIBLE"
-COMPLETE, PROVISIONAL, NO_ACTUAL = "COMPLETE", "PROVISIONAL", "NO_ACTUAL"
-ACTUAL_STATUSES = (COMPLETE, PROVISIONAL, NO_ACTUAL)
+COMPLETE, CLOSED, PROVISIONAL, NO_ACTUAL = "COMPLETE", "CLOSED", "PROVISIONAL", "NO_ACTUAL"
+ACTUAL_STATUSES = (COMPLETE, CLOSED, PROVISIONAL, NO_ACTUAL)
+PRIMARY, SNAPSHOT = "PRIMARY", "SNAPSHOT"          # 1.2.6 forecast source of a run date: official session / EOD backup
+FORECAST_SOURCES = (PRIMARY, SNAPSHOT)
 SORTS = {
     "date": "b.run_date DESC, b.yhat DESC, b.sku_id, b.fc_id",
     "abs_error": "ABS(b.yhat - b.actual) DESC NULLS LAST, b.run_date DESC, b.sku_id, b.fc_id",
@@ -197,6 +203,33 @@ def sessions(c, scope_key: str, run_from: str, run_to: str) -> list[dict]:
                    (scope_key, run_from, run_to))
 
 
+def fallback_days(c, scope_key: str, today: date | None = None) -> list[dict]:
+    """1.2.6: run dates (up to today) WITHOUT an official session whose D+1 is covered by a COMPLETE end-of-day snapshot -
+    the newest one, i.e. the largest business date <= the run date that still covers run date + 1 (a snapshot of day S
+    covers S+1 .. S+7). Newest first. Reading only; an INCOMPLETE / NO_SOURCE snapshot is never used."""
+    today = today or today_vn()
+    snaps = db.rows(c, "SELECT id, business_date, last_target_date, created_at, source_run_id, source_run_date, "
+                       "source_session_started_at, source_published_at, source_model_version FROM forecast_eod_snapshots "
+                       "WHERE scope_key=? AND status='COMPLETE' ORDER BY business_date DESC", (scope_key,))
+    if not snaps:
+        return []
+    primary = {r[0] for r in c.execute("SELECT run_date FROM forecast_history_days WHERE scope_key=?", (scope_key,))}
+    out = []
+    d = min(today, date.fromisoformat(snaps[0]["last_target_date"]) - timedelta(days=1))
+    first = date.fromisoformat(snaps[-1]["business_date"])
+    while d >= first:
+        run_date, target = str(d), str(d + timedelta(days=1))
+        s = next((x for x in snaps if x["business_date"] <= run_date), None)       # newest snapshot taken by that day
+        if run_date not in primary and s and s["last_target_date"] >= target:
+            out.append({"run_date": run_date, "target_date": target, "snapshot_id": s["id"],
+                        "snapshot_business_date": s["business_date"], "snapshot_created_at": s["created_at"],
+                        "forecast_run_id": s["source_run_id"], "source_run_date": s["source_run_date"],
+                        "session_started_at": s["source_session_started_at"], "published_at": s["source_published_at"],
+                        "model_version": s["source_model_version"]})
+        d -= timedelta(days=1)
+    return out
+
+
 def _d1_state(c, scope_key: str) -> dict | None:
     r = db.one(c, "SELECT value_json FROM sync_state WHERE name=?", (f"last_d1_sync:{scope_key}",))
     return json.loads(r["value_json"]) if r else None
@@ -216,11 +249,39 @@ def signal_days(c, scope_key: str) -> set[str]:
     return out
 
 
-def actual_context(c, scope_key: str, data_source: str, dates: list[str], today: date | None = None) -> dict[str, dict]:
-    """Per target date: where its actual comes from and how final it is (see the module docstring)."""
+def actual_context(c, scope_key: str, data_source: str, dates: list[str], today: date | None = None,
+                   closes: bool = True) -> dict[str, dict]:
+    """Per target date: where its actual comes from and how final it is (see the module docstring). closes=False: the
+    source rule alone (used by the close itself)."""
     today = today or today_vn()
     if not dates:
         return {}
+    out = _source_context(c, scope_key, data_source, dates, today)
+    if closes:
+        _close_overlay(c, scope_key, out)
+    return out
+
+
+def _close_overlay(c, scope_key: str, out: dict[str, dict]) -> None:
+    """1.2.6: the latest close revision of each day (actual_closes). A closed day that the completion signal has not
+    confirmed is CLOSED instead of PROVISIONAL; COMPLETE and NO_ACTUAL stay as they are. `close.current` is False when
+    the figure shown now comes from another source (or another D0 read) than the latest revision - a change that the
+    next reconciliation (after each D-1 load and in each close job) records as a new revision."""
+    for x in out.values():
+        x["close"] = None
+    days = list(out)
+    for r in db.rows(c, "SELECT a.* FROM actual_closes a WHERE a.scope_key=? AND a.business_date IN "
+                        f"({','.join('?' * len(days))}) AND a.revision = (SELECT MAX(b.revision) FROM actual_closes b "
+                        "WHERE b.scope_key = a.scope_key AND b.business_date = a.business_date)", (scope_key, *days)):
+        x = out[r["business_date"]]
+        x["close"] = {"id": r["id"], "revision": r["revision"], "status": r["status"], "closed_at": r["closed_at"],
+                      "cutoff_at": r["cutoff_at"], "source": r["source"], "total_qty": r["total_qty"],
+                      "current": r["source"] == x["source"] and (x["source"] != "D0" or r["source_ref"] == x["snapshot_id"])}
+        if x["status"] == PROVISIONAL:
+            x["status"], x["reason"] = CLOSED, f"CLOSED_{x['source']}"
+
+
+def _source_context(c, scope_key: str, data_source: str, dates: list[str], today: date) -> dict[str, dict]:
     st = _d1_state(c, scope_key) if data_source == "BIGQUERY" else None
     loaded_through = (st or {}).get("watermark") or c.execute(
         "SELECT MAX(order_date) FROM demand_daily WHERE scope_key=?", (scope_key,)).fetchone()[0]
@@ -251,7 +312,8 @@ def actual_context(c, scope_key: str, data_source: str, dates: list[str], today:
 
 
 def _range(run_from: str | None, run_to: str | None, dlist: list[dict]) -> tuple[str, str]:
-    """Run-date range of a request; default = the last 30 days ending at the newest run date with history."""
+    """Run-date range of a request; default = the last 30 days ending at the newest run date with a stored forecast
+    (official session or, 1.2.6, end-of-day backup)."""
     last = dlist[0]["run_date"] if dlist else str(today_vn())
     try:
         end = date.fromisoformat(run_to or last)
@@ -270,23 +332,32 @@ class Query:
 
     def __init__(self, c, scope_key: str, run_from: str | None = None, run_to: str | None = None,
                  fc_id: str | None = None, q: str | None = None, actual_status: str | None = None,
-                 today: date | None = None):
+                 today: date | None = None, forecast_source: str | None = None):
         self.c = c
         self.today = today or today_vn()
         sc = next((s for s in scopes(c) if s["scope_key"] == scope_key), None)
         self.scope_key = scope_key
         self.data_source = sc["data_source"] if sc else None
         self.days = days(c, scope_key) if sc else []
-        self.run_from, self.run_to = _range(run_from, run_to, self.days)
+        self.backup = fallback_days(c, scope_key, self.today) if sc else []
+        self.run_from, self.run_to = _range(run_from, run_to, sorted(self.days + self.backup,
+                                                                     key=lambda d: d["run_date"], reverse=True))
         statuses = [s for s in (actual_status or "").split(",") if s]
         if any(s not in ACTUAL_STATUSES for s in statuses):
             raise AppError("VALIDATION_ERROR", 422, detail=f"actual_status must be one of {', '.join(ACTUAL_STATUSES)}")
+        if forecast_source and forecast_source not in FORECAST_SOURCES:
+            raise AppError("VALIDATION_ERROR", 422, detail=f"forecast_source must be one of {', '.join(FORECAST_SOURCES)}")
         self.filters = {"run_from": self.run_from, "run_to": self.run_to, "fc_id": fc_id or None,
-                        "q": (q or "").strip() or None, "actual_status": statuses or None}
+                        "q": (q or "").strip() or None, "actual_status": statuses or None,
+                        "forecast_source": forecast_source or None}
+        # run dates of the range by forecast source (whatever the filters: a filtered-out day is not a missing day)
         self.in_range = [d for d in self.days if self.run_from <= d["run_date"] <= self.run_to]
+        self.backup_in_range = [d for d in self.backup if self.run_from <= d["run_date"] <= self.run_to]
+        self.use_primary = self.in_range if forecast_source != SNAPSHOT else []
+        self.use_backup = self.backup_in_range if forecast_source != PRIMARY else []
         self.names = _names(c, self.data_source) if self.data_source else {}
-        self.ctx = actual_context(c, scope_key, self.data_source, [d["target_date"] for d in self.in_range],
-                                  self.today) if self.in_range else {}
+        targets = [d["target_date"] for d in self.in_range + self.backup_in_range]
+        self.ctx = actual_context(c, scope_key, self.data_source, targets, self.today) if targets else {}
         self.skus = self._search(self.filters["q"])
 
     def name_of(self, sku: str, stored: str | None) -> str | None:
@@ -301,11 +372,17 @@ class Query:
             "SELECT v.sku_id, MAX(v.product_name) FROM forecast_history_days d JOIN forecast_history_values v "
             "ON v.forecast_run_id = d.forecast_run_id WHERE d.scope_key=? AND d.run_date BETWEEN ? AND ? "
             "GROUP BY v.sku_id", (self.scope_key, self.run_from, self.run_to))}
+        # a backup day holds the series of its source run, whose D+1 (every series) is in the history values
+        for rid in {d["forecast_run_id"] for d in self.backup_in_range}:
+            for s, n in self.c.execute("SELECT sku_id, product_name FROM forecast_history_values WHERE forecast_run_id=?",
+                                       (rid,)):
+                stored[s] = stored.get(s) or n
         mapping = {s: self.name_of(s, n) or "" for s, n in stored.items()}
         return matching_skus(list(stored), q, mapping)
 
     def _base(self) -> tuple[str, list]:
-        """WITH ctx (actual source per target date), base (one row per official SKU x FC x run date)."""
+        """WITH ctx (actual source per target date), bk (backup days: run date -> snapshot), base (one row per SKU x FC
+        x run date: the official session's stored D+1, or for a run date without one, its end-of-day backup)."""
         vals = ",".join("(?,?,?,?,?)" for _ in self.ctx)
         params: list = []
         for d, x in self.ctx.items():
@@ -320,24 +397,42 @@ class Query:
         if self.filters["actual_status"]:
             where += f" AND ctx.st IN ({','.join('?' * len(self.filters['actual_status']))})"
             wp += self.filters["actual_status"]
-        sql = (f"WITH ctx(target_date, src, snap, st, reason) AS (VALUES {vals}), base AS ("
-               "SELECT d.run_date, v.target_date, v.sku_id, v.fc_id, v.yhat, v.method, v.product_name, d.forecast_run_id, "
-               "s.model_version, s.session_started_at, s.published_at, ctx.st AS actual_status, ctx.reason AS actual_reason, "
-               "ctx.src AS actual_source, CASE ctx.src WHEN 'D1' THEN COALESCE(dd.qty, 0) "
-               "WHEN 'D0' THEN COALESCE(sv.cumulative_qty, 0) END AS actual "
-               "FROM forecast_history_days d JOIN forecast_history_sessions s ON s.forecast_run_id = d.forecast_run_id "
-               "JOIN forecast_history_values v ON v.forecast_run_id = d.forecast_run_id "
-               "JOIN ctx ON ctx.target_date = v.target_date "
-               "LEFT JOIN demand_daily dd ON ctx.src = 'D1' AND dd.scope_key = v.scope_key AND dd.order_date = v.target_date "
-               "AND dd.sku_id = v.sku_id AND dd.fc_id = v.fc_id "
-               "LEFT JOIN d0_snapshot_values sv ON ctx.src = 'D0' AND sv.snapshot_id = ctx.snap AND sv.sku_id = v.sku_id "
-               "AND sv.fc_id = v.fc_id "
-               f"WHERE d.scope_key=? AND d.run_date BETWEEN ? AND ?{where})")
-        return sql, params + [self.scope_key, self.run_from, self.run_to] + wp
+        actual = ("ctx.st AS actual_status, ctx.reason AS actual_reason, ctx.src AS actual_source, CASE ctx.src WHEN 'D1' "
+                  "THEN COALESCE(dd.qty, 0) WHEN 'D0' THEN COALESCE(sv.cumulative_qty, 0) END AS actual ")
+        joins = ("JOIN ctx ON ctx.target_date = v.target_date "
+                 "LEFT JOIN demand_daily dd ON ctx.src = 'D1' AND dd.scope_key = {scope} AND dd.order_date = v.target_date "
+                 "AND dd.sku_id = v.sku_id AND dd.fc_id = v.fc_id "
+                 "LEFT JOIN d0_snapshot_values sv ON ctx.src = 'D0' AND sv.snapshot_id = ctx.snap AND sv.sku_id = v.sku_id "
+                 "AND sv.fc_id = v.fc_id ")
+        primary = ("SELECT d.run_date, v.target_date, v.sku_id, v.fc_id, v.yhat, v.method, v.product_name, d.forecast_run_id, "
+                   f"s.model_version, s.session_started_at, s.published_at, {actual}, 'PRIMARY' AS forecast_source, "
+                   "NULL AS snapshot_id, NULL AS snapshot_business_date, NULL AS snapshot_created_at "
+                   "FROM forecast_history_days d JOIN forecast_history_sessions s ON s.forecast_run_id = d.forecast_run_id "
+                   "JOIN forecast_history_values v ON v.forecast_run_id = d.forecast_run_id "
+                   + joins.format(scope="v.scope_key")
+                   + f"WHERE d.scope_key=? AND d.run_date BETWEEN ? AND ?{where}"
+                   + ("" if self.use_primary else " AND 0"))
+        pp = [self.scope_key, self.run_from, self.run_to] + wp
+        sql = f"WITH ctx(target_date, src, snap, st, reason) AS (VALUES {vals})"
+        if self.use_backup:
+            sql += f", bk(run_date, target_date, snapshot_id) AS (VALUES {','.join('(?,?,?)' for _ in self.use_backup)})"
+            for d in self.use_backup:
+                params += [d["run_date"], d["target_date"], d["snapshot_id"]]
+            primary += (" UNION ALL SELECT bk.run_date, v.target_date, v.sku_id, v.fc_id, v.yhat, v.method, hv.product_name, "
+                        "es.source_run_id, es.source_model_version, es.source_session_started_at, es.source_published_at, "
+                        f"{actual}, 'SNAPSHOT', es.id, es.business_date, es.created_at "
+                        "FROM bk JOIN forecast_eod_snapshots es ON es.id = bk.snapshot_id "
+                        "JOIN forecast_eod_snapshot_values v ON v.snapshot_id = bk.snapshot_id AND v.target_date = bk.target_date "
+                        "LEFT JOIN forecast_history_values hv ON hv.forecast_run_id = es.source_run_id "
+                        "AND hv.sku_id = v.sku_id AND hv.fc_id = v.fc_id "
+                        + joins.format(scope="es.scope_key") + f"WHERE es.scope_key=?{where}")
+            pp += [self.scope_key] + wp
+        return sql + f", base AS ({primary})", params + pp
 
     def daily(self) -> list[dict]:
         """One point per target date of the range: forecast total, actual total of the SAME rows (None when the day has
-        no actual), deviation and status. Run dates without history are returned as gaps (never filled)."""
+        no actual), deviation, status and forecast source. Run dates without any stored forecast (no official session and
+        no backup covering them) are returned as gaps (never filled)."""
         by_date = {}
         if self.ctx:
             sql, p = self._base()
@@ -350,17 +445,24 @@ class Query:
         out = []
         d, end = date.fromisoformat(self.run_from), date.fromisoformat(self.run_to)
         sel = {x["run_date"]: x for x in self.in_range}
+        bk = {x["run_date"]: x for x in self.backup_in_range}
         while d <= end:
             k = str(d)
             r = by_date.get(k)
-            x = self.ctx.get(str(d + timedelta(days=1))) if k in sel else None
-            item = {"run_date": k, "target_date": str(d + timedelta(days=1)), "has_history": k in sel,
-                    "forecast_run_id": sel[k]["forecast_run_id"] if k in sel else None,
+            day = sel.get(k) or bk.get(k)
+            x = self.ctx.get(str(d + timedelta(days=1))) if day else None
+            item = {"run_date": k, "target_date": str(d + timedelta(days=1)), "has_history": day is not None,
+                    "forecast_source": (PRIMARY if k in sel else SNAPSHOT) if day else None,
+                    "forecast_run_id": day["forecast_run_id"] if day else None,
+                    "snapshot": {f: bk[k][f] for f in ("snapshot_id", "snapshot_business_date", "snapshot_created_at",
+                                                       "source_run_date", "session_started_at", "model_version")}
+                    if k in bk else None,
                     "n_rows": (r or {}).get("n_rows", 0), "forecast": (r or {}).get("forecast"),
                     "actual": (r or {}).get("actual") if (r or {}).get("n_actual") else None,
                     "forecast_compared": (r or {}).get("forecast_compared"), "abs_error": (r or {}).get("abs_error"),
                     "actual_status": x["status"] if x else None, "actual_reason": x["reason"] if x else None,
-                    "actual_as_of": x["as_of"] if x else None, "actual_source": x["source"] if x else None}
+                    "actual_as_of": x["as_of"] if x else None, "actual_source": x["source"] if x else None,
+                    "actual_close": x.get("close") if x else None}
             item["deviation"] = (item["forecast_compared"] - item["actual"]) if item["actual"] is not None else None
             item["wape"] = (item["abs_error"] / item["actual"]) if item["actual"] else None
             out.append(item)
@@ -370,14 +472,16 @@ class Query:
     def kpi(self, daily: list[dict]) -> dict:
         """Totals of the selected rows. Actual, deviation and WAPE use ONLY the rows that have an actual (never a
         missing actual as 0); WAPE = sum|forecast - actual| / sum(actual) as in ml/metrics.py, undefined when that sum
-        is 0. status: COMPLETE when every compared row is complete, PROVISIONAL when any is provisional."""
+        is 0. status: COMPLETE when every compared row is complete, PROVISIONAL when any is provisional, otherwise
+        CLOSED (closed at 23:59, not confirmed by the source)."""
         f = sum(x["forecast"] or 0 for x in daily)
         comp = [x for x in daily if x["actual"] is not None]
         a = sum(x["actual"] for x in comp)
         fc = sum(x["forecast_compared"] or 0 for x in comp)
         err = sum(x["abs_error"] or 0 for x in comp)
         sts = {x["actual_status"] for x in comp}
-        status = NO_ACTUAL if not comp else (COMPLETE if sts == {COMPLETE} else PROVISIONAL)
+        status = NO_ACTUAL if not comp else (COMPLETE if sts == {COMPLETE} else PROVISIONAL if PROVISIONAL in sts
+                                             else CLOSED)
         notes = []
         if not comp:
             notes.append("NO_ACTUAL")
@@ -385,6 +489,8 @@ class Query:
             notes.append("SUM_ACTUAL_ZERO")
         return {"n_rows": sum(x["n_rows"] for x in daily), "n_rows_compared": sum(x["n_rows"] for x in comp),
                 "days_with_history": sum(1 for x in daily if x["has_history"]), "days_compared": len(comp),
+                "days_primary": sum(1 for x in daily if x["forecast_source"] == PRIMARY),
+                "days_backup": sum(1 for x in daily if x["forecast_source"] == SNAPSHOT),
                 "forecast_total": f if any(x["has_history"] for x in daily) else None,
                 "actual_total": a if comp else None, "forecast_compared": fc if comp else None,
                 "deviation": (fc - a) if comp else None, "abs_error": err if comp else None,
@@ -452,10 +558,11 @@ def export_xlsx(qy: Query, labels: dict, sort: str = "date") -> bytes:
 
     st_label = lambda s: L["status"].get(s, s) if s else ""               # noqa: E731
     rs_label = lambda s: L["reason"].get(s, s) if s else ""               # noqa: E731
+    src_label = lambda s: L["source"].get(s, s) if s else L["source"]["MISSING"]   # noqa: E731
     info = wb.create_sheet(L["sheet_info"])
     info.append([L["field"], L["value"]])
     f = qy.filters
-    for key, val in (("export_format_version", "H1"), ("language", L["language_name"]),
+    for key, val in (("export_format_version", "H2"), ("language", L["language_name"]),
                      ("generated_at_vn", L["fmt_time"](now_iso())), ("scope", qy.scope_key),
                      ("data_source", qy.data_source or ""), ("run_from", L["fmt_date"](f["run_from"])),
                      ("run_to", L["fmt_date"](f["run_to"])), ("fc_filter", f["fc_id"] or L["all"]),
@@ -465,7 +572,10 @@ def export_xlsx(qy: Query, labels: dict, sort: str = "date") -> bytes:
                      ("forecast_total", k["forecast_total"]), ("actual_total", k["actual_total"]),
                      ("forecast_compared", k["forecast_compared"]), ("deviation", k["deviation"]),
                      ("wape", k["wape"]), ("kpi_status", st_label(k["status"])), ("rule_d1", L["rule_d1"]),
-                     ("rule_actual", L["rule_actual"]), ("rule_wape", L["rule_wape"])):
+                     ("rule_actual", L["rule_actual"]), ("rule_wape", L["rule_wape"]),
+                     ("source_filter", src_label(f["forecast_source"]) if f["forecast_source"] else L["all"]),
+                     ("days_primary", k["days_primary"]), ("days_backup", k["days_backup"]),
+                     ("rule_backup", L["rule_backup"]), ("rule_close", L["rule_close"])):
         info.append([L["info"][key], val])
     ses = wb.create_sheet(L["sheet_sessions"])
     ses.append(list(L["cols_sessions"].values()))
@@ -478,18 +588,24 @@ def export_xlsx(qy: Query, labels: dict, sort: str = "date") -> bytes:
     dsh.append(list(L["cols_daily"].values()))
     for x in daily:
         if not x["has_history"]:
-            put(dsh, [x["run_date"], x["target_date"], None, None, None, None, None, L["no_history"], ""], date_cols=(0, 1))
+            put(dsh, [x["run_date"], x["target_date"], None, None, None, None, None, L["no_history"], "",
+                      src_label(None), None, None], date_cols=(0, 1))
             continue
+        snap = x["snapshot"] or {}
         put(dsh, [x["run_date"], x["target_date"], x["forecast"], x["actual"], x["deviation"], x["wape"],
-                  x["forecast_run_id"], st_label(x["actual_status"]), rs_label(x["actual_reason"])], date_cols=(0, 1))
+                  x["forecast_run_id"], st_label(x["actual_status"]), rs_label(x["actual_reason"]),
+                  src_label(x["forecast_source"]), snap.get("snapshot_id"), snap.get("snapshot_business_date")],
+            date_cols=(0, 1, 11))
     det = wb.create_sheet(L["sheet_rows"])
     det.append(list(L["cols_rows"].values()))
     for r in qy.rows(sort=sort, limit=None):
         put(det, [r["run_date"], r["target_date"], r["forecast_run_id"], r["model_version"],
                   L["fmt_time"](r["session_started_at"]), r["sku_id"], r["product_name"] or L["no_product_name"],
                   r["fc_id"], r["yhat"], r["actual"], r["deviation"], r["row_wape"], st_label(r["actual_status"]),
-                  rs_label(r["actual_reason"]), L["fmt_time"](r["actual_as_of"]) if r["actual_as_of"] else ""],
-            date_cols=(0, 1))
+                  rs_label(r["actual_reason"]), L["fmt_time"](r["actual_as_of"]) if r["actual_as_of"] else "",
+                  src_label(r["forecast_source"]), r["snapshot_id"], r["snapshot_business_date"],
+                  L["fmt_time"](r["snapshot_created_at"]) if r["snapshot_created_at"] else ""],
+            date_cols=(0, 1, 17))
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()

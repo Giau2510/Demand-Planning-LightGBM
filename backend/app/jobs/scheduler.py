@@ -7,6 +7,12 @@ its own switch (1.1.8, see jobs/flows.py) and is planned only when that switch i
                                        `d1_fallback_time` it verifies the source has a plausible full day before syncing
   TRAIN_PUBLISH schedule.train_enabled at `train_time` (BIGQUERY: only once today's D-1 succeeded - the scheduled
                                        D1_SYNC or, 1.2.1, a manual regular D-1 run of today, see flows.d1_success_today)
+  EOD_FORECAST_SNAPSHOT schedule.eod_enabled   at `eod_time` (1.2.6, default 23:55): backup of the next 7 forecast days
+  ACTUAL_CLOSE          schedule.close_enabled at `close_time` (1.2.6, default 23:59): close of the day's actual
+                        Both carry the business date of their slot (params.business_date, Vietnam date): a run after
+                        midnight (grace, retry, catch-up) still works on that day. The slot of YESTERDAY is caught up
+                        once when it was missed; older days are recorded as missed. Slots before the moment this version
+                        first ran (sync_state 'flows_first_seen') are never run or caught up.
 
 Missed slots (machine off / app closed) are recorded as SKIPPED (MISSED_SLOT_NO_BACKFILL). For D0 the policy
 `d0_catchup_policy` decides: LATEST_ONCE = at most ONE catch-up snapshot of TODAY (stamped with the real time, flagged
@@ -34,7 +40,11 @@ def d0_key(d: date, hhmm: str) -> str:
     return f"D0_SYNC:{d.isoformat()}T{hhmm}"
 
 
-def plan(now: datetime, sched, active_source: str, last_heartbeat: datetime | None, conn) -> list[dict]:
+DAY_END_FLOWS = (("EOD_FORECAST_SNAPSHOT", "eod"), ("ACTUAL_CLOSE", "close"))     # 1.2.6 (job type, flow)
+
+
+def plan(now: datetime, sched, active_source: str, last_heartbeat: datetime | None, conn,
+         first_seen: dict | None = None) -> list[dict]:
     """Pure-ish planning step (reads job_runs only). Returns actions:
     {"action": "run"|"skip", job_type, key, trigger, scheduled_for, params, reason}"""
     actions: list[dict] = []
@@ -43,12 +53,19 @@ def plan(now: datetime, sched, active_source: str, last_heartbeat: datetime | No
         conn, "SELECT idempotency_key, status, next_attempt_at FROM job_runs WHERE created_at>=?",
         ((now_utc() - timedelta(days=MAX_MISSED_LOOKBACK_DAYS + 2)).isoformat(),))}
     grace = timedelta(minutes=sched.slot_grace_minutes)
-    on = {"D0_SYNC": sched.d0_enabled, "D1_SYNC": sched.d1_enabled, "TRAIN_PUBLISH": sched.train_enabled}
+    on = {"D0_SYNC": sched.d0_enabled, "D1_SYNC": sched.d1_enabled, "TRAIN_PUBLISH": sched.train_enabled,
+          "EOD_FORECAST_SNAPSHOT": sched.eod_enabled, "ACTUAL_CLOSE": sched.close_enabled}
     since = {"D0_SYNC": parse_iso(sched.d0_enabled_at), "D1_SYNC": parse_iso(sched.d1_enabled_at),
-             "TRAIN_PUBLISH": parse_iso(sched.train_enabled_at)}
+             "TRAIN_PUBLISH": parse_iso(sched.train_enabled_at),
+             **{jt: parse_iso(getattr(sched, f"{f}_enabled_at")) or parse_iso((first_seen or {}).get(f))
+                for jt, f in DAY_END_FLOWS}}
+    day_end_time = {"EOD_FORECAST_SNAPSHOT": sched.eod_time, "ACTUAL_CLOSE": sched.close_time}
 
     def live(jt: str, slot: datetime) -> bool:
-        """The flow is ON and the slot is not earlier than the moment it was switched on."""
+        """The flow is ON and the slot is not earlier than the moment it was switched on. An end-of-day flow without
+        that moment (no switch-on time and not yet seen by a scheduler tick) runs nothing."""
+        if jt in day_end_time and since[jt] is None:
+            return False
         return on[jt] and (since[jt] is None or slot >= since[jt])
 
     # ---- missed days since the last heartbeat (machine off for whole days) - only flows that are ON
@@ -61,7 +78,8 @@ def plan(now: datetime, sched, active_source: str, last_heartbeat: datetime | No
                 if live("D0_SYNC", vn_slot(d, t)) and k not in existing and vn_slot(d, t) > last_heartbeat:
                     actions.append({"action": "skip", "job_type": "D0_SYNC", "key": k, "trigger": "SCHEDULE",
                                     "scheduled_for": vn_slot(d, t).isoformat(), "reason": "MISSED_SLOT_NO_BACKFILL"})
-            for jt, t in (("D1_SYNC", sched.d1_fallback_time), ("TRAIN_PUBLISH", sched.train_time)):
+            late = [(jt, day_end_time[jt]) for jt, _f in DAY_END_FLOWS] if d < today - timedelta(days=1) else []
+            for jt, t in (("D1_SYNC", sched.d1_fallback_time), ("TRAIN_PUBLISH", sched.train_time), *late):
                 k = f"{jt}:{d.isoformat()}"
                 if live(jt, vn_slot(d, t)) and k not in existing and vn_slot(d, t) > last_heartbeat:
                     actions.append({"action": "skip", "job_type": jt, "key": k, "trigger": "SCHEDULE",
@@ -124,6 +142,16 @@ def plan(now: datetime, sched, active_source: str, last_heartbeat: datetime | No
                             "trigger": "CATCH_UP" if late else "SCHEDULE", "scheduled_for": train_slot.isoformat(),
                             "params": {}})
 
+    # ---- 1.2.6 end of day: forecast backup + actual close of the slot's business date (yesterday's missed slot once)
+    for jt, _f in DAY_END_FLOWS:
+        for d in (today - timedelta(days=1), today):
+            slot = vn_slot(d, day_end_time[jt])
+            k = f"{jt}:{d.isoformat()}"
+            if live(jt, slot) and slot <= now and k not in existing:
+                actions.append({"action": "run", "job_type": jt, "key": k,
+                                "trigger": "SCHEDULE" if now - slot <= grace else "CATCH_UP",
+                                "scheduled_for": slot.isoformat(), "params": {"business_date": d.isoformat()}})
+
     # ---- retries that are due (a flow switched OFF is not retried; manual jobs are never retried)
     for k, r in existing.items():
         if r["status"] == "RETRY_WAIT" and (not r["next_attempt_at"] or parse_iso(r["next_attempt_at"]) <= now_utc()):
@@ -151,7 +179,8 @@ class Scheduler:
         scheduler has the new state. Ticks do the same before planning."""
         sched = ss.get("schedule")
         self.loaded = {"at": now_iso(), "flows": {"d1": sched.d1_enabled, "d0": sched.d0_enabled,
-                                                  "train": sched.train_enabled}}
+                                                  "train": sched.train_enabled, "eod": sched.eod_enabled,
+                                                  "close": sched.close_enabled}}
         return self.loaded
 
     def start(self) -> None:
@@ -194,13 +223,15 @@ class Scheduler:
     def tick(self, now: datetime | None = None, wait: bool = False) -> list[dict]:
         sched = ss.get("schedule")
         self.loaded = {"at": now_iso(), "flows": {"d1": sched.d1_enabled, "d0": sched.d0_enabled,
-                                                  "train": sched.train_enabled}}
+                                                  "train": sched.train_enabled, "eod": sched.eod_enabled,
+                                                  "close": sched.close_enabled}}
         now = now or now_vn()
+        first_seen = self._first_seen(now)
         with db.read() as c:
             hb = db.one(c, "SELECT value_json FROM sync_state WHERE name='scheduler_heartbeat'")
             last_hb = parse_iso(json.loads(hb["value_json"])["at"]) if hb else None
             general = ss.get("general", c)
-            actions = plan(now, sched, general.active_source, last_hb, c)
+            actions = plan(now, sched, general.active_source, last_hb, c, first_seen)
         with db.tx() as c:
             c.execute("INSERT INTO sync_state(name, value_json, updated_at) VALUES ('scheduler_heartbeat', ?, ?) "
                       "ON CONFLICT(name) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at",
@@ -226,6 +257,26 @@ class Scheduler:
             for f in futures:
                 f.result()
         return actions
+
+    @staticmethod
+    def _first_seen(now: datetime) -> dict:
+        """1.2.6: moment a scheduler first saw each end-of-day flow (stored once, kept across restarts). Its slots before
+        that moment are neither run nor caught up: installing the version never back-dates a snapshot or a close. Read
+        only, except the first time (no write lock taken on every tick)."""
+        def read(c) -> dict:
+            r = db.one(c, "SELECT value_json FROM sync_state WHERE name='flows_first_seen'")
+            return json.loads(r["value_json"]) if r else {}
+        with db.read() as c:
+            seen = read(c)
+        if all(f in seen for _jt, f in DAY_END_FLOWS):
+            return seen
+        with db.tx() as c:
+            seen = read(c)
+            seen.update({f: now.isoformat(timespec="seconds") for _jt, f in DAY_END_FLOWS if f not in seen})
+            c.execute("INSERT INTO sync_state(name, value_json, updated_at) VALUES ('flows_first_seen', ?, ?) "
+                      "ON CONFLICT(name) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at",
+                      (json.dumps(seen), now_iso()))
+        return seen
 
     def _run(self, a: dict) -> None:
         try:

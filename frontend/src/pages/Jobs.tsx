@@ -9,7 +9,7 @@ const TYPES = ["D1_SYNC", "D0_SYNC", "TRAIN_PUBLISH"];
 /** Pill tone per effective flow state (same as the schedule page). */
 const STATE_PILL: Record<string, string> = { OFF: "SKIPPED", ON: "OK", ON_NOT_READY: "RETRY_WAIT", ON_NOT_LOADED: "PENDING",
   ON_SCHEDULER_STOPPED: "FAILED" };
-const ALL_TYPES = [...TYPES, "FORECAST_EXTEND"];
+const ALL_TYPES = [...TYPES, "FORECAST_EXTEND", "EOD_FORECAST_SNAPSHOT", "ACTUAL_CLOSE"];
 /** The read-only remote link (scripts/remote/readonly_proxy.py) injects this banner: no write is offered there. */
 const isRemote = () => typeof document !== "undefined" && !!document.getElementById("df-remote-banner");
 
@@ -58,7 +58,9 @@ export default function Jobs() {
           <div className="small flowlist" data-testid="jobs-flows">
             <b>{t("job.flows")}</b>
             {([["d1_enabled", "D1_SYNC", s.config.d1_signal_poll_start, "d1"], ["d0_enabled", "D0_SYNC", s.config.d0_times.join(", "), "d0"],
-               ["train_enabled", "TRAIN_PUBLISH", s.config.train_time, "train"]] as [string, string, string, string][]).map(([k, jt, times, fl]) => {
+               ["train_enabled", "TRAIN_PUBLISH", s.config.train_time, "train"],
+               ...(s.flow_states?.eod ? [["eod_enabled", "EOD_FORECAST_SNAPSHOT", s.config.eod_time, "eod"], ["close_enabled", "ACTUAL_CLOSE", s.config.close_time, "close"]] : [])
+              ] as [string, string, string, string][]).map(([k, jt, times, fl]) => {
               // 1.2.3: the backend's EFFECTIVE state (switch + scheduler + readiness), never the switch alone
               const fs = s.flow_states?.[fl];
               const state = fs?.state ?? (s.config[k] ? "ON" : "OFF");

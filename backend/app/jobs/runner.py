@@ -18,10 +18,12 @@ from . import progress
 log = logging.getLogger("df.jobs")
 OWNER = f"pid{os.getpid()}-{secrets.token_hex(3)}"
 
-JOB_TYPES = ("D1_SYNC", "D0_SYNC", "TRAIN_PUBLISH", "FORECAST_EXTEND")
+JOB_TYPES = ("D1_SYNC", "D0_SYNC", "TRAIN_PUBLISH", "FORECAST_EXTEND", "EOD_FORECAST_SNAPSHOT", "ACTUAL_CLOSE")
 # each automatic flow has its own switch (1.1.8); FORECAST_EXTEND is manual only
-FLOW_FLAG = {"D1_SYNC": "d1_enabled", "D0_SYNC": "d0_enabled", "TRAIN_PUBLISH": "train_enabled"}
-FLOW_OFF_CODE = {"D1_SYNC": "D1_SCHEDULE_DISABLED", "D0_SYNC": "D0_SCHEDULE_DISABLED", "TRAIN_PUBLISH": "TRAIN_SCHEDULE_DISABLED"}
+FLOW_FLAG = {"D1_SYNC": "d1_enabled", "D0_SYNC": "d0_enabled", "TRAIN_PUBLISH": "train_enabled",
+             "EOD_FORECAST_SNAPSHOT": "eod_enabled", "ACTUAL_CLOSE": "close_enabled"}
+FLOW_OFF_CODE = {"D1_SYNC": "D1_SCHEDULE_DISABLED", "D0_SYNC": "D0_SCHEDULE_DISABLED", "TRAIN_PUBLISH": "TRAIN_SCHEDULE_DISABLED",
+                 "EOD_FORECAST_SNAPSHOT": "EOD_SCHEDULE_DISABLED", "ACTUAL_CLOSE": "CLOSE_SCHEDULE_DISABLED"}
 _STATUS_STAGE = {"RUNNING": "STARTED", "SUCCEEDED": "DONE", "FAILED": "FAILED", "SKIPPED": "SKIPPED",
                  "RETRY_WAIT": "WAITING_RETRY"}
 # "Nothing to do until the user configures something" -> SKIPPED with a reason, never FAILED + ERROR alert.
@@ -48,7 +50,18 @@ def _handlers():
 
     def extend(job_id, params, cancel=None):
         return extend_forecast(params["run_id"], job_id, cancel=cancel, progress=progress.reporter(job_id))
-    return {"D0_SYNC": d0, "D1_SYNC": d1, "TRAIN_PUBLISH": train, "FORECAST_EXTEND": extend}
+
+    def eod(job_id, params):
+        from ..forecast_backup import run_job
+        progress.set_stage(job_id, "SNAPSHOTTING")
+        return run_job(job_id, params)
+
+    def close(job_id, params):
+        from ..actual_close import run_job
+        progress.set_stage(job_id, "CLOSING")
+        return run_job(job_id, params)
+    return {"D0_SYNC": d0, "D1_SYNC": d1, "TRAIN_PUBLISH": train, "FORECAST_EXTEND": extend,
+            "EOD_FORECAST_SNAPSHOT": eod, "ACTUAL_CLOSE": close}
 
 
 # ---------------------------------------------------------------- locks

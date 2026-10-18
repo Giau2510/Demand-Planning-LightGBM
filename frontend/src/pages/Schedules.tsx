@@ -9,7 +9,7 @@ const STATE_PILL: Record<string, string> = { OFF: "SKIPPED", ON: "OK", ON_NOT_RE
   ON_SCHEDULER_STOPPED: "FAILED" };
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-type FlowKey = "d1" | "d0" | "train";
+type FlowKey = "d1" | "d0" | "train" | "eod" | "close";
 
 function Readiness({ r }: { r: any }) {
   const { t, pick } = useI18n();
@@ -26,6 +26,9 @@ function Readiness({ r }: { r: any }) {
  *  show that outcome next to the job status, as the Jobs page does. */
 function Outcome({ r }: { r: any }) {
   const { t } = useI18n();
+  // 1.2.6 day-end jobs: an incomplete backup snapshot / a day closed without any actual is said as such
+  if (r.status === "SUCCEEDED" && (r.result_status === "INCOMPLETE" || r.result_status === "NO_DATA"))
+    return <span className="pill warn" data-testid="job-outcome">{t(`job.result.${r.result_status}`)}</span>;
   const oc = jobOutcome({ status: r.status, result: { result: { status: r.result_status } } });
   return r.status === "SUCCEEDED" && (oc === "bad" || oc === "warn")
     ? <span className={`pill ${oc}`} data-testid="job-outcome">{t(`job.outcome.${oc}`)}</span> : null;
@@ -46,7 +49,7 @@ function LastRun({ v }: { v: any }) {
   );
 }
 
-const FLOW_ICON: Record<FlowKey, IconName> = { d1: "calendar", d0: "clock", train: "model" };
+const FLOW_ICON: Record<FlowKey, IconName> = { d1: "calendar", d0: "clock", train: "model", eod: "fhistory", close: "actual" };
 
 function FlowCard({ flow, v, title, intro, children, onSaved, confirmOn }: {
   flow: FlowKey; v: any; title: string; intro: ReactNode; children: (form: any, set: (p: any) => void) => ReactNode;
@@ -182,9 +185,25 @@ export default function Schedules() {
         </>)}
       </FlowCard>
 
+      {f.eod && (
+        <FlowCard flow="eod" v={f.eod} title={t("sch.eod.title")} intro={t("sch.eod.intro")} onSaved={data.reload}>
+          {(form, set) => (
+            <Field label={t("sch.eod.time")}><Time testid="eod-time" value={form.time} onChange={(x) => set({ time: x })} /></Field>
+          )}
+        </FlowCard>
+      )}
+
+      {f.close && (
+        <FlowCard flow="close" v={f.close} title={t("sch.close.title")} intro={t("sch.close.intro")} onSaved={data.reload}>
+          {(form, set) => (
+            <Field label={t("sch.close.time")}><Time testid="close-time" value={form.time} onChange={(x) => set({ time: x })} /></Field>
+          )}
+        </FlowCard>
+      )}
+
       <Card icon="info" title={t("sch.offline.title")}>
         <ul className="small" data-testid="offline-rules">
-          <li>{t("sch.offline.d1")}</li><li>{t("sch.offline.d0")}</li><li>{t("sch.offline.train")}</li><li>{t("sch.offline.switch")}</li>
+          <li>{t("sch.offline.d1")}</li><li>{t("sch.offline.d0")}</li><li>{t("sch.offline.train")}</li><li>{t("sch.offline.dayend")}</li><li>{t("sch.offline.switch")}</li>
         </ul>
       </Card>
     </div>

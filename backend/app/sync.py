@@ -122,6 +122,9 @@ def _after_d1(scope_key: str, job_id: str | None) -> None:
             identity.day_hashes(scope_key, c)
     except Exception:  # noqa: BLE001
         log.warning("data identity not computed after D-1", exc_info=True, extra={"ctx": {"job_id": job_id}})
+    # 1.2.6: days already closed at 23:59 whose actual this load changed get a new close revision (late data)
+    from . import actual_close
+    actual_close.reconcile_quietly(scope_key, "BIGQUERY", f"D-1 job {job_id or '-'}")
 
 
 def run_d1_sync(job_id: str | None = None, fallback_mode: bool | None = None, backfill_start: str | None = None,
