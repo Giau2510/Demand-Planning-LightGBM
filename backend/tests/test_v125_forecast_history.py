@@ -222,6 +222,18 @@ def test_concurrent_recording_picks_the_newest_and_never_duplicates():
     assert {x["check"]: x["status"] for x in data_checks.run(paths.db_path())["checks"]}["forecast_history_official_is_newest"] == "OK"
 
 
+def test_sessions_of_a_day_are_listed_newest_first_with_a_stable_order():
+    a = _run("2026-10-18 08:00")
+    b = _run("2026-10-18 08:00")              # same second: published at the same time, recorded later
+    for r in (a, b):
+        fh.capture(r)
+    with db.read() as c:
+        first = [s["forecast_run_id"] for s in fh.sessions(c, SCOPE, "2026-10-18", "2026-10-18")]
+        again = [s["forecast_run_id"] for s in fh.sessions(c, SCOPE, "2026-10-18", "2026-10-18")]
+    assert first == again == [b, a]
+    assert _day("2026-10-18")["forecast_run_id"] == b     # run order decides a tie, as for the official session
+
+
 def test_retry_and_reconcile_are_idempotent():
     rid = _run("2026-10-18 08:00")
     first = fh.reconcile()
@@ -425,6 +437,8 @@ def test_default_scope_is_the_active_source_even_without_history(client, small_d
     fh.capture(_run("2026-10-18 09:00"))                  # BIGQUERY history exists, active source is DEMO
     ov = client.get("/api/history/overview").json()
     assert ov["data_source"] == "DEMO" and ov["days"] == [] and ov["scope_key"] == ov["active_scope_key"]
+    other = client.get("/api/history/overview", params={"scope_key": SCOPE}).json()
+    assert (other["data_source"], other["active_data_source"]) == ("BIGQUERY", "DEMO")
     assert [s["scope_key"] for s in ov["scopes"]] == [SCOPE]
     sm = client.get("/api/history/summary").json()
     assert sm["kpi"]["forecast_total"] is None and all(not d["has_history"] for d in sm["daily"])

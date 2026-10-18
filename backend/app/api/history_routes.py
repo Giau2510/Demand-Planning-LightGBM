@@ -46,6 +46,7 @@ def overview(scope_key: str | None = None):
         bq = ss.get("bigquery", c)
         today = str(fh.today_vn())
     return {"scope_key": sk, "data_source": src, "active_scope_key": (active or {}).get("scope_key"),
+            "active_data_source": (active or {}).get("data_source"),
             "scopes": [{**s, "active": s["scope_key"] == (active or {}).get("scope_key")} for s in scopes],
             "days": dl, "fcs": fcs, "today": today,
             "today_session": next((d for d in dl if d["run_date"] == today), None),

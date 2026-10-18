@@ -6,6 +6,7 @@ import { Icon } from "../components/icons";
 import { ProductName } from "./Results";
 
 const PAGE = 100;
+const MAX_RANGE_DAYS = 400;     // same limit as the API (forecast_history.MAX_RANGE_DAYS)
 const STATUSES = ["COMPLETE", "PROVISIONAL", "NO_ACTUAL"];
 const SORTS = ["date", "abs_error", "forecast", "actual", "sku"];
 
@@ -48,7 +49,7 @@ export default function ForecastHistory() {
   const latest = days[0]?.run_date ?? o?.today ?? "";
   const oldest = days[days.length - 1]?.run_date ?? latest;
   const range = mode === "last30" ? [addDays(latest, -29), latest] : mode === "last7" ? [addDays(latest, -6), latest]
-    : mode === "all" ? [oldest, latest] : mode === "custom" ? [from || addDays(latest, -29), to || latest] : [mode, mode];
+    : mode === "all" ? [oldest > addDays(latest, 1 - MAX_RANGE_DAYS) ? oldest : addDays(latest, 1 - MAX_RANGE_DAYS), latest] : mode === "custom" ? [from || addDays(latest, -29), to || latest] : [mode, mode];
   const [runFrom, runTo] = range[0] <= range[1] ? range : [range[1], range[0]];
   const f = { scope_key: o?.scope_key, run_from: runFrom, run_to: runTo, fc_id: fc, q: qd, actual_status: status };
   const ready = !!o?.scope_key && days.length > 0;      // nothing stored -> nothing to ask for
@@ -79,7 +80,7 @@ export default function ForecastHistory() {
   const provTag = kpiProv ? <> <Pill status="PROVISIONAL" label={t("fh.st.PROVISIONAL")} /></> : null;
   const scopeChoices = [...(o.scopes ?? [])];
   if (o.active_scope_key && !scopeChoices.some((x: any) => x.scope_key === o.active_scope_key))
-    scopeChoices.unshift({ scope_key: o.active_scope_key, data_source: o.data_source, n_days: 0, active: true });
+    scopeChoices.unshift({ scope_key: o.active_scope_key, data_source: o.active_data_source ?? o.data_source, n_days: 0, active: true });
 
   return (
     <div className="stack">

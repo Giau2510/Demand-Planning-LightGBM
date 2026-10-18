@@ -193,7 +193,8 @@ def sessions(c, scope_key: str, run_from: str, run_to: str) -> list[dict]:
                       "s.captured_at, s.usage_status, (d.forecast_run_id = s.forecast_run_id) AS official "
                       "FROM forecast_history_sessions s LEFT JOIN forecast_history_days d ON d.scope_key = s.scope_key "
                       "AND d.run_date = s.run_date WHERE s.scope_key=? AND s.run_date BETWEEN ? AND ? "
-                      "ORDER BY s.run_date DESC, s.session_started_at DESC", (scope_key, run_from, run_to))
+                      "ORDER BY s.run_date DESC, s.session_started_at DESC, s.published_at DESC, s.rowid DESC",
+                   (scope_key, run_from, run_to))
 
 
 def _d1_state(c, scope_key: str) -> dict | None:

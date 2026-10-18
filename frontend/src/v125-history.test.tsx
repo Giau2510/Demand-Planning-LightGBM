@@ -184,6 +184,18 @@ describe("v1.2.5 compare chart", () => {
     expect(container.querySelector(".lg-actual.prov")).toBeTruthy();
   });
 
+  it("'all dates' never asks for more than the 400 run dates the API serves", async () => {
+    const many = Array.from({ length: 450 }, (_, i) => ({ ...DAYS[1], run_date: addDays("2026-10-18", -i), target_date: addDays("2026-10-18", 1 - i) }));
+    const calls = backend({ days: many });
+    await act(async () => render(wrap(<ForecastHistory />)));
+    await waitFor(() => expect(screen.getByTestId("fh-run-date")).toBeTruthy());
+    await act(async () => { fireEvent.change(screen.getByTestId("fh-run-date"), { target: { value: "all" } }); });
+    await waitFor(() => {
+      const last = [...calls].reverse().find((c) => c.url.startsWith("/api/history/summary"))!;
+      expect([param(last.url, "run_from"), param(last.url, "run_to")]).toEqual([addDays("2026-10-18", -399), "2026-10-18"]);
+    });
+  });
+
   it("date helper is calendar arithmetic and never throws before the data is there", () => {
     expect(addDays("2026-10-01", -1)).toBe("2026-09-30");
     expect(addDays("2026-12-31", 1)).toBe("2027-01-01");
