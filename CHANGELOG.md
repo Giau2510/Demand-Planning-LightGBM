@@ -5,7 +5,7 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
-## 1.2.5 - 2026-10-18 (Forecast & actual history D+1 + UI redesign, released together)
+## 1.2.5 - 2026-10-18 (Forecast & actual history D+1 + UI redesign, released together) [reports/demandforecast_v125_history_ui_20261018.md]
 
 ### A. Forecast & actual history (new page `/forecast-history`, rules in [docs/LICH-SU-FORECAST.md](docs/LICH-SU-FORECAST.md))
 
