@@ -522,15 +522,25 @@ def test_whole_missed_days_are_recorded_and_only_yesterday_is_caught_up(small_de
     assert not (runs & skips)
 
 
-def test_schedules_api_shows_both_new_flows_and_their_switches(client, small_demo):
+def test_schedules_api_shows_both_new_flows_and_their_switches(client, small_demo, monkeypatch):
+    from app.jobs import scheduler as sched_mod
+    from test_v126_schedule_config import RunningScheduler
     ov = client.get("/api/schedules").json()
     assert {"d1", "d0", "train", "eod", "close"} <= set(ov["flows"])
-    assert ov["flows"]["eod"]["config"] == {"time": "23:55"} and ov["flows"]["close"]["config"] == {"time": "23:59"}
+    vn = "Asia/Ho_Chi_Minh"
+    assert ov["flows"]["eod"]["config"] == {"time": "23:55", "timezone": vn}
+    assert ov["flows"]["close"]["config"] == {"time": "23:59", "timezone": vn}
     assert ov["flows"]["eod"]["readiness"]["ready"] and ov["flows"]["close"]["enabled"] is False    # default OFF
+    # 1.2.6: switching a day-end flow ON needs a running scheduler that confirms it (this test app runs none)
     r = client.put("/api/schedules/close", json={"enabled": True})
-    assert r.status_code == 200 and ss.get("schedule").close_enabled is True
-    r = client.put("/api/schedules/close", json={"enabled": False})
-    assert r.status_code == 200 and ss.get("schedule").close_enabled is False
+    assert r.status_code == 409 and r.json()["code"] == "SCHEDULE_NOT_REGISTERED"
+    assert ss.get("schedule").close_enabled is False
+    with monkeypatch.context() as m:          # never monkeypatch.undo(): conftest's isolation must stay in place
+        m.setattr(sched_mod, "SCHEDULER", RunningScheduler())
+        r = client.put("/api/schedules/close", json={"enabled": True})
+        assert r.status_code == 200 and ss.get("schedule").close_enabled is True
+        r = client.put("/api/schedules/close", json={"enabled": False})
+        assert r.status_code == 200 and ss.get("schedule").close_enabled is False
     r = client.put("/api/settings/schedule", json={**ss.get("schedule").model_dump(), "close_enabled": True})
     assert r.status_code == 409 and r.json()["code"] == "SCHEDULE_SWITCH_VIA_FLOW_API"
     assert client.put("/api/schedules/close", json={"time": "24:00"}).status_code == 422
@@ -538,7 +548,7 @@ def test_schedules_api_shows_both_new_flows_and_their_switches(client, small_dem
     for flow in ("eod", "close"):
         assert client.put(f"/api/schedules/{flow}", json={"time": "08:00"}).status_code == 422
     assert (ss.get("schedule").eod_time, ss.get("schedule").close_time) == ("23:55", "23:59")
-    assert client.put("/api/schedules/eod", json={"time": "23:30"}).json()["config"] == {"time": "23:30"}
+    assert client.put("/api/schedules/eod", json={"time": "23:30"}).json()["config"] == {"time": "23:30", "timezone": vn}
     ss.update("general", {"active_source": "MANUAL_IMPORT"})
     assert client.get("/api/schedules/close").json()["readiness"]["reasons"][0]["code"] == "CLOSE_SOURCE_MANUAL_IMPORT"
 

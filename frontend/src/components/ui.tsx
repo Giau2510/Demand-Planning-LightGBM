@@ -215,7 +215,7 @@ const TONE: Record<string, string> = {
   USABLE: "ok", USABLE_WITH_WARNING: "warn", NOT_USABLE: "bad", PASS: "ok", BELOW_THRESHOLD: "warn",
   NOT_EVALUATED: "muted", LOW: "warn", NORMAL: "ok",
   COMPLETE: "ok", PROVISIONAL: "warn", NO_ACTUAL: "muted",          // 1.2.5 actual status (forecast history)
-  CLOSED: "info", SNAPSHOT: "info",                                 // 1.2.6 closed at 23:59 / backup forecast
+  CLOSED: "info", SNAPSHOT: "info",                                 // 1.2.6 closed at the end of the day / backup forecast
 };
 
 export function Pill({ status, label }: { status: string; label?: string }) {

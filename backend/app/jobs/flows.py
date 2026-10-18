@@ -34,9 +34,12 @@ FIELDS = {"d1": {"time": "d1_signal_poll_start", "fallback_time": "d1_fallback_t
                  "poll_interval_minutes": "d1_poll_interval_minutes"},
           "d0": {"times": "d0_times", "catchup_policy": "d0_catchup_policy"},
           "train": {"time": "train_time", "catchup_policy": "train_catchup_policy"},
-          "eod": {"time": "eod_time"},
-          "close": {"time": "close_time"}}
+          "eod": {"time": "eod_time", "timezone": "eod_timezone"},
+          "close": {"time": "close_time", "timezone": "close_timezone"}}
 TIMEZONE = "Asia/Ho_Chi_Minh"
+# 1.2.6 day-end flows: switching one ON is confirmed by the running scheduler or not saved at all (never a false ON)
+DAY_END = ("eod", "close")
+ACTIVE_STATUSES = ("PENDING", "RUNNING", "RETRY_WAIT")
 
 
 def _check(flow: str) -> None:
@@ -263,6 +266,28 @@ def _scheduler_view() -> dict:
     return {"running": st["running"], "last_tick": st["last_tick"], "loaded": st.get("loaded")}
 
 
+def day_end_extras(c, flow: str, state: str, job_type: str) -> dict:
+    """1.2.6 day-end flows: the central defaults, when the configuration was last changed, and the scheduler runtime
+    state - REGISTERED only when the flow is ON and the running scheduler has loaded it (state ON); a job of the flow
+    in progress shows as such; otherwise NOT_REGISTERED (nothing will run)."""
+    fields = ss.ScheduleSettings.model_fields
+    defaults = {"enabled": fields[FLOWS[flow]["flag"]].default, "time": fields[FIELDS[flow]["time"]].default,
+                "timezone": fields[FIELDS[flow]["timezone"]].default}
+    upd = db.one(c, "SELECT at, details_json FROM audit_log WHERE action='SCHEDULE_CHANGED' AND entity_type='schedule' "
+                    "AND entity_id=? ORDER BY id DESC LIMIT 1", (flow,))
+    updated = None
+    if upd:
+        changes = sorted((json.loads(upd["details_json"] or "{}").get("changes") or {}))
+        updated = {"at": upd["at"], "fields": changes}
+    act = db.one(c, f"SELECT id, status FROM job_runs WHERE job_type=? AND status IN ({','.join('?' * len(ACTIVE_STATUSES))}) "
+                    "ORDER BY created_at DESC, rowid DESC LIMIT 1", (job_type, *ACTIVE_STATUSES))
+    if act:
+        runtime = {"state": act["status"], "job_id": act["id"]}
+    else:
+        runtime = {"state": "REGISTERED" if state == "ON" else "NOT_REGISTERED", "job_id": None}
+    return {"defaults": defaults, "config_updated": updated, "runtime": runtime}
+
+
 def flow_view(flow: str, conn=None, now: datetime | None = None, sched_view: dict | None = None) -> dict:
     _check(flow)
     own = conn is None
@@ -287,14 +312,17 @@ def flow_view(flow: str, conn=None, now: datetime | None = None, sched_view: dic
             state = "ON"
         rows = _job_rows(c, f["job_type"], 6)
         config = {k: getattr(sched, s) for k, s in FIELDS[flow].items()}
-        return {"flow": flow, "job_type": f["job_type"], "enabled": on, "state": state, "config": config,
-                "enabled_at": getattr(sched, f"{flow}_enabled_at"),
-                "timezone": TIMEZONE, "readiness": ready, "manual_readiness": _manual(flow, ready),
-                "next_runs": next_runs(_times(flow, sched), now, 3) if on else [],
-                "planned_times_if_enabled": next_runs(_times(flow, sched), now, 3),
-                "last_run": next((r for r in rows if r["status"] != "SKIPPED"), None),
-                "last_skipped": next((r for r in rows if r["status"] == "SKIPPED"), None),
-                "history": rows, "loaded_by_scheduler": loaded}
+        out = {"flow": flow, "job_type": f["job_type"], "enabled": on, "state": state, "config": config,
+               "enabled_at": getattr(sched, f"{flow}_enabled_at"),
+               "timezone": config.get("timezone", TIMEZONE), "readiness": ready, "manual_readiness": _manual(flow, ready),
+               "next_runs": next_runs(_times(flow, sched), now, 3) if on else [],
+               "planned_times_if_enabled": next_runs(_times(flow, sched), now, 3),
+               "last_run": next((r for r in rows if r["status"] != "SKIPPED"), None),
+               "last_skipped": next((r for r in rows if r["status"] == "SKIPPED"), None),
+               "history": rows, "loaded_by_scheduler": loaded}
+        if flow in DAY_END:
+            out.update(day_end_extras(c, flow, state, f["job_type"]))
+        return out
     finally:
         if own:
             c.close()
@@ -343,20 +371,71 @@ def update_flow(flow: str, body: dict) -> dict:
                            reasons=r["reasons"])
     if not patch:
         return {**flow_view(flow), "saved": False}
+    from . import scheduler as sched_mod
+    # 1.2.6 day-end flows: switched ON only when a running scheduler confirms it (else nothing is saved / it is undone)
+    confirm = flow in DAY_END and turning_on and not getattr(cur, flag)
+    if confirm and not (sched_mod.SCHEDULER and sched_mod.SCHEDULER.status()["running"]):
+        raise AppError("SCHEDULE_NOT_REGISTERED", 409, detail=f"{flow}: no scheduler runs in this app process; "
+                                                               "nothing was saved")
     ss.update("schedule", patch, note=f"schedule {flow}: {', '.join(sorted(patch))} (UI)")
     with db.tx() as c:
         db.audit(c, "SCHEDULE_CHANGED", "schedule", flow, {"changes": patch, "previous": {
             k: getattr(cur, k) for k in patch}})
-    from . import scheduler as sched_mod
-    registered = None
+    registered, reload_error = None, None
     if sched_mod.SCHEDULER:
-        registered = sched_mod.SCHEDULER.reload().get("flows", {}).get(flow)
+        try:
+            registered = sched_mod.SCHEDULER.reload().get("flows", {}).get(flow)
+        except Exception as e:  # noqa: BLE001 - a day-end switch is undone below; other flows keep the old behaviour
+            if not confirm:
+                raise
+            reload_error = f"{type(e).__name__}: {e}"[:300]
+    if confirm and registered is not True:
+        undo = {flag: False, f"{flow}_enabled_at": None}
+        ss.update("schedule", undo, note=f"schedule {flow}: switched back OFF - the scheduler did not confirm it")
+        with db.tx() as c:
+            db.audit(c, "SCHEDULE_CHANGED", "schedule", flow, {"changes": undo, "previous": {
+                k: patch.get(k) for k in undo}, "reason": "SCHEDULE_NOT_REGISTERED", "registered": registered,
+                "error": reload_error})
+        try:
+            sched_mod.SCHEDULER.reload()
+        except Exception:  # noqa: BLE001 - the stored state is OFF; the next tick reads it again
+            pass
+        raise AppError("SCHEDULE_NOT_REGISTERED", 409, detail=f"{flow}: the scheduler did not confirm the switch "
+                                                               f"(registered={registered}); it stays OFF")
     out = flow_view(flow)
     out["saved"] = True
     if out["state"] == "ON_SCHEDULER_STOPPED":     # saved, but nothing will run in this process: say it clearly
         out["warning"] = msg("SCHEDULER_NOT_RUNNING")
     out["registered"] = registered
     return out
+
+
+def preview(flow: str) -> dict:
+    """1.2.6 dry run of a day-end flow: what its next run would record for today's business date (Vietnam), computed
+    from the same local data and rules as the job. Read-only: no job, snapshot, close, revision, audit or alert is
+    written, and BigQuery is never called."""
+    _check(flow)
+    if flow not in DAY_END:
+        raise AppError("VALIDATION_ERROR", 422, detail=f"{flow}: a dry run exists only for eod and close")
+    from ..data.demand import resolve_scope
+    sched = ss.get("schedule")
+    hhmm = getattr(sched, FIELDS[flow]["time"])
+    now = now_vn()
+    day = now.date()
+    with db.read() as c:
+        if flow == "close" and ss.get("general", c).active_source == "MANUAL_IMPORT":
+            raise AppError("CLOSE_SOURCE_MANUAL_IMPORT", 409)
+        sc = resolve_scope(c)
+        if flow == "eod":
+            from .. import forecast_backup
+            res = forecast_backup.preview(c, sc["scope_key"], str(day))
+        else:
+            from .. import actual_close
+            res = actual_close.preview(c, sc["scope_key"], sc["data_source"], str(day), today=day)
+    return {"flow": flow, "mode": "DRY_RUN", "written": False, "business_date": str(day),
+            "slot": vn_slot(day, hhmm).isoformat(), "timezone": getattr(sched, FIELDS[flow]["timezone"]),
+            "computed_at": now.isoformat(timespec="seconds"), "scope_key": sc["scope_key"],
+            "data_source": sc["data_source"], **res}
 
 
 def run_now(flow: str) -> dict:

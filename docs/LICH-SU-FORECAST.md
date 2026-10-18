@@ -238,6 +238,22 @@ Giờ của cả hai flow phải trong khoảng 20:00–23:59, vì chúng đại
   `close_enabled_at`): mốc trước thời điểm đó không bao giờ chạy. Khi TẮT, scheduler không lên lịch job nào và một job
   theo lịch / thử lại của flow TẮT bị bỏ qua (`EOD_SCHEDULE_DISABLED` / `CLOSE_SCHEDULE_DISABLED`). Không đổi giờ D-0 /
   D-1 / huấn luyện.
+- **Cấu hình (card riêng cho từng flow).** Mỗi flow lưu `enabled`, giờ (`eod_time` / `close_time`), múi giờ
+  (`eod_timezone` / `close_timezone`) và thời điểm bật trong thiết lập `schedule` (có lịch sử thiết lập và audit
+  `SCHEDULE_CHANGED`). Giá trị mặc định chỉ định nghĩa một chỗ (`ScheduleSettings`): TẮT, 23:55 / 23:59,
+  `Asia/Ho_Chi_Minh`; API trả kèm `defaults` và `config_updated`. Scheduler, job và UI đọc cùng thiết lập này; không có
+  giờ nào viết cứng trong logic (giờ cắt của bản chốt lấy từ `close_time`).
+  - **Kiểm tra khi lưu (422, không lưu gì):** giờ phải là HH:MM từ 20:00 tới 23:59; múi giờ chỉ được là
+    `Asia/Ho_Chi_Minh` (ngày nghiệp vụ là ngày Việt Nam); hai flow không được cùng một phút.
+  - **Bật phải được scheduler xác nhận.** Bật `eod` / `close` chỉ khi scheduler đang chạy trong tiến trình app; sau
+    khi lưu, `Scheduler.reload()` phải xác nhận flow đã nạp. Không xác nhận (hoặc lỗi) thì công tắc được trả về TẮT
+    (audit ghi lý do) và API trả 409 `SCHEDULE_NOT_REGISTERED`: UI không bao giờ báo BẬT giả.
+  - **Trạng thái runtime** (`runtime.state`): `REGISTERED` (bật và scheduler đã nạp, chờ giờ chạy), `PENDING` /
+    `RUNNING` / `RETRY_WAIT` (có job của flow đang xử lý), `NOT_REGISTERED` (tắt hoặc chưa nạp: không có lần chạy).
+  - **Chạy thử** `GET /api/schedules/eod|close/preview`: tính kết quả lần chạy tới cho ngày hôm nay (snapshot:
+    trạng thái, run nguồn, số dòng, ngày thiếu; chốt: nguồn, trạng thái, số dòng, tổng, ngày sẽ có revision mới) bằng
+    đúng quy tắc của job, chỉ đọc: không tạo job, không ghi bảng nào, không gọi BigQuery. Link từ xa trả 403 cho
+    endpoint này (proxy không đổi).
 - **Chạy bù.** Mốc của hôm qua bị lỡ thì chạy bù một lần (trigger `CATCH_UP`, vẫn cho đúng ngày đó). Ngày cũ hơn ghi
   `MISSED_SLOT_NO_BACKFILL`. Mốc trước lần đầu scheduler của phiên bản này thấy flow (`sync_state`
   `flows_first_seen`) không bao giờ chạy: nâng cấp không tạo snapshot hay bản chốt cho ngày cũ.

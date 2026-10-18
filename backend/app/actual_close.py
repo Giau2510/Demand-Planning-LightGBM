@@ -1,4 +1,4 @@
-"""Actual close of the day at 23:59 (1.2.6). Full description in docs/LICH-SU-FORECAST.md.
+"""Actual close of the day at the configured close time (schedule.close_time, default 23:59; 1.2.6). Full description in docs/LICH-SU-FORECAST.md.
 
   business date  the Vietnam date of the scheduled slot (schedule.close_time, default 23:59) - never the UTC date and
                  never "today" at run time: a retry or catch-up after midnight still closes that day. Closing a day
@@ -101,10 +101,19 @@ def _insert(c, scope_key: str, data_source: str, day: str, rev: int, kind: str, 
     return row
 
 
-def close_day(scope_key: str, data_source: str, business_date: str, hhmm: str = "23:59", job_id: str | None = None,
-              reason: str = "SCHEDULED_CLOSE") -> dict:
+def _close_time(hhmm: str | None) -> str:
+    """The configured close time (schedule.close_time) unless a caller passes the slot's own time."""
+    if hhmm:
+        return hhmm
+    from . import settings_service as ss
+    return ss.get("schedule").close_time
+
+
+def close_day(scope_key: str, data_source: str, business_date: str, hhmm: str | None = None,
+              job_id: str | None = None, reason: str = "SCHEDULED_CLOSE") -> dict:
     """Revision 1 of the day, once (UNIQUE scope + day + revision; the check and the insert share one immediate
     transaction, so two concurrent closes write one revision)."""
+    hhmm = _close_time(hhmm)
     with db.tx() as c:
         have = db.one(c, "SELECT * FROM actual_closes WHERE scope_key=? AND business_date=? AND revision=1",
                       (scope_key, business_date))
@@ -127,21 +136,46 @@ def _why(prev: dict, cur: dict) -> str:
     return "COMPLETION_SIGNAL_CONFIRMED" if cur["status"] == VERIFIED else "STATUS_CHANGED"
 
 
+def _same(cur: dict, prev: dict) -> bool:
+    return (cur["source"], cur["sha"], cur["status"]) == (prev["source"], prev["values_sha256"], prev["status"])
+
+
+def changed_days(c, scope_key: str, data_source: str, today: date, days: int = RECONCILE_DAYS) -> tuple[dict, list]:
+    """Read-only: the latest revision of every closed day of the last `days` days, and the days whose actual (source,
+    values or verification) now differs from it (one pass over the sources, one completion-signal scan)."""
+    from . import forecast_history as fh
+    latest = {r["business_date"]: r for r in db.rows(
+        c, "SELECT a.* FROM actual_closes a WHERE a.scope_key=? AND a.business_date BETWEEN ? AND ? AND a.revision = "
+           "(SELECT MAX(b.revision) FROM actual_closes b WHERE b.scope_key = a.scope_key "
+           "AND b.business_date = a.business_date)", (scope_key, str(today - timedelta(days=days)), str(today)))}
+    ctx = fh.actual_context(c, scope_key, data_source, list(latest), today, closes=False) if latest else {}
+    return latest, [d for d in sorted(latest) if not _same(_actual(c, scope_key, d, ctx[d]), latest[d])]
+
+
+def preview(c, scope_key: str, data_source: str, business_date: str, today: date | None = None,
+            days: int = RECONCILE_DAYS) -> dict:
+    """Dry run of close_day() + reconcile() (read-only): what a close of `business_date` would record now (same source
+    rule; an absent SKU x FC row is never counted as 0) and which closed days would get a new revision."""
+    cur = read_actual(c, scope_key, data_source, business_date)
+    have = db.one(c, "SELECT id, revision, status, n_rows, total_qty, closed_at FROM actual_closes WHERE scope_key=? "
+                     "AND business_date=? AND revision=1", (scope_key, business_date))
+    latest, changed = changed_days(c, scope_key, data_source, today or today_vn(), days)
+    vals = cur["values"]
+    return {"close_status": cur["status"], "status_reason": cur["status_reason"], "source": cur["source"],
+            "source_ref": cur["source_ref"], "rows": len(vals), "total_qty": float(sum(vals.values())) if vals else None,
+            "would_write": not have, "existing_close": have, "closed_days_checked": len(latest),
+            "revisions_pending": [{"business_date": d, "latest_revision": latest[d]["revision"]} for d in changed]}
+
+
 def reconcile(scope_key: str, data_source: str, today: date | None = None, days: int = RECONCILE_DAYS,
-              hhmm: str = "23:59", job_id: str | None = None) -> dict:
+              hhmm: str | None = None, job_id: str | None = None) -> dict:
     """Append a revision for every closed day of the last `days` days whose actual (source, values or verification)
     differs from its latest revision. Idempotent: nothing changed -> nothing written."""
-    from . import forecast_history as fh
     today = today or today_vn()
-    same = lambda cur, prev: (cur["source"], cur["sha"], cur["status"]) == (prev["source"], prev["values_sha256"],  # noqa: E731
-                                                                            prev["status"])
+    hhmm = _close_time(hhmm)
+    same = _same
     with db.read() as c:          # one pass over the sources (one completion-signal scan), outside any write lock
-        latest = {r["business_date"]: r for r in db.rows(
-            c, "SELECT a.* FROM actual_closes a WHERE a.scope_key=? AND a.business_date BETWEEN ? AND ? AND a.revision = "
-               "(SELECT MAX(b.revision) FROM actual_closes b WHERE b.scope_key = a.scope_key "
-               "AND b.business_date = a.business_date)", (scope_key, str(today - timedelta(days=days)), str(today)))}
-        ctx = fh.actual_context(c, scope_key, data_source, list(latest), today, closes=False) if latest else {}
-        changed = [d for d in sorted(latest) if not same(_actual(c, scope_key, d, ctx[d]), latest[d])]
+        latest, changed = changed_days(c, scope_key, data_source, today, days)
     out = {"checked": len(latest), "revised": []}
     for day in changed:
         with db.tx() as c:        # re-read under the write lock: the revision records what is committed now

@@ -16,6 +16,7 @@ from .timeutil import now_iso
 
 DEFAULT_HORIZON_CHOICES = [1, 3, 7, 14, 15, 21, 28, 30, 45, 60, 90, 180, 365]
 HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+DAY_END_TIMEZONE = "Asia/Ho_Chi_Minh"       # 1.2.6 day-end flows: the only timezone of business dates
 IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,299}$")
 PROJECT_RE = re.compile(r"^[a-z][a-z0-9\-]{4,61}[a-z0-9]$")
 INTERNAL_FIELDS = ["order_id", "created_at", "order_date", "sku_id", "fc_id", "order_qty", "unit_price",
@@ -194,6 +195,17 @@ class ScheduleSettings(BaseModel):
     close_enabled_at: str | None = None
     eod_time: str = "23:55"
     close_time: str = "23:59"
+    # each day-end flow stores its own timezone (shown and editable through /api/schedules); business dates are
+    # Vietnam calendar dates, so Asia/Ho_Chi_Minh is the only accepted value
+    eod_timezone: str = DAY_END_TIMEZONE
+    close_timezone: str = DAY_END_TIMEZONE
+
+    @field_validator("eod_timezone", "close_timezone")
+    @classmethod
+    def _vn_only(cls, v):
+        if v != DAY_END_TIMEZONE:
+            raise ValueError(f"timezone must be {DAY_END_TIMEZONE} (business dates are Vietnam calendar dates)")
+        return v
 
     @field_validator("d1_signal_poll_start", "d1_fallback_time", "train_time", "eod_time", "close_time")
     @classmethod
@@ -234,6 +246,10 @@ class ScheduleSettings(BaseModel):
         for f in ("eod_time", "close_time"):
             if getattr(self, f) < "20:00":
                 raise ValueError(f"{f} must be between 20:00 and 23:59 (end of the business day, Vietnam time)")
+        # two jobs of the same minute would compete for the write lock and log in an unclear order: one time each
+        if self.eod_time == self.close_time:
+            raise ValueError(f"eod_time and close_time must differ (both {self.eod_time}): the end-of-day backup and "
+                             "the actual close run at their own minute")
         return self
 
 

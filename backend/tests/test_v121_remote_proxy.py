@@ -62,7 +62,8 @@ def test_every_read_of_the_viewing_pages_passes():
     files = [src / "pages" / f"{p}.tsx" for p in pages] + [src / "App.tsx", src / "components" / "ui.tsx"]
     used = _paths_used_by(files)
     assert "/api/dashboard" in used and "/api/system/status" in used
-    by_design = {"/api/settings/X1/history"}                     # administration history: not remote
+    by_design = {"/api/settings/X1/history",                     # administration history: not remote
+                 "/api/schedules/X1/preview"}                    # 1.2.6 operator dry run: local only (proxy unchanged)
     blocked = sorted(p for p in used - by_design if rp.classify("GET", p) is not None)
     assert blocked == [], blocked
     assert all(rp.classify("GET", p) for p in by_design)

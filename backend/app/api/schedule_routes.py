@@ -19,6 +19,12 @@ def schedule(flow: str):
     return flows.flow_view(flow)
 
 
+@router.get("/schedules/{flow}/preview")
+def preview_schedule(flow: str):
+    """1.2.6 dry run of a day-end flow (eod / close): what its next run would record today. Read-only, writes nothing."""
+    return flows.preview(flow)
+
+
 @router.put("/schedules/{flow}")
 def save_schedule(flow: str, body: dict):
     """Save ONE flow (times and/or switch). Switching ON requires the flow to be ready (409 FLOW_NOT_READY)."""

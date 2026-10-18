@@ -472,7 +472,10 @@ def test_restarts_with_the_flows_off_register_no_day_end_job(small_demo):
     assert (ss.get("schedule").eod_enabled, ss.get("schedule").close_enabled) == (False, False)
 
 
-def test_a_saved_choice_is_kept_and_switching_on_never_back_dates(client, small_demo):
+def test_a_saved_choice_is_kept_and_switching_on_never_back_dates(client, small_demo, monkeypatch):
+    from app.jobs import scheduler as sched_mod
+    from test_v126_schedule_config import RunningScheduler
+    monkeypatch.setattr(sched_mod, "SCHEDULER", RunningScheduler())   # switching ON needs a confirming scheduler
     _at(datetime(2026, 10, 18, 12, 0, tzinfo=VN))
     r = client.put("/api/schedules/eod", json={"enabled": True})
     assert r.status_code == 200 and r.json()["enabled"] is True

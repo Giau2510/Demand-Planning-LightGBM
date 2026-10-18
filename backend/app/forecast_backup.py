@@ -118,6 +118,34 @@ def create(scope_key: str, data_source: str, business_date: str, job_id: str | N
     return {**out, "already_complete": False}
 
 
+def preview(c, scope_key: str, business_date: str) -> dict:
+    """Dry run of create() for `business_date` (read-only): the source session, the status the snapshot would get now
+    and its row count / total. An incomplete or missing source stores no values, so it previews 0 rows (never zeros)."""
+    day = date.fromisoformat(business_date)
+    want = [str(day + timedelta(days=i)) for i in range(1, N_DAYS + 1)]
+    have = db.one(c, "SELECT id, status, n_rows, source_run_id, created_at FROM forecast_eod_snapshots "
+                     "WHERE scope_key=? AND business_date=?", (scope_key, business_date))
+    src = source_session(c, scope_key, business_date)
+    rows, total = 0, None
+    if not src:
+        status, reason, missing = NO_SOURCE, "NO_VALID_FORECAST_SESSION", want
+    else:
+        agg = {d: (n, s) for d, n, s in c.execute(
+            "SELECT target_date, COUNT(*), SUM(yhat) FROM forecast_values WHERE run_id=? AND target_date BETWEEN ? AND ? "
+            "GROUP BY target_date", (src["forecast_run_id"], want[0], want[-1]))}
+        missing = [d for d in want if agg.get(d, (0, None))[0] != src["n_series"]]
+        status, reason = ((INCOMPLETE, f"SOURCE_COVERS_{N_DAYS - len(missing)}_OF_{N_DAYS}_DAYS") if missing
+                          else (COMPLETE, f"ALL_{N_DAYS}_DAYS"))
+        if status == COMPLETE:
+            rows = sum(n for n, _ in agg.values())
+            total = float(sum(s for _, s in agg.values()))
+    return {"snapshot_status": status, "status_reason": reason,
+            "would_write": not (have and have["status"] == COMPLETE),
+            "source_run_id": (src or {}).get("forecast_run_id"), "source_run_date": (src or {}).get("run_date"),
+            "source_n_series": (src or {}).get("n_series"), "first_target_date": want[0], "last_target_date": want[-1],
+            "missing_dates": missing, "rows": rows, "total_yhat": total, "existing_snapshot": have}
+
+
 def latest_due_day(hhmm: str) -> str:
     """Business date of the newest slot that has passed (a manual run never snapshots a day before its end-of-day slot)."""
     now = now_vn()

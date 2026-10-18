@@ -28,6 +28,11 @@ snapshot (`EOD_SNAPSHOT_VERIFY_FAILED`) kết thúc job ở **FAILED** kèm aler
 BigQuery và lỗi không phải `AppError` được thử lại). Dọn snapshot quá 90 ngày là thao tác tay, không có lịch
 (`scripts\eod-retention.ps1`, dry run trước).
 
+Cấu hình hai luồng cuối ngày (card riêng trên trang Lịch chạy dữ liệu): công tắc, giờ, múi giờ (chỉ
+`Asia/Ho_Chi_Minh`), mặc định, lần cập nhật cấu hình, trạng thái runtime và nút **Chạy thử (không ghi)**. Hai luồng không
+được cùng một phút. Bật chỉ được giữ khi scheduler đang chạy xác nhận đã nạp (`SCHEDULE_NOT_REGISTERED` nếu không).
+Chi tiết: [LICH-SU-FORECAST.md](LICH-SU-FORECAST.md) mục 13.
+
 ## Công tắc từng luồng (1.1.8)
 
 - **Một công tắc cho mỗi luồng**: bật D-1 không bật D-0 và ngược lại; huấn luyện có công tắc riêng. Công tắc chỉ đổi

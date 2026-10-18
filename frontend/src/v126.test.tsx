@@ -150,7 +150,7 @@ describe("v1.2.6 schedules page: end-of-day backup and actual close", () => {
     await waitFor(() => expect(screen.getByTestId("flow-eod")).toBeTruthy());
     const page = screen.getByTestId("schedules-page").textContent!;
     expect(page).toContain("Snapshot forecast cuối ngày (dự phòng 7 ngày)");
-    expect(page).toContain("Chốt thực tế cuối ngày (23:59)");
+    expect(page).toContain("Chốt thực tế cuối ngày");
     expect(screen.getByTestId("flow-close").textContent).toContain("Đã chốt – cần xác minh");
     expect((screen.getByTestId("eod-time") as HTMLInputElement).value).toBe("23:55");
     expect((screen.getByTestId("close-time") as HTMLInputElement).value).toBe("23:59");
@@ -182,5 +182,110 @@ describe("v1.2.6 schedules page: end-of-day backup and actual close", () => {
     const put = calls.find((c) => c.method === "PUT")!;
     expect(put.url).toBe("/api/schedules/eod");
     expect(put.body).toEqual({ enabled: true });
+  });
+});
+
+// 1.2.6 schedule configuration of the two day-end flows: values from the backend, timezone, defaults, runtime state,
+// independent switches, ON only when the scheduler confirms, same-minute conflict, dry run that writes nothing.
+type Reply = { status?: number; body: any };
+function mockS(route: (u: string, c: Call) => Reply) {
+  const calls: Call[] = [];
+  globalThis.fetch = vi.fn(async (url: any, init?: any) => {
+    const c = { url: String(url), method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body) : null };
+    calls.push(c);
+    const r = route(c.url, c);
+    return new Response(JSON.stringify(r.body ?? {}), { status: r.status ?? 200, headers: { "content-type": "application/json" } });
+  }) as any;
+  return calls;
+}
+const VN = "Asia/Ho_Chi_Minh";
+function dayEnd(f: "eod" | "close", extra: any = {}) {
+  const jt = f === "eod" ? "EOD_FORECAST_SNAPSHOT" : "ACTUAL_CLOSE";
+  const time = f === "eod" ? "23:55" : "23:59";
+  return { ...flow(f, jt, { time, timezone: VN }), enabled: false, state: "OFF", next_runs: [], last_run: null,
+    defaults: { enabled: false, time, timezone: VN }, config_updated: null, runtime: { state: "NOT_REGISTERED", job_id: null }, ...extra };
+}
+function sched2(eod: any = {}, close: any = {}) {
+  const s = schedules();
+  return { ...s, flows: { ...s.flows, eod: dayEnd("eod", eod), close: dayEnd("close", close) } };
+}
+
+describe("v1.2.6 schedule configuration of the day-end flows", () => {
+  it("shows the saved time, timezone, defaults, runtime state and last change of each card", async () => {
+    mockS(() => ({ body: sched2({ enabled: true, state: "ON", next_runs: ["2026-10-18T23:55:00+07:00"],
+      runtime: { state: "REGISTERED", job_id: null }, config_updated: { at: "2026-10-18T05:00:00+00:00", fields: ["eod_enabled"] } }) }));
+    await act(async () => { render(wrap(<Schedules />)); });
+    await waitFor(() => expect(screen.getByTestId("flow-eod")).toBeTruthy());
+    expect((screen.getByTestId("eod-timezone") as HTMLSelectElement).value).toBe(VN);
+    expect((screen.getByTestId("close-timezone") as HTMLSelectElement).value).toBe(VN);
+    expect(screen.getByTestId("runtime-eod").textContent).toContain("Đã đăng ký");
+    expect(screen.getByTestId("runtime-close").textContent).toContain("Chưa đăng ký");
+    expect(screen.getByTestId("state-eod").textContent).toContain("Đang bật");
+    expect(screen.getByTestId("next-eod").textContent).toContain("23:55");
+    expect(screen.getByTestId("config-meta-eod").textContent).toContain("23:55");
+    expect(screen.getByTestId("config-meta-close").textContent).toContain("chưa thay đổi");
+    expect(screen.getByTestId("flow-close").textContent).toContain("không khẳng định dữ liệu đã hoàn tất");
+    // the existing flows keep their own cards and values
+    expect((screen.getByTestId("d0-times") as HTMLInputElement).value).toBe("08:00");
+    expect(screen.queryByTestId("runtime-d0")).toBeNull();
+  });
+
+  it("changes the time of one flow and saves only that flow (time and timezone)", async () => {
+    const calls = mockS((_u, c) => ({ body: c.method === "PUT" ? { ...dayEnd("close"), config: { time: "23:50", timezone: VN }, saved: true } : sched2() }));
+    await act(async () => { render(wrap(<Schedules />)); });
+    await waitFor(() => expect(screen.getByTestId("flow-close")).toBeTruthy());
+    fireEvent.change(screen.getByTestId("close-time"), { target: { value: "23:50" } });
+    expect(screen.getByTestId("flow-close").textContent).toContain("Có thay đổi chưa lưu");
+    await act(async () => { fireEvent.click(screen.getByTestId("save-close")); });
+    const puts = calls.filter((c) => c.method === "PUT");
+    expect(puts).toHaveLength(1);
+    expect(puts[0].url).toBe("/api/schedules/close");
+    expect(puts[0].body).toEqual({ time: "23:50", timezone: VN });
+  });
+
+  it("refuses the same minute for both flows before anything is sent", async () => {
+    const calls = mockS(() => ({ body: sched2() }));
+    await act(async () => { render(wrap(<Schedules />)); });
+    await waitFor(() => expect(screen.getByTestId("flow-eod")).toBeTruthy());
+    fireEvent.change(screen.getByTestId("eod-time"), { target: { value: "23:59" } });
+    expect(screen.getByTestId("conflict-eod").textContent).toContain("cùng một phút");
+    expect((screen.getByTestId("save-eod") as HTMLButtonElement).disabled).toBe(true);
+    expect(calls.filter((c) => c.method === "PUT")).toHaveLength(0);
+  });
+
+  it("never says ON when the scheduler did not confirm, and shows the backend's refusal", async () => {
+    let n = 0;
+    const calls = mockS((_u, c) => {
+      if (c.method !== "PUT") return { body: sched2() };
+      n += 1;
+      if (n === 1) return { body: { ...dayEnd("eod"), enabled: true, state: "ON_NOT_LOADED", registered: false, saved: true } };
+      return { status: 409, body: { code: "SCHEDULE_NOT_REGISTERED", vi: "Scheduler đang chạy không xác nhận đã nạp lịch này, nên lịch vẫn TẮT", en: "x", detail: "eod" } };
+    });
+    await act(async () => { render(wrap(<Schedules />)); });
+    await waitFor(() => expect(screen.getByTestId("flow-eod")).toBeTruthy());
+    await act(async () => { fireEvent.click(screen.getByTestId("toggle-eod")); });
+    expect(screen.getByTestId("warn-eod").textContent).toContain("KHÔNG coi là đã bật");
+    expect(screen.getByTestId("flow-eod").textContent).not.toContain("Đã bật luồng");
+    await act(async () => { fireEvent.click(screen.getByTestId("toggle-close")); });
+    expect(calls.filter((c) => c.method === "PUT").map((c) => c.body)).toEqual([{ enabled: true }, { enabled: true }]);
+    expect(screen.getByTestId("flow-close").textContent).toContain("lịch vẫn TẮT");
+    expect(screen.getByTestId("state-close").textContent).toContain("Tắt");          // still the backend's saved state
+  });
+
+  it("runs a dry run with a GET only and shows what the next run would record", async () => {
+    const calls = mockS((u) => ({ body: u.endsWith("/preview") ? { flow: "eod", mode: "DRY_RUN", written: false, business_date: "2026-10-18",
+      slot: "2026-10-18T23:55:00+07:00", timezone: VN, snapshot_status: "INCOMPLETE", status_reason: "SOURCE_COVERS_4_OF_7_DAYS",
+      rows: 0, total_yhat: null, source_run_id: "FCR-A", source_run_date: "2026-10-17", first_target_date: "2026-10-19",
+      last_target_date: "2026-10-25", missing_dates: ["2026-10-23", "2026-10-24", "2026-10-25"], would_write: true } : sched2() }));
+    await act(async () => { render(wrap(<Schedules />)); });
+    await waitFor(() => expect(screen.getByTestId("flow-eod")).toBeTruthy());
+    await act(async () => { fireEvent.click(screen.getByTestId("preview-btn-eod")); });
+    await waitFor(() => expect(screen.getByTestId("preview-eod")).toBeTruthy());
+    const p = screen.getByTestId("preview-eod").textContent!;
+    expect(p).toContain("không ghi dữ liệu nào");
+    expect(p).toContain("KHÔNG đủ 7 ngày");
+    expect(p).toContain("không có (không ghi 0)");
+    expect(calls.some((c) => c.url === "/api/schedules/eod/preview" && c.method === "GET")).toBe(true);
+    expect(calls.filter((c) => c.method !== "GET")).toHaveLength(0);
   });
 });

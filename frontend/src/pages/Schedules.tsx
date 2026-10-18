@@ -51,23 +51,61 @@ function LastRun({ v }: { v: any }) {
 
 const FLOW_ICON: Record<FlowKey, IconName> = { d1: "calendar", d0: "clock", train: "model", eod: "fhistory", close: "actual" };
 
-function FlowCard({ flow, v, title, intro, children, onSaved, confirmOn }: {
+/** 1.2.6 day-end flows: the scheduler runtime state reported by the backend (never derived from the form). */
+const RUNTIME_PILL: Record<string, string> = { REGISTERED: "OK", NOT_REGISTERED: "SKIPPED", PENDING: "PENDING",
+  RUNNING: "RUNNING", RETRY_WAIT: "RETRY_WAIT" };
+const DAY_END_FLOWS: FlowKey[] = ["eod", "close"];
+
+/** Dry run of a day-end flow: what the next run would record today, computed by the backend; nothing is written. */
+function Preview({ p }: { p: any }) {
+  const { t } = useI18n();
+  const status = p.snapshot_status ?? p.close_status;
+  const total = p.total_yhat ?? p.total_qty;
+  return (
+    <div className="alert info small" data-testid={`preview-${p.flow}`}>
+      <b>{t("sch.preview.title")}</b> — {t("sch.preview.nothing_written")}
+      <ul className="small">
+        <li>{t("sch.preview.day")}: <b>{fmtDate(p.business_date)}</b> · {t("sch.preview.slot")}: {fmtTime(p.slot)} ({p.timezone})</li>
+        <li>{t("sch.preview.status")}: <Pill status={status === "COMPLETE" || status === "CLOSED_VERIFIED" ? "OK" : status === "CLOSED_UNVERIFIED" ? "INFO" : "INSUFFICIENT"}
+          label={t(`sch.preview.st.${status}`)} /> <span className="muted mono">{p.status_reason}</span></li>
+        <li>{t("sch.preview.rows")}: <b>{p.rows}</b> · {t("sch.preview.total")}: <b>{total == null ? t("sch.preview.no_value") : total}</b></li>
+        {p.flow === "eod" && <li>{t("sch.preview.source_run")}: <span className="mono">{p.source_run_id ?? "—"}</span> ({p.source_run_date ?? "—"}) · {t("sch.preview.targets")}: {p.first_target_date} → {p.last_target_date}
+          {p.missing_dates?.length > 0 && <> · {t("sch.preview.missing")}: {p.missing_dates.length}</>}</li>}
+        {p.flow === "close" && <li>{t("sch.preview.source")}: <b>{p.source ?? "—"}</b> <span className="muted mono">{p.source_ref ?? ""}</span>
+          · {t("sch.preview.revisions")}: <b>{p.revisions_pending?.length ?? 0}</b>/{p.closed_days_checked}</li>}
+        <li>{p.would_write ? t("sch.preview.would_write") : t("sch.preview.exists")}</li>
+      </ul>
+    </div>
+  );
+}
+
+function FlowCard({ flow, v, title, intro, children, onSaved, confirmOn, conflictTime }: {
   flow: FlowKey; v: any; title: string; intro: ReactNode; children: (form: any, set: (p: any) => void) => ReactNode;
-  onSaved: () => void; confirmOn?: string;
+  onSaved: () => void; confirmOn?: string; conflictTime?: string;
 }) {
   const { t, pick } = useI18n();
   const act = useAction();
+  const dayEnd = DAY_END_FLOWS.includes(flow);
   const [form, setForm] = useState<any>(v.config);
   const [runId, setRunId] = useState<string | null>(null);     // job started by "run once now", followed until it ends
   const [running, setRunning] = useState(false);
+  const [warn, setWarn] = useState<string | null>(null);
+  const [preview, setPreview] = useState<any>(null);
   useEffect(() => { setForm(v.config); }, [JSON.stringify(v.config)]);       // always the backend's saved values
   const set = (p: any) => setForm((f: any) => ({ ...f, ...p }));
   const dirty = JSON.stringify(form) !== JSON.stringify(v.config);
+  const conflict = dayEnd && !!conflictTime && form.time === conflictTime;   // the two day-end flows never share a minute
   const invalid = Object.entries(form).some(([k, x]) => (k === "time" || k === "fallback_time") && !HHMM.test(String(x)))
-    || (form.times && (!Array.isArray(form.times) || form.times.some((x: string) => !HHMM.test(x))));
+    || (form.times && (!Array.isArray(form.times) || form.times.some((x: string) => !HHMM.test(x)))) || conflict;
   const save = async (body: any, ok: string) => {
+    setWarn(null);
     const r = await act.run(() => put(`/api/schedules/${flow}`, body), ok);
     if (r?.warning) act.setOk(`${ok} — ${pick(r.warning)}`);
+    // a day-end flow is said ON only when the running scheduler confirmed it (state ON, registered)
+    if (r && dayEnd && body.enabled === true && !(r.state === "ON" && r.registered === true)) {
+      act.setOk(null);
+      setWarn(t("sch.not_confirmed"));
+    }
     onSaved();
   };
   return (
@@ -81,6 +119,19 @@ function FlowCard({ flow, v, title, intro, children, onSaved, confirmOn }: {
           {v.enabled && v.enabled_at && <span className="small muted">{t("sch.enabled_at")} {fmtTime(v.enabled_at)}</span>}
           <span className="small muted">{t("sch.timezone")}: <span className="mono">{v.timezone}</span></span>
         </div>
+        {dayEnd && v.runtime && (
+          <div className="row wrap small" data-testid={`runtime-${flow}`}>
+            <b>{t("sch.runtime")}:</b> <Pill status={RUNTIME_PILL[v.runtime.state] ?? "PENDING"} label={t(`sch.runtime.${v.runtime.state}`)} />
+            {v.runtime.job_id && <span className="mono muted">{v.runtime.job_id}</span>}
+          </div>
+        )}
+        {dayEnd && (
+          <div className="small muted" data-testid={`config-meta-${flow}`}>
+            {v.defaults && <>{t("sch.defaults")}: <span className="mono">{v.defaults.time}</span> · <span className="mono">{v.defaults.timezone}</span> · {t(v.defaults.enabled ? "sch.state.ON" : "sch.state.OFF")}</>}
+            {" · "}{t("sch.config_updated")}: {v.config_updated ? fmtTime(v.config_updated.at) : t("sch.config_never")}
+          </div>
+        )}
+        {warn && <div className="alert warn small" role="alert" data-testid={`warn-${flow}`}>{warn}</div>}
         <Readiness r={v.readiness} />
         <div className="form-grid">{children(form, set)}</div>
         <div className="row wrap">
@@ -104,8 +155,18 @@ function FlowCard({ flow, v, title, intro, children, onSaved, confirmOn }: {
               }
               onSaved();
             }}><Icon name="run" />{t("sch.run_now")}</button>
+          {dayEnd && (
+            <button data-testid={`preview-btn-${flow}`} disabled={act.busy} title={t("sch.preview.help")}
+              onClick={async () => {
+                setPreview(null);
+                const r = await act.run(() => get(`/api/schedules/${flow}/preview`));
+                if (r) setPreview(r);
+              }}><Icon name="search" />{t("sch.preview.button")}</button>
+          )}
         </div>
+        {preview && <Preview p={preview} />}
         {runId && <JobProgress jobId={runId} onDone={() => { setRunning(false); onSaved(); }} />}
+        {conflict && <div className="alert warn small" role="alert" data-testid={`conflict-${flow}`}>{t("sch.time_conflict")}</div>}
         {dirty && <div className="alert warn small">{t("sch.unsaved")}</div>}
         <div className="small" data-testid={`next-${flow}`}>
           <b>{t("sch.next_run")}:</b> {v.next_runs?.length ? v.next_runs.map((x: string) => fmtTime(x)).join(" · ") : <span className="muted">{t("sch.no_next")}</span>}
@@ -128,6 +189,20 @@ function FlowCard({ flow, v, title, intro, children, onSaved, confirmOn }: {
 
 function Time({ value, onChange, testid }: { value: string; onChange: (v: string) => void; testid: string }) {
   return <input data-testid={testid} value={value} maxLength={5} placeholder="HH:MM" onChange={(e) => onChange(e.target.value.trim())} />;
+}
+
+/** Saved timezone of a day-end flow. Business dates are Vietnam dates: the backend accepts only Asia/Ho_Chi_Minh. */
+function TimezoneField({ flow, form, set, v }: { flow: FlowKey; form: any; set: (p: any) => void; v: any }) {
+  const { t } = useI18n();
+  const value = form.timezone ?? v.timezone;
+  const options = Array.from(new Set([v.defaults?.timezone ?? "Asia/Ho_Chi_Minh", value]));
+  return (
+    <Field label={t("sch.timezone")} help={t("sch.timezone_help")}>
+      <select data-testid={`${flow}-timezone`} value={value} onChange={(e) => set({ timezone: e.target.value })}>
+        {options.map((o) => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </Field>
+  );
 }
 
 /** One page for the automatic data flows: D-1 (closed days), D-0 (today), daily training - each with its own switch. */
@@ -186,18 +261,22 @@ export default function Schedules() {
       </FlowCard>
 
       {f.eod && (
-        <FlowCard flow="eod" v={f.eod} title={t("sch.eod.title")} intro={t("sch.eod.intro")} onSaved={data.reload}>
-          {(form, set) => (
+        <FlowCard flow="eod" v={f.eod} title={t("sch.eod.title")} intro={t("sch.eod.intro")} onSaved={data.reload}
+          conflictTime={f.close?.config?.time}>
+          {(form, set) => (<>
             <Field label={t("sch.eod.time")}><Time testid="eod-time" value={form.time} onChange={(x) => set({ time: x })} /></Field>
-          )}
+            <TimezoneField flow="eod" form={form} set={set} v={f.eod} />
+          </>)}
         </FlowCard>
       )}
 
       {f.close && (
-        <FlowCard flow="close" v={f.close} title={t("sch.close.title")} intro={t("sch.close.intro")} onSaved={data.reload}>
-          {(form, set) => (
+        <FlowCard flow="close" v={f.close} title={t("sch.close.title")} intro={t("sch.close.intro")} onSaved={data.reload}
+          conflictTime={f.eod?.config?.time}>
+          {(form, set) => (<>
             <Field label={t("sch.close.time")}><Time testid="close-time" value={form.time} onChange={(x) => set({ time: x })} /></Field>
-          )}
+            <TimezoneField flow="close" form={form} set={set} v={f.close} />
+          </>)}
         </FlowCard>
       )}
 

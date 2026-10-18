@@ -27,6 +27,19 @@ Rules in [docs/LICH-SU-FORECAST.md](docs/LICH-SU-FORECAST.md) sections 10-14.
   - The database refuses any deletion younger than 90 days or without a permit of the same connection. Never touches
     forecasts, the D+1 history or actual closes. Not scheduled: an operator step.
   - After a snapshot is deleted, a run date that only had that backup shows no forecast (never 0).
+* **Schedule configuration of the two day-end flows** (owner request 18/10/2026 15:4x; schedules page, one card each).
+  - Persistent switch, time and timezone (`eod_timezone` / `close_timezone`, only `Asia/Ho_Chi_Minh` accepted),
+    defaults defined once in `ScheduleSettings` (OFF, 23:55 / 23:59) and returned as `defaults`; last configuration
+    change (`config_updated`) and scheduler runtime state (`REGISTERED` / `NOT_REGISTERED` / active job).
+  - Validation (422, nothing saved): HH:MM between 20:00 and 23:59, Vietnam timezone only, the two flows never at the
+    same minute (also refused in the UI before sending).
+  - Switching `eod` / `close` ON is kept only when the running scheduler confirms it (`Scheduler.reload()`); otherwise
+    it is switched back OFF with an audit entry and the API answers 409 `SCHEDULE_NOT_REGISTERED`: no false ON.
+  - Dry run `GET /api/schedules/{eod|close}/preview` (button "Chạy thử (không ghi)"): what the next run would record
+    today, computed read-only with the job's rules (no job, no write, no BigQuery). Not reachable through the remote
+    link (proxy unchanged: 403).
+  - No time is hard-coded in the logic any more (`actual_close.close_day` takes `close_time`); texts say "cuối ngày" /
+    "end of the day" instead of "23:59".
 * **End-of-day forecast backup** (job `EOD_FORECAST_SNAPSHOT`, flow `eod`, 23:55 Vietnam time, **OFF by default**).
   - Copies the next 7 forecast days (S+1..S+7) of the official session of the newest run date <= S.
   - COMPLETE only when every series has all 7 days, verified in the same transaction. Otherwise the snapshot is

@@ -131,9 +131,9 @@ CATALOG: dict[str, tuple[str, str]] = {
                              "được ghi nhận. Xem chi tiết lỗi và bản backup trước khi chạy lại.",
                              "The end-of-day snapshot clean-up stopped: the failing snapshot was rolled back, the ones deleted "
                              "before it are recorded. Check the error and the backup before running it again."),
-    "ACTUAL_CLOSE_NO_DATA": ("Chốt thực tế 23:59: ngày này chưa có dữ liệu thực tế (không có D-1 và không có snapshot D0) — đã ghi "
+    "ACTUAL_CLOSE_NO_DATA": ("Chốt thực tế cuối ngày: ngày này chưa có dữ liệu thực tế (không có D-1 và không có snapshot D0) — đã ghi "
                              "nhận 'không có dữ liệu', không coi là 0.",
-                             "23:59 actual close: this day has no actual data (no D-1 load and no D0 snapshot) — recorded as "
+                             "End-of-day actual close: this day has no actual data (no D-1 load and no D0 snapshot) — recorded as "
                              "'no data', never as 0."),
     "ACTUAL_CLOSE_TOO_EARLY": ("Chưa tới giờ chốt thực tế của ngày này (giờ Việt Nam).",
                                "The actual of this day cannot be closed before its close time (Vietnam time)."),
@@ -141,8 +141,12 @@ CATALOG: dict[str, tuple[str, str]] = {
                                    "MANUAL_IMPORT is static history from an Excel file — there is no running day to close."),
     "EOD_SCHEDULE_DISABLED": ("Lịch snapshot forecast cuối ngày đang TẮT — lần chạy theo lịch được ghi là bỏ qua.",
                               "The end-of-day forecast snapshot schedule is OFF — the scheduled run is recorded as skipped."),
-    "CLOSE_SCHEDULE_DISABLED": ("Lịch chốt thực tế 23:59 đang TẮT — lần chạy theo lịch được ghi là bỏ qua.",
-                                "The 23:59 actual close schedule is OFF — the scheduled run is recorded as skipped."),
+    "CLOSE_SCHEDULE_DISABLED": ("Lịch chốt thực tế cuối ngày đang TẮT — lần chạy theo lịch được ghi là bỏ qua.",
+                                "The end-of-day actual close schedule is OFF — the scheduled run is recorded as skipped."),
+    "SCHEDULE_NOT_REGISTERED": ("Scheduler đang chạy không xác nhận đã nạp lịch này, nên lịch vẫn TẮT (không lưu trạng thái BẬT). "
+                                "Kiểm tra trạng thái scheduler ở đầu trang rồi bật lại.",
+                                "The running scheduler did not confirm this schedule, so it stays OFF (the ON state was not "
+                                "kept). Check the scheduler state at the top of the page, then switch it on again."),
     "WAITING_FOR_FORECAST_JOB": ("Đang chờ job huấn luyện / forecast đang chạy kết thúc trước khi lấy snapshot cuối ngày.",
                                  "Waiting for the running training / forecast job to finish before the end-of-day snapshot."),
     "WAITING_FOR_D0_JOB": ("Đang chờ lần đọc D-0 đang chạy kết thúc trước khi chốt thực tế.",
@@ -369,7 +373,8 @@ def category(code: str) -> str:
     if code in ("NO_ACTIVE_DATASET", "ACTIVE_DATASET_INCONSISTENT", "SOURCE_NOT_READY", "SCHEDULER_DISABLED",
                 "FLOW_NOT_READY", "D0_SCHEDULE_DISABLED", "D1_SCHEDULE_DISABLED", "TRAIN_SCHEDULE_DISABLED",
                 "SCHEDULE_SWITCH_VIA_FLOW_API", "SCHEDULER_NOT_RUNNING", "D0_MAPPING_INCOMPLETE", "D0_REVALIDATE_REQUIRED",
-                "TRAIN_WAITS_FOR_D1", "EOD_SCHEDULE_DISABLED", "CLOSE_SCHEDULE_DISABLED", "CLOSE_SOURCE_MANUAL_IMPORT"):
+                "TRAIN_WAITS_FOR_D1", "EOD_SCHEDULE_DISABLED", "CLOSE_SCHEDULE_DISABLED", "CLOSE_SOURCE_MANUAL_IMPORT",
+                "SCHEDULE_NOT_REGISTERED"):
         return "CONFIG"
     if code in ("INTERNAL_ERROR",):
         return "INTERNAL"

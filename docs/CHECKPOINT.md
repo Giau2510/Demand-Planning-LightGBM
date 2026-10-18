@@ -449,3 +449,16 @@ match runner.py). No production write, no deploy, no push; local commits allowed
 | Rehearsal | DONE | isolated copy (port 8879, local proxy 8878, no tunnel): run 2 43/43 PASS (run 1 38/40: status timeout in the measurement, fixed); upgrade downtime 116 s, schema 6, flows OFF, plans = 1.2.5; retention applied on a synthetic expired snapshot; rollback with 1.2.5 restore.ps1 -> every table = pre-deploy, pre-restore zip = schema 6 DB |
 | Production | NOT TOUCHED | 15:05 read-only: 1.2.5, db 4, FCR-...798B4D, flows unchanged, pids 22024 / 26416 / 31076, storage.json 8D79DBDD |
 | Report | DONE | reports/demandforecast_v126_blocker_resolution_release_rehearsal.md (not versioned): READY FOR OWNER APPROVAL |
+
+# 1.2.6 schedule configuration UI + automatic deploy in the approved window (2026-10-18 15:45 - )
+
+Owner prompt "HOAN THIEN UI CAU HINH HAI LICH MOI, SAU DO CHO DEPLOY MOT LAN": complete the two day-end schedule
+cards (switch, time, timezone, runtime state, dry run), QA, new package, rehearsal, then ONE production upgrade by a
+Windows scheduled task in the 19:00-22:00 window after D-0 18:00; both flows switched ON only after the post-checks.
+The earlier package BBD73386...09C3 (d05ff97) is superseded by the new build (never deployed).
+
+| Step | Status | Evidence |
+|---|---|---|
+| Survey | DONE | cards, API, settings, scheduler reload, validation read; gaps: timezone not persistent, same-minute allowed, ON not confirmed by the scheduler, no runtime state / last change, no dry run, close_day default "23:59" |
+| Source | DONE | settings_service (timezones, conflict), jobs/flows (defaults, config_updated, runtime, confirmed ON, preview), forecast_backup.preview, actual_close.preview + changed_days, schedule_routes, messages, export_i18n; Schedules.tsx, i18n.tsx |
+| Tests | DONE | backend tests/test_v126_schedule_config.py (new) + 2 tests adapted to the confirmed-ON rule; frontend v126.test.tsx +5 |
