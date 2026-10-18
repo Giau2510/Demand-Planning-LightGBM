@@ -1,8 +1,36 @@
-# Data dictionary (SQLite, schema version 4 since 1.2.5; tables of version 3 unchanged)
+# Data dictionary (SQLite, schema version 5 since 1.2.6; tables of version 4 unchanged)
 
 Generated from `PRAGMA table_info / index_list / foreign_key_list` of a read-only **copy** of the live database (integrity `ok`, foreign-key violations 0) and annotated from the code. Row counts are from that copy on 2026-10-15 and only indicate scale. Empty *Meaning* = the column name is self-describing; nothing has been invented. See [DATA-MODEL.md](DATA-MODEL.md) for relationships, lifecycle and rules.
 
 Conventions: timestamps are UTC ISO-8601 strings with offset (`timeutil.iso`); business dates are Vietnam calendar dates `YYYY-MM-DD` (Asia/Ho_Chi_Minh); `*_json` columns hold JSON text; SQLite types are affinities (TEXT/INTEGER/REAL), not enforced types.
+
+## `actual_closes` (1.2.6, migration 0005)
+
+Close of a business day's actual at 23:59 (revision 1, `kind` CLOSE) and the later revisions recorded when the actual
+changed (`kind` RECONCILIATION). Immutable; revisions consecutive (triggers). Code: `actual_close.py`.
+
+| Column | Type | Null | Key | Default | Meaning / rule |
+|---|---|---|---|---|---|
+| `id` | TEXT | no | PK |  | ACL-... |
+| `scope_key`, `data_source` | TEXT | no | UNIQUE(1) |  | active scope at the close |
+| `business_date` | TEXT | no | UNIQUE(2) |  | Vietnam day closed (date of the slot, never the UTC date) |
+| `revision` | INTEGER | no | UNIQUE(3) |  | 1 = close, n > 1 follows n - 1 (`previous_id`) |
+| `kind`, `reason` | TEXT | no |  |  | CLOSE / RECONCILIATION; SCHEDULED_CLOSE, CATCH_UP_CLOSE, MANUAL_CLOSE, D1_LOADED, D1_RELOADED, D0_LATE_READ, COMPLETION_SIGNAL_CONFIRMED, SOURCE_HAS_NO_DATA |
+| `source`, `source_ref`, `source_as_of`, `source_reason` | TEXT | yes |  |  | D1 (ref = load time) / D0 (ref = snapshot id) / NULL (no data); read time; actual_context reason |
+| `n_rows`, `total_qty`, `values_sha256` | INTEGER / REAL / TEXT | no / yes / yes |  |  | SKU x FC rows present in the source (absent rows are not stored); total NULL when no data |
+| `status`, `status_reason` | TEXT | no / yes |  |  | CLOSED_VERIFIED (completion signal) / CLOSED_UNVERIFIED / CLOSED_NO_DATA (CHECK) |
+| `previous_id`, `previous_total`, `n_changed`, `n_added`, `n_removed` | TEXT / REAL / INTEGER | yes |  |  | before / after of a revision |
+| `cutoff_at`, `closed_at`, `timezone`, `job_id` | TEXT | no / no / no / yes |  |  | business_date close time (UTC); time written (UTC); Asia/Ho_Chi_Minh |
+
+## `actual_close_values` (1.2.6, migration 0005)
+
+SKU x FC quantities of one close revision (WITHOUT ROWID). Immutable.
+
+| Column | Type | Null | Key | Default | Meaning / rule |
+|---|---|---|---|---|---|
+| `close_id` | TEXT | no | PK(1) FK -> actual_closes |  |  |
+| `sku_id`, `fc_id` | TEXT | no | PK(2), PK(3) |  |  |
+| `qty` | REAL | no |  |  | as read from the source (D-1 qty or D0 cumulative) |
 
 ## `alerts`
 
@@ -118,6 +146,38 @@ Code: `data/demand.py, sync.py` - rows in copy: 38533
 | `promo_share` | REAL | yes |  |  |  |
 | `voucher_share` | REAL | yes |  |  |  |
 | `loaded_at` | TEXT | no |  |  | UTC time the row was (re)built |
+
+## `forecast_eod_snapshots` (1.2.6, migration 0005)
+
+End-of-day forecast backup per scope and business day S: the next 7 forecast days (S+1..S+7) of the official session of
+the newest run date <= S. One row per (scope, day) (UNIQUE). A COMPLETE row never changes; an INCOMPLETE / NO_SOURCE row
+may only be completed by a later attempt of the same day; no row is deleted (triggers). Code: `forecast_backup.py`.
+
+| Column | Type | Null | Key | Default | Meaning / rule |
+|---|---|---|---|---|---|
+| `id` | TEXT | no | PK |  | FES-... |
+| `scope_key`, `data_source` | TEXT | no | UNIQUE(1) |  |  |
+| `business_date` | TEXT | no | UNIQUE(2) |  | Vietnam day the snapshot stands for |
+| `first_target_date`, `last_target_date`, `n_days` | TEXT / TEXT / INTEGER | no |  |  | S+1, S+7, 7 |
+| `source_run_id` | TEXT | yes | FK -> forecast_runs |  | NULL when no valid session existed |
+| `source_run_date`, `source_session_started_at`, `source_published_at`, `source_model_version`, `source_training_run_id`, `source_data_as_of`, `source_n_series` | TEXT / INTEGER | yes |  |  | trace of the source session |
+| `n_rows`, `days_covered`, `missing_dates_json`, `total_yhat`, `values_sha256` | INTEGER / TEXT / REAL | no / no / yes / yes / yes |  |  | n_rows = 7 x series when COMPLETE, else 0 |
+| `status`, `status_reason` | TEXT | no / yes |  |  | COMPLETE / INCOMPLETE / NO_SOURCE (CHECK); e.g. SOURCE_COVERS_4_OF_7_DAYS |
+| `timezone`, `job_id`, `attempts`, `created_at`, `updated_at` | TEXT / INTEGER | no / yes / no / no / no |  | attempts 1 | first and last attempt (UTC) |
+
+Index: `ix_fes_scope_day`(scope_key, status, business_date)
+
+## `forecast_eod_snapshot_values` (1.2.6, migration 0005)
+
+Values of a COMPLETE end-of-day snapshot, copied from `forecast_values` (WITHOUT ROWID). Insert allowed only for a
+COMPLETE snapshot; never updated or deleted (triggers). About 7 x 17,127 = 119,889 rows (~11.8 MB) per day on production
+data (measured on a copy, 18/10/2026).
+
+| Column | Type | Null | Key | Default | Meaning / rule |
+|---|---|---|---|---|---|
+| `snapshot_id` | TEXT | no | PK(1) FK -> forecast_eod_snapshots |  |  |
+| `target_date`, `sku_id`, `fc_id` | TEXT | no | PK(2..4) |  | grain SKU x FC x forecast date |
+| `horizon_day`, `yhat`, `method` | INTEGER / REAL / TEXT | no |  |  | exactly the source value (data-check, last 14 days) |
 
 ## `forecast_history_days` (1.2.5, migration 0004)
 
@@ -426,6 +486,11 @@ Code: `data/quality.py` - rows in copy: 3
 Indexes: `ix_validation_reports_scope`(scope_key, created_at)
 
 ## Triggers
+
+1.2.6: `trg_fes_no_delete`, `trg_fes_complete_fixed`, `trg_fes_keys_fixed`, `trg_fes_values_no_update/no_delete`,
+`trg_fes_values_complete_only` (a COMPLETE backup never changes; values only for a COMPLETE snapshot);
+`trg_actual_closes_no_update/no_delete`, `trg_actual_close_values_no_update/no_delete`, `trg_actual_closes_consecutive`
+(closes are immutable, a change is a new consecutive revision).
 
 1.2.5: `trg_fh_sessions_no_update/no_delete`, `trg_fh_values_no_update/no_delete`, `trg_fh_days_no_delete`,
 `trg_fh_days_keys_fixed`, `trg_fh_days_same_day(_insert)` (history immutability; the official pointer is an eligible session

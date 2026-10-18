@@ -42,6 +42,23 @@ nên link giữ nguyên.
 - Schema 4: rollback về 1.2.4 cần khôi phục bản sao lưu trước nâng cấp. Xem
   [LICH-SU-FORECAST.md](LICH-SU-FORECAST.md) mục 9.
 
+### Snapshot forecast cuối ngày và chốt thực tế 23:59 (1.2.6)
+
+- Hai flow mới trên trang Lịch chạy dữ liệu, mặc định BẬT:
+  - `eod`: 23:55, snapshot 7 ngày forecast kế tiếp;
+  - `close`: 23:59, chốt thực tế và đối soát dữ liệu đến muộn.
+- Cả hai chỉ sao chép dữ liệu cục bộ. Không đọc BigQuery, không huấn luyện, không forecast, không publish.
+- Tắt / bật / đổi giờ tại trang Lịch chạy dữ liệu. Giờ phải trong khoảng 20:00–23:59.
+- Theo dõi:
+  - lịch sử job ghi ngày nghiệp vụ, trạng thái snapshot / bản chốt, số dòng;
+  - alert WARNING `EOD_SNAPSHOT_INCOMPLETE`, `EOD_NO_VALID_FORECAST`, `ACTUAL_CLOSE_NO_DATA`;
+  - `data-check` có 3 kiểm tra `eod_snapshot_*` / `actual_close_revisions`.
+- Snapshot `INCOMPLETE` / `NO_SOURCE` có thể hoàn thành bằng nút "Chạy ngay 1 lần" của flow `eod`. Nút này chụp ngày
+  có mốc gần nhất đã qua.
+- Dung lượng khoảng 11,8 MB mỗi ngày với dữ liệu hiện tại. Chưa có chính sách xóa; cần quyết định thời hạn lưu.
+- Schema 5: rollback về 1.2.5 cần khôi phục bản sao lưu trước nâng cấp ([LICH-SU-FORECAST.md](LICH-SU-FORECAST.md)
+  mục 9).
+
 ## Sao lưu
 
 - Giao diện: **Hệ thống & sao lưu → Sao lưu ngay**; hoặc `Backup.bat` / `scripts\backup.ps1`. An toàn khi ứng dụng đang chạy

@@ -13,6 +13,13 @@ nhật ký riêng. Không còn công tắc chung cho mọi job.
 | `D0_SYNC` — D-0, ngày hiện tại (`schedule.d0_enabled`, mặc định **TẮT**) | 08:00, 10:00, 12:00, 14:00, 16:00, 18:00 | DEMO (mô phỏng, gắn nhãn DEMO), BIGQUERY. MANUAL_IMPORT: *bị bỏ qua* (dữ liệu tĩnh) |
 | `D1_SYNC` — D-1, ngày đã đóng (`schedule.d1_enabled`, mặc định **TẮT**) | chờ tín hiệu từ 01:00, kiểm tra mỗi 30 phút; giờ dự phòng 06:00 | chỉ BIGQUERY |
 | `TRAIN_PUBLISH` — huấn luyện hằng ngày (`schedule.train_enabled`, giữ trạng thái công tắc chung cũ) | 07:00 | mọi nguồn; với BIGQUERY chỉ chạy sau khi D-1 hôm nay thành công (theo lịch hoặc chạy tay, 1.2.1) |
+| `EOD_FORECAST_SNAPSHOT` — 1.2.6, snapshot forecast cuối ngày, 7 ngày kế tiếp (`schedule.eod_enabled`, mặc định **BẬT**) | 23:55 (cho phép 20:00–23:59) | mọi nguồn có bộ dữ liệu; chỉ sao chép dữ liệu cục bộ, chờ job huấn luyện / forecast đang chạy |
+| `ACTUAL_CLOSE` — 1.2.6, chốt thực tế của ngày + đối soát dữ liệu đến muộn (`schedule.close_enabled`, mặc định **BẬT**) | 23:59 (cho phép 20:00–23:59) | DEMO, BIGQUERY; MANUAL_IMPORT *bị bỏ qua*; chờ lần đọc D-0 đang chạy |
+
+1.2.6: hai job cuối ngày mang **ngày nghiệp vụ của mốc** (`params.business_date`, ngày Việt Nam), nên chạy sau nửa đêm
+(grace, retry, chạy bù) vẫn cho đúng ngày đó. Mốc của hôm qua bị lỡ được chạy bù một lần; ngày cũ hơn ghi
+`MISSED_SLOT_NO_BACKFILL`. Mốc trước lần đầu scheduler của phiên bản này thấy flow (`sync_state` `flows_first_seen`)
+không bao giờ chạy. Quy tắc dữ liệu: [LICH-SU-FORECAST.md](LICH-SU-FORECAST.md) mục 10–13.
 
 ## Công tắc từng luồng (1.1.8)
 
@@ -109,6 +116,8 @@ Mỗi job lưu `stage`, `stage_updated_at` và lịch sử công đoạn (`stage
 | `TRAIN_PUBLISH` | QUEUED → STARTED → VALIDATING_DATA → PREPARING_DATA → BACKTESTING → TRAINING → QUALITY_GATE → FORECASTING → PUBLISHING → DONE |
 | `FORECAST_EXTEND` | QUEUED → STARTED → VERIFYING_MODEL → PREPARING_DATA → FORECASTING → PUBLISHING → DONE |
 | `D0_SYNC`, `D1_SYNC` | QUEUED → STARTED → SYNCING → DONE |
+| `EOD_FORECAST_SNAPSHOT` (1.2.6) | QUEUED → STARTED → SNAPSHOTTING → DONE |
+| `ACTUAL_CLOSE` (1.2.6) | QUEUED → STARTED → CLOSING → DONE |
 
 Kết thúc: DONE / FAILED / SKIPPED / WAITING_RETRY / INTERRUPTED. Với huấn luyện, **kết quả huấn luyện** (chấp nhận /
 không đạt / lỗi, `failed_stage`) và **kết quả publish** được hiển thị tách riêng; lỗi trong bước PUBLISHING có mã

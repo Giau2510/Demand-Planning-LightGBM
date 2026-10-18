@@ -55,7 +55,7 @@ stylesheet. No gradients, no decorative animation; the only motion is the loadin
 | `Loading`, `ErrorBox`, `OkBox` | Loading spinner; backend error with code; success only after the backend confirmed it. |
 | `Confirm` | Dialog labelled by its title, Escape cancels, warning icon on destructive confirmations. |
 | `LineChart` | Forecast line (blue) + today's actual point (orange); drawn in real pixels, dates never overlap, last date always labelled, tooltip box. Never interpolates missing data. |
-| `CompareChart` | Stored forecast (blue line + dots) against actual (orange squares) per date; a missing value is a gap (segments join only consecutive known values); provisional actual = hollow square on a dashed segment, complete = filled square; tooltip lines given by the page. |
+| `CompareChart` | Stored forecast (blue line + dots) against actual (orange squares) per date; a missing value is a gap (segments join only consecutive known values); provisional actual = hollow square on a dashed segment, complete = filled square; tooltip lines given by the page. 1.2.6: a forecast taken from the end-of-day backup (`backup: true`) is a tinted dot on a dashed segment, with its own legend entry. |
 | `Term`, `MethodLabel` | Plain-language tooltip for a technical term (hover, focus, tap). Tooltips add information, never replace a label. |
 
 Buttons: default (secondary), `primary` (main action), `danger` (destructive: delete / replace), `ghost`, `link`,

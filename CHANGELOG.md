@@ -5,6 +5,44 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.2.6 - unreleased (end-of-day forecast backup + 23:59 actual close; not packaged, not deployed) [reports/demandforecast_v125_eod_backup_actual_finalization.md]
+
+Rules in [docs/LICH-SU-FORECAST.md](docs/LICH-SU-FORECAST.md) sections 10-13.
+
+* Migration **0005** (additive, schema 4 -> 5): `forecast_eod_snapshots` / `forecast_eod_snapshot_values` and
+  `actual_closes` / `actual_close_values`, with immutability triggers. No existing table or row changed (verified on a
+  copy of the production database: 8 table fingerprints identical before / after).
+* **End-of-day forecast backup** (job `EOD_FORECAST_SNAPSHOT`, flow `eod`, default ON at 23:55 Vietnam time).
+  - Copies the next 7 forecast days (S+1..S+7) of the official session of the newest run date <= S.
+  - COMPLETE only when every series has all 7 days, verified in the same transaction. Otherwise the snapshot is
+    INCOMPLETE / NO_SOURCE without any value, with a WARNING alert.
+  - One snapshot per scope and day. A complete one is never changed.
+  - Waits for a running training / forecast job. Never trains, forecasts, publishes or reads BigQuery.
+* **Backup in the history**: a run date WITHOUT an official session shows the D+1 of the newest COMPLETE snapshot that
+  covers it.
+  - Labelled "Dự phòng" with the snapshot day, time made and source run. Chart: dashed segment.
+  - New filter `forecast_source`; new columns at the end of the Excel sheets (format H2).
+  - The official forecast always wins. No covering snapshot = an empty day, never 0.
+* **Actual close at 23:59** (job `ACTUAL_CLOSE`, flow `close`, default ON at 23:59 Vietnam time).
+  - Revision 1 is an independent copy of the actual shown at the close (D-1 if loaded, else the last D0 snapshot). It
+    covers only the SKU x FC rows present in the source; a day without data is CLOSED_NO_DATA, never 0.
+  - Without the source's completion signal the day is "Đã chốt – cần xác minh" (CLOSED), never "Đã hoàn tất".
+  - Late data (after each D-1 load and in each close job, last 14 days) appends a revision with before / after totals
+    and changed / added / removed counts. Revisions are immutable and consecutive.
+  - The figure shown, the deviation and the WAPE formula are unchanged: the close only adds the status and the trace.
+* **WAPE during the day:** unchanged, still recomputed after each D-0 read (owner accepted cumulative vs full-day).
+  Pinned by a regression test against `ml/metrics.py`.
+* **Schedule:** the two day-end jobs carry the business date of their slot (Vietnam date).
+  - Yesterday's missed slot is caught up once; older days are recorded as missed.
+  - Slots before this version first ran are never run (`sync_state` `flows_first_seen`).
+  - Times must be 20:00-23:59.
+  - D-0 / D-1 / training schedules unchanged.
+* `data-check`: 3 new checks (`eod_snapshot_complete`, `eod_snapshot_values_match_source`, `actual_close_revisions`).
+* Changed defaults: new schedule keys `eod_enabled` / `close_enabled` = true, `eod_time` = 23:55, `close_time` = 23:59.
+* Storage: about 11.8 MB per day for the backup with the current 17,127 series. No retention policy yet (owner
+  decision).
+* Rollback to 1.2.5 = restore the pre-upgrade backup (schema 5).
+
 ## 1.2.5 - 2026-10-18 (Forecast & actual history D+1 + UI redesign, released together) [reports/demandforecast_v125_history_ui_20261018.md]
 
 ### A. Forecast & actual history (new page `/forecast-history`, rules in [docs/LICH-SU-FORECAST.md](docs/LICH-SU-FORECAST.md))

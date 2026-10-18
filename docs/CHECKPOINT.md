@@ -410,4 +410,23 @@ UI redesign + deploy chung một lần". ONE release / deployment for both scope
 | Deploy | DONE 18/10 10:00-10:09 | after D-0 10:00 (no active job): deploy-upgrade 1.2.4 -> 1.2.5 exit 0 (457 s; link 502 10:04:55-10:07:42); backups backup-20261018-100109-manual.zip (FCAEC813...CDD6), -100456-pre-migration-v3.zip, -100541-cli.zip; migration 0004 applied 10:05:41; history reconciled 5 runs, 0 errors; proxy only restarted (13024 -> 26416, 1.2.4 allowlist -> 1.2.5, 1.2 s, 0 errors), cloudflared 31076 and URL unchanged |
 | Immutability evidence | DONE (levels 1-3) | 18/10 10:29: D+1 forecast of FCR-20261017123417-FCC0EB (17/10 -> 18/10, 17,125 rows) has the SAME sha256 b43dda4f...4754 in backup-20261017-225247 (before any actual of 18/10), backup-20261018-100109 (after the real D-0 08:00 = 0 and 10:00 = 3,764 updates), live published values and live history copy (GET); isolated fingerprint test through 4 actual updates PASS + test_v125_forecast_history 21/21; no job / training / forecast / publish created. Pending (3b): the history copy itself (10:07:44) has not met a production actual update yet (next: D-0 12:00). Report: reports/demandforecast_v125_history_ui_20261018.md section 13 (reports/ is not versioned) |
 | Production check | DONE | 1.2.5 / current.txt 1.2.5, storage.json 8D79DBDD unchanged, BIGQUERY, forecast in use FCC0EB, 5 forecast runs, D-1 / D-0 / training ON with the same times, no job since the deploy, data-check WARN (pre-existing forecast_series_meta) + 5 history checks OK; through the link: history 17/10 -> 18/10 17,125 rows, actual 18/10 so far (D0 10:00) PROVISIONAL, Excel 1.46 MB, writes 405 |
+| Immutability 3b | DONE 12:02 | after the scheduled D-0 12:00 (JOB-20261018050022-4B6AF2, actual source -> SNP-20261018050026-A83982) the stored D+1 of run date 17/10 read by GET is still 17,125 rows, sha256 b43dda4f...4754 (prod_fp_after_1200.py, GET only) |
+
+# 1.2.6 End-of-day forecast backup + 23:59 actual close (2026-10-18 11:21 - ), NOT released
+
+Owner master prompt "WAPE D-0 + EOD 7-Day Forecast Backup + Actual Finalization 23:59". No production write, no deploy,
+no push; local commits allowed.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Checkpoint | DONE | `checkpoints/checkpoint-20261018-v126-eod-close-before.zip` (git archive of HEAD d60f81e: backend/app, backend/tests, frontend/src, package files, docs, CHANGELOG, AGENTS, scripts), SHA-256 BA60CE4E...ECE5 |
+| Survey | DONE | forecast_origin = run date (horizon 1 = that day), D+1 = run date + 1, every series has every horizon date (backup copy); completion signal = audit D1_SYNC mode SIGNAL only (not configured on production); scheduler plans by idempotency key; D-1 post-commit hook `_after_d1` |
+| Backend | DONE | migration 0005 (additive), `forecast_backup.py`, `actual_close.py`, fallback + CLOSED overlay in `forecast_history.py`, flows `eod` / `close` (default ON 23:55 / 23:59, 20:00-23:59 only), business date from the slot, `flows_first_seen`, reconcile after each D-1, 3 data-check checks, Excel H2, version 1.2.6 |
+| Frontend | DONE | history: backup label / table / chart style, CLOSED status, forecast source filter; schedules: 2 flow cards; jobs: filter + flow list |
+| Tests | DONE | backend 457 passed / 7 skipped (real-BigQuery only) incl. 18 new in test_v126_eod_backup_close.py (isolated DB); frontend vitest 110/110 (4 new), typecheck OK, build OK; lint not configured; 2 assertions updated for the new migration / flows (test_v125 migration target, test_v118 loaded flows) |
+| DB copy | DONE | integ126.py copy2 (backup API, mode=ro, 12:00:32): schema 4 -> 5, 8 tables identical; snapshot 18/10 COMPLETE 119,889 rows = 7 x 17,127 (+11.76 MB, 1.04 s); close 17/10 D1 CLOSED_UNVERIFIED 68,598; close 18/10 D0 3,764; backup days 19-20/10 (simulated on the copy) 0 rows differing from source; WAPE 17/10 identical with / without the close; data-check 3 new OK |
+| Review | DONE | data-reviewer: SAFE WITH CONDITIONS; fixed: day-end time validation, bounded data-check counts, duplicate index removed, reconcile scans the sources once outside the write lock; first-seen marker read without a write lock |
+| Production | NOT TOUCHED | 12:08 read-only: 1.2.5, no job running, link 200 / POST 405, proxy 26416 + cloudflared 31076, storage.json 8D79DBDD; owner (UI) promoted TRN-20261018020140-642DB8 -> FCR-20261018043737-798B4D at 11:37 and saved the D-1 schedule (03:00 / 05:00) at 11:40 |
+| Report | DONE | reports/demandforecast_v125_eod_backup_actual_finalization.md (not versioned) |
+| Git | DONE (local) | 581fcdc code + tests, then this docs commit; not pushed; no package built, nothing deployed |
 
