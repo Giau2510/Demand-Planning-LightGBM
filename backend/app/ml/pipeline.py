@@ -14,7 +14,7 @@ from datetime import date, timedelta
 
 import numpy as np
 
-from .. import db, paths
+from .. import db, forecast_history, paths
 from .. import settings_service as ss
 from ..data import identity
 from ..data.demand import data_window, fingerprint, load_demand, panel_for_run, resolve_scope
@@ -525,6 +525,7 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
                              fc=fc, details=details, horizons=hcfg.enabled, max_h=max_h, job_id=job_id, mcfg=mcfg)
             if warn:
                 _warn_published(c, fr_id, run_id, gate["assessment"])
+        forecast_history.capture_after_publish(fr_id)   # 1.2.5: D+1 history, after the commit (never undoes it)
         log.info("forecast published", extra={"ctx": {"forecast_run_id": fr_id, "training_run_id": run_id,
                                                       "model_version": pub_version, "rows": n, "candidate": chosen,
                                                       "usage": usage["status"]}})
@@ -638,6 +639,7 @@ def extend_forecast(run_id: str, job_id: str | None = None, cancel=None, progres
         _publish_run(c, fr_id=fr_id, training_run_id=tr["id"], version=run["model_version"], scope=scope,
                      panel=panel, fc=fc, details=details, horizons=want, max_h=new_max, job_id=job_id, mcfg=mcfg,
                      derived_from=run_id)
+    forecast_history.capture_after_publish(fr_id)
     return {"status": "PUBLISHED", "reason_code": "FORECAST_EXTENDED", "forecast_run_id": fr_id,
             "derived_from_run_id": run_id, "model_version": run["model_version"], "horizons": want,
             "previous_horizons": have, "reproduced_values": len(old)}
@@ -745,6 +747,7 @@ def promote_candidate(training_run_id: str, cancel=None) -> dict:
                   "usage": gate["assessment"]["usage"]["status"]})
         if warn:
             _warn_published(c, fr_id, training_run_id, gate["assessment"])
+    forecast_history.capture_after_publish(fr_id)
     log.info("candidate promoted", extra={"ctx": {"training_run_id": training_run_id, "forecast_run_id": fr_id,
                                                   "rows": n, "candidate": chosen}})
     return {"status": "PUBLISHED", "reason_code": "MODEL_PROMOTED", "training_run_id": training_run_id,
@@ -868,6 +871,7 @@ def release_with_gate_exception(training_run_id: str, approval: dict, cancel=Non
         db.alert(c, "WARNING", "QUALITY_GATE_EXCEPTION_ACTIVE",
                  {"training_run_id": training_run_id, "model_version": tr["model_version"],
                   "review_by": exc["review_by"]}, "training_run", training_run_id)
+    forecast_history.capture_after_publish(fr_id)
     log.info("released with gate exception", extra={"ctx": {"training_run_id": training_run_id,
                                                              "forecast_run_id": fr_id, "rows": n}})
     return {"status": "PUBLISHED", "reason_code": "RELEASED_WITH_GATE_EXCEPTION", "training_run_id": training_run_id,

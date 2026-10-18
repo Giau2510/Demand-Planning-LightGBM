@@ -3,7 +3,8 @@ import { Link, useSearchParams } from "react-router-dom";
 import { get, post, upload } from "../api";
 import { useSystem } from "../App";
 import { useI18n } from "../i18n";
-import { Card, Code, Confirm, ErrorBox, Field, OkBox, Pill, Stat, fmtDate, fmtDateish, fmtNum, useAction, useAsync } from "../components/ui";
+import { Card, Code, Confirm, ErrorBox, Field, OkBox, PageHeader, Pill, Stat, fmtDate, fmtDateish, fmtNum, useAction, useAsync } from "../components/ui";
+import { Icon } from "../components/icons";
 
 export default function ImportPage() {
   const { t, lang } = useI18n();
@@ -72,24 +73,24 @@ export default function ImportPage() {
   if (done) {
     return (
       <div className="stack">
-        <h2>{t("nav.import")}</h2>
-        <div className="alert ok"><b>{t("imp.done")}</b>: <span className="mono">{done.id}</span> — <Pill status={done.status} /> · {fmtNum(done.valid_rows)} {t("common.rows")}
+        <PageHeader icon="import" title={t("nav.import")} desc={t("page.import.desc")} />
+        <div className="alert ok" role="status"><b>{t("imp.done")}</b>: <span className="mono">{done.id}</span> — <Pill status={done.status} /> · {fmtNum(done.valid_rows)} {t("common.rows")}
           {done.replaces_batch_id && <> · {t("bat.replaces")} <span className="mono">{done.replaces_batch_id}</span></>}
         </div>
-        <div className="row"><Link className="btn" to="/batches">{t("nav.batches")}</Link><Link className="btn" to="/quality">{t("nav.quality")}</Link><Link className="btn primary" to="/">{t("nav.dashboard")}</Link><button onClick={reset}>{t("imp.start_over")}</button></div>
+        <div className="row wrap"><Link className="btn" to="/batches"><Icon name="batches" />{t("nav.batches")}</Link><Link className="btn" to="/quality"><Icon name="quality" />{t("nav.quality")}</Link><Link className="btn primary" to="/"><Icon name="dashboard" />{t("nav.dashboard")}</Link><button onClick={reset}><Icon name="reset" />{t("imp.start_over")}</button></div>
       </div>
     );
   }
 
   return (
     <div className="stack">
-      <h2>{t("nav.import")}</h2>
-      <Card title={t("imp.step1")}>
+      <PageHeader icon="import" title={t("nav.import")} desc={t("page.import.desc")} />
+      <Card icon="upload" title={t("imp.step1")}>
         <p className="small">{t("imp.only_xlsx")}</p>
         <div className="row wrap">
-          <a className="btn" href="/api/templates/import-template.xlsx">{t("imp.template")}</a>
-          <a className="btn" href="/api/templates/sample-history.xlsx">{t("imp.sample_ok")}</a>
-          <a className="btn" href="/api/templates/sample-with-errors.xlsx">{t("imp.sample_err")}</a>
+          <a className="btn" href="/api/templates/import-template.xlsx"><Icon name="download" />{t("imp.template")}</a>
+          <a className="btn" href="/api/templates/sample-history.xlsx"><Icon name="download" />{t("imp.sample_ok")}</a>
+          <a className="btn" href="/api/templates/sample-with-errors.xlsx"><Icon name="download" />{t("imp.sample_err")}</a>
         </div>
         <div className="row wrap">
           <label className="row"><input type="radio" checked={mode === "new"} onChange={() => setMode("new")} /> {t("imp.new_batch")}</label>
@@ -103,15 +104,15 @@ export default function ImportPage() {
         </div>
         {mode === "replace" && <div className="alert warn small">{t("imp.replace_help")}</div>}
         <div className="row">
-          <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(e) => { reset(); setFile(e.target.files?.[0] ?? null); }} />
-          <button className="primary" onClick={doUpload} disabled={!file || act.busy || (mode === "replace" && !replaceId)}>{t("imp.upload")}</button>
+          <input type="file" aria-label={t("imp.only_xlsx")} accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(e) => { reset(); setFile(e.target.files?.[0] ?? null); }} />
+          <button className="primary" onClick={doUpload} disabled={!file || act.busy || (mode === "replace" && !replaceId)}><Icon name="upload" />{t("imp.upload")}</button>
         </div>
       </Card>
       <ErrorBox error={act.error} />
       <OkBox text={act.ok} />
 
       {up && (
-        <Card title={t("imp.step2")}>
+        <Card icon="mapping" title={t("imp.step2")}>
           <Field label={t("imp.sheet")}>
             <select value={sheet} onChange={(e) => setSheet(e.target.value)}>
               <option value="">{t("imp.choose_sheet")}</option>
@@ -139,14 +140,14 @@ export default function ImportPage() {
               </tbody>
             </table>
           )}
-          <button className="primary" onClick={validate} disabled={!sheet || !requiredOk || act.busy}>{act.busy ? t("common.running") : t("imp.validate")}</button>
+          <p><button className="primary" onClick={validate} disabled={!sheet || !requiredOk || act.busy}><Icon name={act.busy ? "running" : "quality"} className={act.busy ? "spin" : undefined} />{act.busy ? t("common.running") : t("imp.validate")}</button></p>
           {sheet && !requiredOk && <Code code="MISSING_REQUIRED_COLUMNS" />}
         </Card>
       )}
 
       {batch && (
         <>
-          <Card title={t("imp.step3")}>
+          <Card icon="quality" title={t("imp.step3")}>
             <div className="grid4">
               <Stat label={t("imp.total")} value={fmtNum(batch.total_rows)} />
               <Stat label={t("imp.valid")} value={fmtNum(batch.valid_rows)} tone="ok" />
@@ -166,7 +167,7 @@ export default function ImportPage() {
                 ))}
               </tbody>
             </table>
-            {batch.issue_count > 0 && <a className="btn" href={`/api/imports/${batch.id}/errors.xlsx?lang=${lang}`}>{t("imp.error_report")}</a>}
+            {batch.issue_count > 0 && <p><a className="btn" href={`/api/imports/${batch.id}/errors.xlsx?lang=${lang}`}><Icon name="export" />{t("imp.error_report")}</a></p>}
             <h4>{t("imp.preview")}</h4>
             <div className="scroll">
               <table className="tbl small">
@@ -194,16 +195,16 @@ export default function ImportPage() {
               </>
             )}
           </Card>
-          <Card title={t("imp.step4")}>
+          <Card icon="ok" title={t("imp.step4")}>
             {batch.requires_error_ack && (
               <label className="row"><input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} /> {t("imp.ack_errors")}</label>
             )}
             <label className="row"><input type="checkbox" checked={setActive} onChange={(e) => setSetActive(e.target.checked)} /> {t("imp.set_active")}</label>
             <div className="row">
-              <button onClick={cancel} disabled={act.busy}>{t("imp.cancel_import")}</button>
+              <button onClick={cancel} disabled={act.busy}><Icon name="close" />{t("imp.cancel_import")}</button>
               <button className={batch.replaces_batch_id ? "danger" : "primary"} disabled={!batch.can_confirm || (batch.requires_error_ack && !ack) || act.busy}
                 onClick={() => (batch.replaces_batch_id ? setAskReplace(true) : confirm())}>
-                {batch.replaces_batch_id ? `${t("imp.confirm_replace")} ${batch.replaces_batch_id}` : t("imp.confirm")}
+                <Icon name={batch.replaces_batch_id ? "warn" : "ok"} />{batch.replaces_batch_id ? `${t("imp.confirm_replace")} ${batch.replaces_batch_id}` : t("imp.confirm")}
               </button>
             </div>
             {!batch.can_confirm && <Code code="NO_VALID_ROWS" />}

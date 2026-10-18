@@ -93,6 +93,16 @@ CATALOG: dict[str, tuple[str, str]] = {
     "TRACE_TIMEOUT": ("Tính trace TreeSHAP vượt giới hạn thời gian.", "Computing the TreeSHAP trace exceeded the time limit."),
     "UNSUPPORTED_MODEL": ("Định dạng mô hình không được bộ trace hỗ trợ.", "Model format not supported by the trace engine."),
     "FORECAST_PUBLISHED":("Đã publish forecast mới.", "New forecast published."),
+    "FORECAST_HISTORY_CAPTURE_FAILED": ("Forecast đã publish nhưng chưa ghi được vào Lịch sử Forecast & Thực tế. Forecast không bị ảnh hưởng; "
+                                        "lịch sử sẽ được ghi lại tự động ở lần publish sau, khi khởi động lại ứng dụng, hoặc bằng lệnh "
+                                        "'python -m app.cli history-reconcile'.",
+                                        "The forecast was published but could not be recorded in the Forecast & actual history yet. The "
+                                        "forecast is not affected; the history is recorded automatically at the next publish, at the next app "
+                                        "start, or with 'python -m app.cli history-reconcile'."),
+    "HISTORY_EXPORT_TOO_LARGE": ("Bộ lọc hiện tại có quá nhiều dòng cho một file Excel (tối đa 1.000.000 dòng). Hãy thu hẹp khoảng ngày, "
+                                 "FC hoặc SKU rồi xuất lại — file không bao giờ bị cắt bớt.",
+                                 "The current filter has too many rows for one Excel file (at most 1,000,000). Narrow the dates, FC or "
+                                 "SKU and export again — the file is never truncated."),
     "PROMOTION_REVIEW_REQUIRED": ("Model mới dùng được nhưng KHÔNG tự thay model đang dùng (chưa có tiêu chí thay model được phê duyệt). Xem so sánh trên cùng các fold ở trang Hiệu năng model và bấm 'Dùng model này' nếu đồng ý.",
                                   "The new model is usable but does NOT replace the model in use automatically (no approved promotion rule). Review the same-fold comparison on the Model performance page and click 'Use this model' to accept it."),
     "CANDIDATE_READY_FOR_REVIEW": ("Có model mới chờ duyệt — forecast đang publish vẫn từ model đang dùng.",

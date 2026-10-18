@@ -2,7 +2,8 @@ import { useState } from "react";
 import { get, post } from "../api";
 import { useSystem } from "../App";
 import { useI18n } from "../i18n";
-import { Card, ErrorBox, OkBox, fmtBytes, fmtDatesInText, fmtTime, useAction, useAsync } from "../components/ui";
+import { Card, Empty, ErrorBox, OkBox, PageHeader, fmtBytes, fmtDatesInText, fmtTime, useAction, useAsync } from "../components/ui";
+import { Icon } from "../components/icons";
 
 export default function System() {
   const { t } = useI18n();
@@ -27,10 +28,10 @@ export default function System() {
   };
   return (
     <div className="stack">
-      <h2>{t("nav.system")}</h2>
+      <PageHeader icon="system" title={t("nav.system")} desc={t("page.system.desc")} />
       <ErrorBox error={act.error} />
       <OkBox text={act.ok} />
-      <Card>
+      <Card icon="info" title={t("sys.install")}>
         <table className="tbl">
           <tbody>
             <tr><td>{t("sys.version")}</td><td>{status?.version}</td></tr>
@@ -39,7 +40,7 @@ export default function System() {
           </tbody>
         </table>
       </Card>
-      <Card title={t("sys.paths")} actions={<button onClick={paths.reload}>{t("common.refresh")}</button>}>
+      <Card icon="disk" title={t("sys.paths")} actions={<button onClick={paths.reload}><Icon name="refresh" />{t("common.refresh")}</button>}>
         <p className="small muted">{t("sys.paths_help")}</p>
         {paths.data && (
           <table className="tbl small">
@@ -58,10 +59,10 @@ export default function System() {
         )}
         <p className="small muted">{t("sys.paths_change")}</p>
       </Card>
-      <Card title={t("sys.diag")} actions={<>
-        <button onClick={runCheck} disabled={act.busy}>{t("sys.health_check")}</button>
-        <a className="btn" href="/api/system/diagnostics.md">{t("sys.diag_download")}</a>
-        <button className="primary" onClick={saveDiag} disabled={act.busy}>{t("sys.diag_save")}</button>
+      <Card icon="quality" title={t("sys.diag")} actions={<>
+        <button onClick={runCheck} disabled={act.busy}><Icon name="quality" />{t("sys.health_check")}</button>
+        <a className="btn" href="/api/system/diagnostics.md"><Icon name="download" />{t("sys.diag_download")}</a>
+        <button className="primary" onClick={saveDiag} disabled={act.busy}><Icon name="save" />{t("sys.diag_save")}</button>
       </>}>
         <p className="small muted">{t("sys.diag_help")}</p>
         {health && (
@@ -70,20 +71,25 @@ export default function System() {
             : <span className="pill bad">{t("sys.health_bad")}: integrity={String(health.integrity)}, FK={health.foreign_key_violations}</span>}</p>
         )}
       </Card>
-      <Card title={t("sys.backups")} actions={<button className="primary" onClick={backup} disabled={act.busy}>{t("sys.backup_now")}</button>}>
+      <Card icon="backup" title={t("sys.backups")} actions={<button className="primary" onClick={backup} disabled={act.busy}><Icon name="backup" />{t("sys.backup_now")}</button>}>
         <p className="small mono">{backups.data?.dir}</p>
-        <table className="tbl small">
-          <tbody>{(backups.data?.files ?? []).map((f: any) => <tr key={f.file}><td className="mono">{f.file}</td><td className="num">{fmtBytes(f.size_bytes)}</td></tr>)}</tbody>
-        </table>
+        {backups.data && !backups.data.files?.length ? <Empty text={t("sys.no_backups")} /> : (
+          <div className="scroll">
+            <table className="tbl small">
+              <thead><tr><th>{t("sys.backup_file")}</th><th className="num">{t("sys.size")}</th></tr></thead>
+              <tbody>{(backups.data?.files ?? []).map((f: any) => <tr key={f.file}><td className="mono">{f.file}</td><td className="num">{fmtBytes(f.size_bytes)}</td></tr>)}</tbody>
+            </table>
+          </div>
+        )}
         <p className="small muted">{t("sys.restore_help")}</p>
       </Card>
-      <Card title={t("sys.audit")}>
+      <Card icon="file" title={t("sys.audit")}>
         <div className="scroll">
           <table className="tbl small">
             <thead><tr><th>{t("common.created")}</th><th>{t("sys.action")}</th><th>{t("sys.entity")}</th><th></th></tr></thead>
             <tbody>
               {(audit.data ?? []).map((a: any) => (
-                <tr key={a.id}><td>{fmtTime(a.at)}</td><td className="mono">{a.action}</td><td className="mono">{a.entity_type}:{a.entity_id}</td><td className="mono">{fmtDatesInText(JSON.stringify(a.details ?? {}).slice(0, 160))}</td></tr>
+                <tr key={a.id}><td className="nowrap">{fmtTime(a.at)}</td><td className="mono">{a.action}</td><td className="mono">{a.entity_type}:{a.entity_id}</td><td className="mono">{fmtDatesInText(JSON.stringify(a.details ?? {}).slice(0, 160))}</td></tr>
               ))}
             </tbody>
           </table>

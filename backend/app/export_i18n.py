@@ -138,3 +138,105 @@ OTHER = {
         "err_cols": ["Row", "Column", "Error code", "Severity", "Value in file", "Explanation"],
     },
 }
+
+
+# 1.2.5: "Forecast & actual history" export (format H1, independent of the forecast export format above)
+HISTORY = {
+    "vi": {
+        "sheet_info": "Thông tin", "sheet_sessions": "Phiên forecast", "sheet_daily": "Theo ngày",
+        "sheet_rows": "Chi tiết SKU x FC", "field": "Trường", "value": "Giá trị", "all": "Tất cả",
+        "info": {"export_format_version": "Phiên bản định dạng file", "language": "Ngôn ngữ",
+                 "generated_at_vn": "Thời điểm xuất (giờ Việt Nam)", "scope": "Bộ dữ liệu (scope)",
+                 "data_source": "Nguồn dữ liệu", "run_from": "Ngày chạy forecast từ", "run_to": "Ngày chạy forecast đến",
+                 "fc_filter": "Lọc FC/kho", "search_filter": "Lọc SKU / tên sản phẩm", "status_filter": "Lọc trạng thái thực tế",
+                 "rows": "Số dòng SKU x FC", "days_with_history": "Số ngày chạy có lịch sử",
+                 "forecast_total": "Tổng forecast đã lưu", "actual_total": "Tổng thực tế hiện có (các dòng có thực tế)",
+                 "forecast_compared": "Tổng forecast trên các dòng có thực tế",
+                 "deviation": "Sai lệch Forecast - Thực tế (các dòng có thực tế)", "wape": "WAPE (các dòng có thực tế)",
+                 "kpi_status": "Trạng thái số liệu thực tế", "rule_d1": "Quy tắc lưu forecast",
+                 "rule_actual": "Quy tắc thực tế", "rule_wape": "Cách tính"},
+        "rule_d1": ("Mỗi ngày chạy chỉ lưu forecast của ngày hôm sau (D+1) từ phiên forecast hợp lệ mới nhất của ngày đó "
+                    "(phiên = một lần forecast đã publish thành công). Forecast đã lưu không bao giờ bị sửa."),
+        "rule_actual": ("Thực tế đọc từ dữ liệu D-1 đã nạp (SKU x FC không có dòng trong ngày đã nạp = 0); trước khi D-1 nạp "
+                        "ngày đó: số lũy kế của snapshot D0 mới nhất. 'Đã hoàn tất' chỉ khi D-1 nạp ngày đó theo tín hiệu "
+                        "hoàn tất của nguồn; còn lại là 'Tạm tính'. Ô trống = chưa có dữ liệu thực tế (không phải 0)."),
+        "rule_wape": ("Sai lệch = Forecast - Thực tế; WAPE = tổng |Forecast - Thực tế| / tổng Thực tế, chỉ trên các dòng đã "
+                      "có thực tế; không tính khi tổng thực tế = 0. WAPE theo dòng = |F - T| / T khi T > 0."),
+        "status": {"COMPLETE": "Đã hoàn tất", "PROVISIONAL": "Tạm tính", "NO_ACTUAL": "Chưa có dữ liệu thực tế"},
+        "reason": {"COMPLETION_SIGNAL": "D-1 đã nạp theo tín hiệu hoàn tất của nguồn",
+                   "D1_NO_COMPLETION_SIGNAL": "D-1 đã nạp, nguồn chưa có tín hiệu hoàn tất",
+                   "D0_INTRADAY": "Lũy kế trong ngày (snapshot D0)",
+                   "D0_LAST_READ": "Snapshot D0 cuối của ngày, D-1 chưa nạp",
+                   "FUTURE_DATE": "Ngày chưa tới", "NO_D0_READ_TODAY": "Hôm nay chưa có snapshot D0",
+                   "NOT_LOADED_YET": "D-1 chưa nạp ngày này", "DAY_WITHOUT_DATA": "Ngày đã nạp nhưng không có dòng dữ liệu"},
+        "cols_sessions": {"run_date": "Ngày chạy forecast", "target_date": "Ngày được dự báo",
+                          "session_started_at": "Thời điểm phiên", "published_at": "Thời điểm publish",
+                          "forecast_run_id": "Mã phiên (run ID)", "model_version": "Phiên bản mô hình",
+                          "official": "Là phiên chính thức", "decision": "Quyết định khi ghi nhận",
+                          "decision_reason": "Lý do", "capture_mode": "Cách ghi nhận", "captured_at": "Ghi nhận lúc",
+                          "n_rows": "Số dòng D+1", "usage_status": "Đánh giá sử dụng"},
+        "cols_daily": {"run_date": "Ngày chạy forecast", "target_date": "Ngày được dự báo", "forecast": "Forecast",
+                       "actual": "Thực tế", "deviation": "Sai lệch (F - T)", "wape": "WAPE",
+                       "forecast_run_id": "Mã phiên (run ID)", "status": "Trạng thái thực tế", "reason": "Chi tiết"},
+        "cols_rows": {"run_date": "Ngày chạy forecast", "target_date": "Ngày được dự báo", "forecast_run_id": "Mã phiên (run ID)",
+                      "model_version": "Phiên bản mô hình", "session_started_at": "Thời điểm phiên được chọn", "sku_id": "SKU",
+                      "product_name": "Tên sản phẩm", "fc_id": "FC/kho", "forecast": "Forecast", "actual": "Thực tế",
+                      "deviation": "Sai lệch (F - T)", "row_wape": "WAPE dòng", "status": "Trạng thái thực tế",
+                      "reason": "Chi tiết", "actual_as_of": "Thực tế tính đến"},
+        "no_history": "Chưa có lịch sử forecast được lưu cho ngày này",
+        "yes": "Có", "no": "Không", "language_name": "Tiếng Việt", "no_product_name": "Chưa có tên sản phẩm",
+        "date_fmt": "%d/%m/%Y", "excel_date_fmt": "DD/MM/YYYY", "time_suffix": "giờ Việt Nam, UTC+7",
+    },
+    "en": {
+        "sheet_info": "Info", "sheet_sessions": "Forecast sessions", "sheet_daily": "By day",
+        "sheet_rows": "SKU x FC detail", "field": "Field", "value": "Value", "all": "All",
+        "info": {"export_format_version": "File format version", "language": "Language",
+                 "generated_at_vn": "Exported at (Vietnam time)", "scope": "Dataset (scope)", "data_source": "Data source",
+                 "run_from": "Forecast run date from", "run_to": "Forecast run date to", "fc_filter": "FC/warehouse filter",
+                 "search_filter": "SKU / product name filter", "status_filter": "Actual status filter",
+                 "rows": "SKU x FC rows", "days_with_history": "Run dates with history",
+                 "forecast_total": "Stored forecast total", "actual_total": "Actual available (rows with an actual)",
+                 "forecast_compared": "Forecast on the rows with an actual",
+                 "deviation": "Deviation forecast - actual (rows with an actual)", "wape": "WAPE (rows with an actual)",
+                 "kpi_status": "Actual figures status", "rule_d1": "Forecast storage rule", "rule_actual": "Actual rule",
+                 "rule_wape": "Formulas"},
+        "rule_d1": ("For each run date only the forecast of the next day (D+1) of the newest valid forecast session of that "
+                    "day is kept (session = one successfully published forecast). A stored forecast is never changed."),
+        "rule_actual": ("Actual comes from the loaded D-1 data (a SKU x FC without a row on a loaded day = 0); before D-1 has "
+                        "loaded the day: the cumulative quantity of the latest D0 snapshot. 'Complete' only when D-1 loaded "
+                        "that day on the source's completion signal; otherwise 'Provisional'. Empty = no actual yet (not 0)."),
+        "rule_wape": ("Deviation = forecast - actual; WAPE = sum |forecast - actual| / sum actual, only over the rows that "
+                      "have an actual; not computed when that sum is 0. Row WAPE = |F - A| / A when A > 0."),
+        "status": {"COMPLETE": "Complete", "PROVISIONAL": "Provisional", "NO_ACTUAL": "No actual data yet"},
+        "reason": {"COMPLETION_SIGNAL": "D-1 loaded on the source's completion signal",
+                   "D1_NO_COMPLETION_SIGNAL": "D-1 loaded, no completion signal from the source",
+                   "D0_INTRADAY": "Cumulative so far today (D0 snapshot)",
+                   "D0_LAST_READ": "Last D0 snapshot of the day, D-1 not loaded yet",
+                   "FUTURE_DATE": "Date not reached yet", "NO_D0_READ_TODAY": "No D0 snapshot today yet",
+                   "NOT_LOADED_YET": "D-1 has not loaded this day", "DAY_WITHOUT_DATA": "Day loaded but without any data row"},
+        "cols_sessions": {"run_date": "Forecast run date", "target_date": "Forecast date",
+                          "session_started_at": "Session time", "published_at": "Published at",
+                          "forecast_run_id": "Session (run ID)", "model_version": "Model version", "official": "Official session",
+                          "decision": "Decision when recorded", "decision_reason": "Reason", "capture_mode": "Recorded how",
+                          "captured_at": "Recorded at", "n_rows": "D+1 rows", "usage_status": "Usage assessment"},
+        "cols_daily": {"run_date": "Forecast run date", "target_date": "Forecast date", "forecast": "Forecast",
+                       "actual": "Actual", "deviation": "Deviation (F - A)", "wape": "WAPE",
+                       "forecast_run_id": "Session (run ID)", "status": "Actual status", "reason": "Detail"},
+        "cols_rows": {"run_date": "Forecast run date", "target_date": "Forecast date", "forecast_run_id": "Session (run ID)",
+                      "model_version": "Model version", "session_started_at": "Selected session time", "sku_id": "SKU",
+                      "product_name": "Product name", "fc_id": "FC/warehouse", "forecast": "Forecast", "actual": "Actual",
+                      "deviation": "Deviation (F - A)", "row_wape": "Row WAPE", "status": "Actual status",
+                      "reason": "Detail", "actual_as_of": "Actual as of"},
+        "no_history": "No stored forecast history for this day",
+        "yes": "Yes", "no": "No", "language_name": "English", "no_product_name": "No product name yet",
+        "date_fmt": "%d/%m/%Y", "excel_date_fmt": "DD/MM/YYYY", "time_suffix": "Vietnam time, UTC+7",
+    },
+}
+
+
+def history_labels(lang: str | None) -> tuple[str, dict]:
+    lang = lang if lang in HISTORY else "vi"
+    L = dict(HISTORY[lang])
+    L["fmt_date"] = lambda d: fmt_date(d, L)
+    L["fmt_time"] = lambda t: fmt_vn_time(t, L)
+    return lang, L

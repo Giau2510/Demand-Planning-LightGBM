@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { get, post } from "../api";
 import { useI18n } from "../i18n";
-import { Card, ErrorBox, Loading, OkBox, useAction, useAsync } from "../components/ui";
+import { Card, ErrorBox, Loading, OkBox, PageHeader, useAction, useAsync } from "../components/ui";
+import { Icon } from "../components/icons";
 
 const FIELDS = ["order_id", "created_at", "order_date", "sku_id", "fc_id", "order_qty", "unit_price", "discount_amount",
   "promotion_flag", "promotion_id", "voucher_flag", "voucher_amount", "source_updated_at", "batch_id"];
@@ -63,7 +64,8 @@ export default function Mapping() {
       setCols(st.data.settings.schema_snapshot ?? []);
     }
   }, [st.data]);
-  if (st.loading) return <Loading />;
+  const header = <PageHeader icon="mapping" title={t("nav.mapping")} desc={t("map.help")} />;
+  if (st.loading) return <div className="stack">{header}<Loading /></div>;
   const configured = st.data?.settings?.dataset_id && st.data?.settings?.source_table;
   const readSchema = async () => {
     const r = await act.run(() => post("/api/bigquery/schema"));
@@ -89,30 +91,30 @@ export default function Mapping() {
   const hasDrift = drift && (drift.removed.length || drift.added.length || drift.type_changed.length);
   return (
     <div className="stack">
-      <h2>{t("nav.mapping")}</h2>
-      <p className="small">{t("map.help")}</p>
+      {header}
       {!configured && <div className="alert warn">{t("bq.not_configured")} {t("bq.blocked_note")}</div>}
       {configured && <div className="alert warn small" data-testid="map-prod-state">
         {prodOn ? t("map.prod_on_note") : t("map.prod_off_note")}</div>}
       <ErrorBox error={act.error || st.error} />
       <OkBox text={act.ok} />
       {hasDrift ? <div className="alert bad">{t("map.drift")}: {JSON.stringify(drift)}</div> : null}
-      <Card title={t("map.key_fields")} actions={<>
-        <button onClick={readSchema} disabled={act.busy || !configured}>{t("bq.schema")}</button>
-        <button onClick={suggest} disabled={act.busy || !configured} data-testid="map-suggest">{t("map.suggest")}</button>
-        <button className="primary" onClick={save} disabled={act.busy || !configured}>{t("map.save")}</button>
+      <Card icon="mapping" title={t("map.key_fields")} actions={<>
+        <button onClick={readSchema} disabled={act.busy || !configured}><Icon name="bigquery" />{t("bq.schema")}</button>
+        <button onClick={suggest} disabled={act.busy || !configured} data-testid="map-suggest"><Icon name="mapping" />{t("map.suggest")}</button>
+        <button className={prodOn ? "primary prod" : "primary"} onClick={save} disabled={act.busy || !configured} title={prodOn ? t("map.save_prod_confirm") : undefined}>
+          {prodOn ? <Icon name="prod" /> : <Icon name="save" />}{t("map.save")}</button>
       </>}>
         <p className="small muted">{t("map.suggest_note")}</p>
         {!cols.length && <p className="small muted">{t("map.read_schema_first")}</p>}
         <MappingTable fields={FIELDS} m={m} setM={setM} cols={cols} types={types} check={check} />
       </Card>
-      <Card title={t("map.ref_fields")}>
+      <Card icon="file" title={t("map.ref_fields")}>
         <MappingTable fields={REF_FIELDS} m={ref} setM={setRef} cols={cols} types={types} check={check} reference />
       </Card>
       {check && !check.ok && <div className="alert bad">{t("map.errors")}: {check.errors.map((e: any) => `${e.field}: ${e.code}`).join("; ")}</div>}
       {check?.warnings?.length > 0 && <p className="small muted">{check.warnings.map((w: any) => `${w.field}: ${w.code}`).join("; ")}</p>}
       {notes && notes.length > 0 && (
-        <Card title={t("map.notes")}>
+        <Card icon="info" title={t("map.notes")}>
           <ul className="small" data-testid="map-notes">
             {notes.map((n, i) => <li key={i}><span className="mono">{n.field}</span>: {n.code}{n.column ? ` (${n.column}${n.type ? ` ${n.type}` : ""})` : ""}</li>)}
           </ul>

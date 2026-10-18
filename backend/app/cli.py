@@ -128,6 +128,8 @@ def main(argv=None) -> int:
     at.add_argument("--training-run", required=True)
     at.add_argument("--backup", required=True, help="full path of the backup .zip taken while the data was unchanged")
     sub.add_parser("product-names-refresh", help="1.2.4: read the product names of the local SKUs from BigQuery")
+    sub.add_parser("history-reconcile", help="1.2.5: record published forecast runs missing from the forecast history "
+                                             "(idempotent; reads the stored runs, creates no forecast)")
     a = ap.parse_args(argv)
     from . import paths
     try:
@@ -252,6 +254,12 @@ def _run(a) -> int:
             print(json.dumps({"ok": False, "code": e.code, "detail": e.detail}, ensure_ascii=False))
             return 1
         print(json.dumps({"ok": True, **res}, indent=2, ensure_ascii=False, default=str))
+    elif a.cmd == "history-reconcile":
+        db.migrate()
+        from . import forecast_history
+        res = forecast_history.reconcile()
+        print(json.dumps({"ok": not res["errors"], **res}, indent=2, ensure_ascii=False, default=str))
+        return 1 if res["errors"] else 0
     elif a.cmd == "info":
         from . import __version__
         print(json.dumps({"version": __version__, "data_dir": str(paths.data_dir()), "db": str(paths.db_path()),

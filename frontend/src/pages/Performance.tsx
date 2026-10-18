@@ -2,7 +2,8 @@ import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { get, post } from "../api";
 import { useI18n } from "../i18n";
-import { AssessmentBox, Bars, Card, Code, Empty, ErrorBox, Loading, MethodLabel, OkBox, Pill, SourceBadge, Stat, Term, fmtDate, fmtNum, fmtPct, fmtSignedPct, fmtTime, useAction, useAsync } from "../components/ui";
+import { AssessmentBox, Bars, Card, Code, Empty, ErrorBox, Loading, MethodLabel, OkBox, PageHeader, Pill, SourceBadge, Stat, Term, fmtDate, fmtNum, fmtPct, fmtSignedPct, fmtTime, useAction, useAsync } from "../components/ui";
+import { Icon } from "../components/icons";
 
 function MetricsRow({ label, m }: { label: ReactNode; m: any }) {
   return (
@@ -41,7 +42,7 @@ function Promotion({ d, onPromoted }: { d: any; onPromoted: () => void }) {
   if (!p) return null;
   const below = d?.promotable?.kind === "BELOW_THRESHOLD";      // 1.2.2: usable under the policy, with a warning
   return (
-    <Card title={t("perf.promotion")}>
+    <Card icon="promote" title={t("perf.promotion")}>
       <ErrorBox error={act.error} />
       <OkBox text={act.ok} />
       <p className="small" data-testid="promotion-decision">
@@ -64,12 +65,12 @@ function Promotion({ d, onPromoted }: { d: any; onPromoted: () => void }) {
         </>
       )}
       {d.can_promote && (
-        <button className="primary" data-testid="promote" disabled={act.busy}
+        <button className="primary prod" data-testid="promote" disabled={act.busy} title={t("common.prod_action")}
           onClick={async () => {
             if (!window.confirm(t(below ? "perf.promote_below_confirm" : "perf.promote_confirm"))) return;
             const r = await act.run(() => post(`/api/training-runs/${d.id}/promote`, { confirm: true }), t("perf.promoted"));
             if (r) onPromoted();
-          }}>{t(below ? "perf.promote_below" : "perf.promote")}</button>
+          }}><Icon name="prod" />{t(below ? "perf.promote_below" : "perf.promote")}</button>
       )}
     </Card>
   );
@@ -109,12 +110,12 @@ export function GateException({ d, onDone }: { d: any; onDone: () => void }) {
         <label>bias<input data-testid="exc-bias" value={f.acknowledged_bias} onChange={s("acknowledged_bias")} /></label>
         <label className="full">{t("perf.exception_confirm")}: <code>EXCEPTION-{d.id}</code><input data-testid="exc-confirm" value={f.confirm_text} onChange={s("confirm_text")} /></label>
       </div>
-      <button className="primary" data-testid="exc-release" disabled={act.busy}
+      <button className="primary prod" data-testid="exc-release" disabled={act.busy} title={t("common.prod_action")}
         onClick={async () => {
           const body = { ...f, acknowledged_wape: Number(f.acknowledged_wape), acknowledged_bias: Number(f.acknowledged_bias) };
           const r = await act.run(() => post(`/api/training-runs/${d.id}/release-with-exception`, body), t("perf.exception_done"));
           if (r) onDone();
-        }}>{t("perf.exception_btn")}</button>
+        }}><Icon name="prod" />{t("perf.exception_btn")}</button>
     </Card>
   );
 }
@@ -127,23 +128,24 @@ export default function Performance() {
     if (!sel && runs.data?.length) setSel(runs.data[0].id);
   }, [runs.data, sel]);
   const det = useAsync(() => (sel ? get(`/api/training-runs/${sel}`) : Promise.resolve(null)), [sel]);
-  if (runs.loading && !runs.data) return <Loading />;   // a reload must not unmount the page (job progress)
+  const header = <PageHeader icon="performance" title={t("nav.performance")} desc={t("page.performance.desc")} />;
+  if (runs.loading && !runs.data) return <div className="stack">{header}<Loading /></div>;   // a reload must not unmount the page (job progress)
   const d = det.data;
   const bt = d?.backtest;
   const cfg = bt?.config;
   return (
     <div className="stack">
-      <h2>{t("nav.performance")}</h2>
+      {header}
       <ErrorBox error={runs.error || det.error} />
-      <Card title={t("perf.runs")}>
-        {!runs.data?.length ? <Empty text={t("common.not_available")} /> : (
+      <Card icon="model" title={t("perf.runs")}>
+        {!runs.data?.length ? <Empty text={t("common.not_available")} hint={t("dash.no_model_hint")} /> : (
           <div className="scroll">
             <table className="tbl click">
               <thead><tr><th>{t("common.created")}</th><th>{t("common.status")}</th><th>{t("fc.model_version")}</th><th>{t("common.source")}</th><th className="num">WAPE</th><th className="num">Bias</th><th>{t("perf.usage_col")}</th><th>{t("perf.reject_reason")}</th></tr></thead>
               <tbody>
                 {runs.data.map((r: any) => (
                   <tr key={r.id} className={r.id === sel ? "sel" : ""} onClick={() => setSel(r.id)}>
-                    <td>{fmtTime(r.started_at)}</td><td><Pill status={shownStatus(r)} /></td><td className="mono small">{r.model_version ?? "—"}</td>
+                    <td className="nowrap">{fmtTime(r.started_at)}</td><td><Pill status={shownStatus(r)} /></td><td className="mono small">{r.model_version ?? "—"}</td>
                     <td><SourceBadge source={r.data_source} /></td><td className="num">{fmtPct(r.metrics?.wape)}</td><td className="num">{fmtSignedPct(r.metrics?.bias)}</td>
                     <td>{r.status === "ACCEPTED" && r.assessment?.usage ? <Pill status={r.assessment.usage} /> : "—"}</td>
                     <td className="small"><Code code={r.reject_reason} showCode={false} /></td>
@@ -157,10 +159,10 @@ export default function Performance() {
       {d && (
         <>
           <div className="grid4">
-            <Stat label={t("common.status")} value={<Pill status={shownStatus(d)} />} sub={d.reject_reason ? <Code code={d.reject_reason} /> : d.error} />
-            <Stat label={t("perf.train_range")} value={<span className="small">{fmtDate(d.train_start)} → {fmtDate(d.train_end)}</span>} sub={`${fmtNum(d.n_series)} ${t("common.series")} · ${fmtNum(d.n_rows)} ${t("common.rows")}`} />
-            <Stat label={t("fc.model_version")} value={<span className="mono small">{d.model_version ?? "—"}</span>} sub={d.model_path ? `${d.model_path} · sha256 ${String(d.model_sha256).slice(0, 12)}…` : undefined} />
-            <Stat label={<Term id="backtesting">{t("perf.backtest")}</Term>} value={bt ? (bt.reliable ? <Pill status="OK" label={t("perf.reliable")} /> : <Pill status="INSUFFICIENT" label={t("perf.unreliable")} />) : "—"}
+            <Stat icon="model" label={t("common.status")} value={<Pill status={shownStatus(d)} />} sub={d.reject_reason ? <Code code={d.reject_reason} /> : d.error} />
+            <Stat icon="calendar" label={t("perf.train_range")} value={<span className="small">{fmtDate(d.train_start)} → {fmtDate(d.train_end)}</span>} sub={`${fmtNum(d.n_series)} ${t("common.series")} · ${fmtNum(d.n_rows)} ${t("common.rows")}`} />
+            <Stat icon="file" label={t("fc.model_version")} value={<span className="mono small">{d.model_version ?? "—"}</span>} sub={d.model_path ? <span className="mono">{d.model_path} · sha256 {String(d.model_sha256).slice(0, 12)}…</span> : undefined} />
+            <Stat icon="history" label={<Term id="backtesting">{t("perf.backtest")}</Term>} value={bt ? (bt.reliable ? <Pill status="OK" label={t("perf.reliable")} /> : <Pill status="INSUFFICIENT" label={t("perf.unreliable")} />) : "—"}
               sub={bt ? (cfg?.span_days !== undefined
                 ? <span data-testid="bt-span">{cfg.folds_evaluated} × {cfg.horizon_days} {t("common.days")} · {fmtDate(cfg.first_day)} → {fmtDate(cfg.last_day)} ({cfg.span_days} {t("common.days")})</span>
                 : `${cfg?.folds} × ${cfg?.horizon_days} ${t("common.days")}`) : undefined} />
@@ -169,14 +171,14 @@ export default function Performance() {
             <div className="alert warn small" data-testid="bt-short">{t("perf.span_short")}</div>
           )}
           {d.assessment && (
-            <Card title={t("as.title")}>
+            <Card icon="quality" title={t("as.title")}>
               <AssessmentBox a={d.assessment} />
             </Card>
           )}
           <Promotion d={d} onPromoted={() => { det.reload(); runs.reload(); }} />
           <GateException d={d} onDone={() => { det.reload(); runs.reload(); }} />
           {d.quality_gate?.checks && (
-            <Card title={<Term id="quality_gate">{t("perf.gate")}</Term>}>
+            <Card icon="quality" title={<Term id="quality_gate">{t("perf.gate")}</Term>}>
               {!d.quality_gate.thresholds_approved_by_business && <div className="alert warn small">{t("cfg.quality_warning")}</div>}
               <table className="tbl">
                 <thead><tr><th></th><th className="num">{t("perf.value")}</th><th className="num">{t("perf.threshold")}</th><th>{t("perf.passed")}</th></tr></thead>
@@ -194,7 +196,7 @@ export default function Performance() {
             </Card>
           )}
           {bt && (
-            <Card title={<Term id="backtesting">{t("perf.backtest")}</Term>}>
+            <Card icon="history" title={<Term id="backtesting">{t("perf.backtest")}</Term>}>
               <table className="tbl">
                 <MetricsHead />
                 <tbody>
@@ -222,7 +224,7 @@ export default function Performance() {
             </Card>
           )}
           {d.feature_importance?.length > 0 && (
-            <Card title={<Term id="features">{t("perf.importance")}</Term>}>
+            <Card icon="features" title={<Term id="features">{t("perf.importance")}</Term>}>
               <Bars items={d.feature_importance.slice(0, 15).map((f: any) => ({ label: f.feature, value: f.gain }))} />
             </Card>
           )}

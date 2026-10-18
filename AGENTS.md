@@ -26,6 +26,8 @@ read-only).
 | Git / GitHub: what is versioned, commit, push, sync | [docs/GITHUB_WORKFLOW.md](docs/GITHUB_WORKFLOW.md) |
 | Development, QA, release, artifact and backup retention | [docs/PHAT-TRIEN-QA-PHAT-HANH.md](docs/PHAT-TRIEN-QA-PHAT-HANH.md) |
 | VPS deployment (Linux, prepared, not deployed) | [docs/TRIEN-KHAI-VPS.md](docs/TRIEN-KHAI-VPS.md) |
+| Web UI design system (tokens, icons, components) | [docs/UI-DESIGN-SYSTEM.md](docs/UI-DESIGN-SYSTEM.md) |
+| Forecast & actual history (D+1 storage, session choice, actual status, KPI) | [docs/LICH-SU-FORECAST.md](docs/LICH-SU-FORECAST.md) |
 | Version history | [CHANGELOG.md](CHANGELOG.md) |
 
 ## 2. Inspect before changing

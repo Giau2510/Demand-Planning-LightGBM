@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { ApiError } from "../api";
 import { numberLocale, useI18n } from "../i18n";
 import { TERM_BY_ID } from "../glossary";
+import { Icon, type IconName } from "./icons";
 
 // ---------------------------------------------------------------- formatting
 // Display only: values used for calculations are never rounded here. Numbers follow the UI language (vi: 7,2 /
@@ -103,6 +104,7 @@ export function parseDmy(s: string): string | null {
 export function DateInput({ value, onChange, min, max, ariaLabel }: {
   value: string; onChange: (iso: string) => void; min?: string; max?: string; ariaLabel?: string;
 }) {
+  const { t } = useI18n();
   const [text, setText] = useState(value ? fmtDate(value) : "");
   const [bad, setBad] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
@@ -119,10 +121,10 @@ export function DateInput({ value, onChange, min, max, ariaLabel }: {
       <input type="text" inputMode="numeric" placeholder="DD/MM/YYYY" value={text} aria-label={ariaLabel} aria-invalid={bad}
         className={bad ? "invalid" : ""} onChange={(e) => { setText(e.target.value); if (parseDmy(e.target.value)) commit(e.target.value); }}
         onBlur={(e) => commit(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") commit((e.target as HTMLInputElement).value); }} />
-      <button type="button" className="cal" aria-label="📅" title="📅" onClick={() => {
+      <button type="button" className="cal" aria-label={t("common.pick_date")} title={t("common.pick_date")} onClick={() => {
         const el = picker.current as any;
         if (el?.showPicker) el.showPicker(); else el?.click();
-      }}>📅</button>
+      }}><Icon name="calendar" /></button>
       <input ref={picker} type="date" className="native" tabIndex={-1} aria-hidden value={value} min={min} max={max}
         onChange={(e) => onChange(e.target.value)} />
     </span>
@@ -178,12 +180,12 @@ export function useAction() {
 }
 
 // ---------------------------------------------------------------- building blocks
-export function Card({ title, children, actions, className }: { title?: ReactNode; children: ReactNode; actions?: ReactNode; className?: string }) {
+export function Card({ title, children, actions, className, icon }: { title?: ReactNode; children: ReactNode; actions?: ReactNode; className?: string; icon?: IconName }) {
   return (
     <section className={`card ${className ?? ""}`}>
       {(title || actions) && (
         <header className="card-h">
-          <h3>{title}</h3>
+          <h3>{icon && <Icon name={icon} />}{title}</h3>
           <div className="row">{actions}</div>
         </header>
       )}
@@ -192,10 +194,12 @@ export function Card({ title, children, actions, className }: { title?: ReactNod
   );
 }
 
-export function Stat({ label, value, sub, tone }: { label: ReactNode; value: ReactNode; sub?: ReactNode; tone?: string }) {
+/** KPI card: label (+ icon), main value, secondary line. `tone` adds a coloured edge AND colours the value; it is
+ *  only used together with a value that already says what it means. */
+export function Stat({ label, value, sub, tone, icon }: { label: ReactNode; value: ReactNode; sub?: ReactNode; tone?: string; icon?: IconName }) {
   return (
     <div className={`stat ${tone ?? ""}`}>
-      <div className="stat-l">{label}</div>
+      <div className="stat-l">{icon && <Icon name={icon} size={14} />}{label}</div>
       <div className="stat-v">{value}</div>
       {sub && <div className="stat-s">{sub}</div>}
     </div>
@@ -210,18 +214,28 @@ const TONE: Record<string, string> = {
   ERROR: "bad", WARNING: "warn", INFO: "info", DUPLICATE: "muted",
   USABLE: "ok", USABLE_WITH_WARNING: "warn", NOT_USABLE: "bad", PASS: "ok", BELOW_THRESHOLD: "warn",
   NOT_EVALUATED: "muted", LOW: "warn", NORMAL: "ok",
+  COMPLETE: "ok", PROVISIONAL: "warn", NO_ACTUAL: "muted",          // 1.2.5 actual status (forecast history)
 };
 
 export function Pill({ status, label }: { status: string; label?: string }) {
   const { t } = useI18n();
   const key = `status.${status}`;
   const text = label ?? (t(key) !== key ? t(key) : t(`sev.${status}`) !== `sev.${status}` ? t(`sev.${status}`) : status);
-  return <span className={`pill ${TONE[status] ?? "muted"}`}>{text}</span>;
+  return <span className={`pill ${TONE[status] ?? "muted"} st-${status}`}>{text}</span>;
 }
+
+const SOURCE_ICON: Record<string, IconName> = { DEMO: "demo", MANUAL_IMPORT: "export", BIGQUERY: "bigquery" };
 
 export function SourceBadge({ source }: { source?: string | null }) {
   if (!source) return null;
-  return <span className={`src src-${source}`} title={source}>{source}</span>;
+  return <span className={`src src-${source}`} title={source}>{SOURCE_ICON[source] && <Icon name={SOURCE_ICON[source]} size={12} />}{source}</span>;
+}
+
+/** Yes / no with an icon AND the word (never a bare tick or cross). */
+export function YesNo({ v, yes, no }: { v: boolean | null | undefined; yes?: string; no?: string }) {
+  const { t } = useI18n();
+  if (v === null || v === undefined) return <span className="muted">—</span>;
+  return <span className={`yn ${v ? "ok-t" : "bad-t"}`}><Icon name={v ? "ok" : "bad"} size={14} />{v ? yes ?? t("common.yes") : no ?? t("common.no")}</span>;
 }
 
 const checkValue = (c: any) => {
@@ -352,32 +366,135 @@ export function OkBox({ text }: { text: string | null }) {
 
 export function Loading() {
   const { t } = useI18n();
-  return <div className="loading">{t("common.loading")}</div>;
+  return <div className="loading" aria-busy="true"><Icon name="running" className="spin" />{t("common.loading")}</div>;
 }
 
-export function Empty({ text }: { text: string }) {
-  return <div className="empty">{text}</div>;
+/** Empty state: what is missing, optionally why / what to do next (`hint`) and an action. */
+export function Empty({ text, hint, icon = "empty", action }: { text: string; hint?: ReactNode; icon?: IconName; action?: ReactNode }) {
+  return (
+    <div className="empty">
+      <Icon name={icon} size={28} />
+      <div className="empty-t">{text}</div>
+      {hint && <div className="empty-h">{hint}</div>}
+      {action}
+    </div>
+  );
+}
+
+/** Page title block shared by every page: icon, title, one-line purpose, page-level actions. */
+export function PageHeader({ icon, title, desc, actions }: { icon: IconName; title: ReactNode; desc?: ReactNode; actions?: ReactNode }) {
+  return (
+    <header className="page-h">
+      <div className="page-h-main">
+        <span className="page-ic" aria-hidden="true"><Icon name={icon} size={20} /></span>
+        <div className="page-h-text">
+          <h2>{title}</h2>
+          {desc && <p className="page-desc">{desc}</p>}
+        </div>
+      </div>
+      {actions && <div className="page-actions">{actions}</div>}
+    </header>
+  );
+}
+
+/** Icon-only button: the label is both the accessible name and the tooltip. */
+export function IconButton({ icon, label, onClick, disabled, className, testid }: {
+  icon: IconName; label: string; onClick: () => void; disabled?: boolean; className?: string; testid?: string;
+}) {
+  return (
+    <button type="button" className={`icon-btn ${className ?? ""}`} aria-label={label} title={label} onClick={onClick} disabled={disabled} data-testid={testid}>
+      <Icon name={icon} />
+    </button>
+  );
+}
+
+/** Text search with a search icon and a clear button (shown only when there is something to clear; Escape clears). */
+export function SearchInput({ value, onChange, label, placeholder, clearLabel, testid, clearTestid }: {
+  value: string; onChange: (v: string) => void; label: string; placeholder?: string; clearLabel: string; testid?: string; clearTestid?: string;
+}) {
+  return (
+    <span className="search">
+      <Icon name="search" size={14} />
+      <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} aria-label={label} data-testid={testid}
+        onKeyDown={(e) => { if (e.key === "Escape" && value) onChange(""); }} />
+      {value && <IconButton icon="close" label={clearLabel} className="ghost small" testid={clearTestid} onClick={() => onChange("")} />}
+    </span>
+  );
+}
+
+/** Filter area: labelled fields, the number of filters in effect and one "clear filters" action. */
+export function FilterBar({ children, active = 0, onClear, extra }: { children: ReactNode; active?: number; onClear?: () => void; extra?: ReactNode }) {
+  const { t } = useI18n();
+  return (
+    <div className="filterbar-w" role="group" aria-label={t("filter.title")}>
+      <div className="filterbar-h">
+        <span className="filterbar-t" data-testid="filter-state">
+          <Icon name="filter" size={14} />{t("filter.title")}
+          {active > 0 ? <span className="badge" title={t("filter.active").replace("{n}", String(active))}>{active}</span>
+            : <span className="small muted">· {t("filter.none")}</span>}
+        </span>
+        <span className="row">
+          {extra}
+          {onClear && active > 0 && (
+            <button type="button" className="ghost small" onClick={onClear} data-testid="filter-clear"><Icon name="clearFilter" size={14} />{t("filter.clear")}</button>
+          )}
+        </span>
+      </div>
+      <div className="filterbar">{children}</div>
+    </div>
+  );
+}
+
+/** Previous / next pager with "page x / y · n rows". */
+export function Pager({ page, total, size, unit, onPage }: { page: number; total: number; size: number; unit: string; onPage: (p: number) => void }) {
+  const { t } = useI18n();
+  return (
+    <div className="row pager">
+      <button disabled={page === 0} onClick={() => onPage(page - 1)}><Icon name="prev" size={14} />{t("common.prev")}</button>
+      <span className="pager-info">{t("common.page")} {page + 1} / {Math.max(1, Math.ceil(total / size))} · {fmtNum(total)} {unit}</span>
+      <button disabled={(page + 1) * size >= total} onClick={() => onPage(page + 1)}>{t("common.next")}<Icon name="next" size={14} /></button>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------- charts (dependency-free SVG)
 export interface ChartActual { x: string; y: number; tooltip: string; legend: string }
 
 /** Forecast line + (optionally) ONE actual point for today. The actual is never drawn as a line into the future. */
-export function LineChart({ points, height = 220, label, actual, forecastLegend }: {
+export function LineChart({ points, height = 240, label, actual, forecastLegend }: {
   points: { x: string; y: number }[]; height?: number; label?: string; actual?: ChartActual | null; forecastLegend?: string;
 }) {
   const [hover, setHover] = useState<number | null>(null);
+  const box = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(760);
+  useEffect(() => {   // draw in real pixels so labels keep their size on any screen (no ResizeObserver in tests: 760)
+    const el = box.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(([e]) => { const w = Math.round(e.contentRect.width); if (w > 0) setWidth(Math.max(320, w)); });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [points.length > 0]);
   if (!points.length) return null;
-  const W = 760, H = height, P = { l: 56, r: 12, t: 12, b: 28 };
   const ai = actual ? points.findIndex((p) => p.x === actual.x) : -1;
   const max = Math.max(...points.map((p) => p.y), ai >= 0 ? actual!.y : 0, 1);
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => f * max);
+  // left margin sized to the longest value label, so large totals are never cut off
+  const W = width, H = height, P = { l: Math.max(44, Math.max(...ticks.map((v) => fmtNum(v).length)) * 7 + 16), r: 16, t: 14, b: 30 };
   const x = (i: number) => P.l + (points.length === 1 ? (W - P.l - P.r) / 2 : (i * (W - P.l - P.r)) / (points.length - 1));
   const y = (v: number) => P.t + (H - P.t - P.b) * (1 - v / max);
   const path = points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.y).toFixed(1)}`).join(" ");
-  const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => f * max);
-  const step = Math.max(1, Math.ceil(points.length / 7));   // DD/MM/YYYY labels need ~70px each
+  const n = points.length;
+  const step = Math.max(1, Math.ceil(n / Math.max(2, Math.floor((W - P.l - P.r) / 84))));   // a DD/MM/YYYY label needs ~84 px
+  // the last date is always labelled; a regular label too close to it is dropped (labels never overlap), and the
+  // first / last labels are anchored inside the plot so they are never cut off
+  const showLabel = (i: number) => i === n - 1 || (i % step === 0 && n - 1 - i >= step);
+  const anchor = (i: number) => (n > 1 && i === n - 1 ? "end" : n > 1 && i === 0 ? "start" : "middle");
+  const tipLines = hover === null ? [] : [`${fmtDate(points[hover].x)}: ${fmtNum(points[hover].y, 1)}`,
+    ...(hover === ai ? [`${actual!.tooltip}: ${fmtNum(actual!.y, 1)}`] : [])];
+  const tipW = Math.max(0, ...tipLines.map((s) => s.length)) * 7 + 16;
+  const tipX = hover === null ? 0 : x(hover) + 12 + tipW > W - P.r ? x(hover) - 12 - tipW : x(hover) + 12;
   return (
-    <div className="chart">
+    <div className="chart" ref={box}>
       {(forecastLegend || ai >= 0) && (
         <div className="legend small">
           {forecastLegend && <span><i className="lg-line" /> {forecastLegend}</span>}
@@ -391,26 +508,105 @@ export function LineChart({ points, height = 220, label, actual, forecastLegend 
             <text x={P.l - 6} y={y(v) + 4} textAnchor="end" className="axis">{fmtNum(v)}</text>
           </g>
         ))}
-        {points.map((p, i) => i % step === 0 && (
-          <text key={p.x} x={x(i)} y={H - 8} textAnchor="middle" className="axis">{fmtDate(p.x)}</text>
+        {points.map((p, i) => showLabel(i) && (
+          <text key={p.x} x={x(i)} y={H - 8} textAnchor={anchor(i)} className="axis">{fmtDate(p.x)}</text>
         ))}
+        {hover !== null && <line x1={x(hover)} x2={x(hover)} y1={P.t} y2={H - P.b} className="guide" />}
         <path d={path} className="line" />
-        {ai >= 0 && <rect x={x(ai) - 5} y={y(actual!.y) - 5} width={10} height={10} className="actual-pt" data-testid="actual-point" />}
+        {points.length <= 45 && points.map((p, i) => <circle key={p.x} cx={x(i)} cy={y(p.y)} r={2.5} className="pt" />)}
+        {ai >= 0 && <rect x={x(ai) - 5} y={y(actual!.y) - 5} width={10} height={10} rx={2} className="actual-pt" data-testid="actual-point" />}
         {points.map((_p, i) => (
           <rect key={i} x={x(i) - (W / points.length) / 2} y={P.t} width={W / points.length} height={H - P.t - P.b}
             fill="transparent" onMouseEnter={() => setHover(i)} />
         ))}
         {hover !== null && (
-          <g>
-            <circle cx={x(hover)} cy={y(points[hover].y)} r={4} className="dot" />
-            <text x={Math.min(x(hover) + 8, W - 260)} y={Math.max(y(points[hover].y) - 8, 14)} className="tip">
-              {fmtDate(points[hover].x)}: {fmtNum(points[hover].y, 1)}
-            </text>
-            {hover === ai && (
-              <text x={Math.min(x(hover) + 8, W - 260)} y={Math.max(y(points[hover].y) + 10, 30)} className="tip actual-t">
-                {actual!.tooltip}: {fmtNum(actual!.y, 1)}
-              </text>
-            )}
+          <g pointerEvents="none">
+            <circle cx={x(hover)} cy={y(points[hover].y)} r={4.5} className="dot" />
+            <rect x={tipX} y={P.t} width={tipW} height={tipLines.length * 18 + 10} rx={6} className="tipbox" />
+            {tipLines.map((s, k) => (
+              <text key={k} x={tipX + 8} y={P.t + 19 + k * 18} className={k === 1 ? "tip actual-t" : "tip"}>{s}</text>
+            ))}
+          </g>
+        )}
+      </svg>
+    </div>
+  );
+}
+
+export interface ComparePoint { x: string; forecast: number | null; actual: number | null; provisional?: boolean; tip: string[] }
+
+/** 1.2.5: stored forecast (blue line + dots) against actual (orange squares) per date. A missing value stays a gap -
+ *  nothing is interpolated or invented to join the line. A provisional actual is a hollow square on a dashed segment,
+ *  a complete one a filled square; the tooltip says which. Same pixel / label rules as LineChart. */
+export function CompareChart({ points, height = 260, label, legend }: {
+  points: ComparePoint[]; height?: number; label?: string; legend: { forecast: string; actual: string; provisional: string };
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+  const box = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(760);
+  useEffect(() => {
+    const el = box.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(([e]) => { const w = Math.round(e.contentRect.width); if (w > 0) setWidth(Math.max(320, w)); });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [points.length > 0]);
+  if (!points.length) return null;
+  const vals = points.flatMap((p) => [p.forecast, p.actual]).filter((v): v is number => v !== null && v !== undefined);
+  const max = Math.max(...vals, 1);
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => f * max);
+  const W = width, H = height, P = { l: Math.max(44, Math.max(...ticks.map((v) => fmtNum(v).length)) * 7 + 16), r: 16, t: 14, b: 30 };
+  const n = points.length;
+  const x = (i: number) => P.l + (n === 1 ? (W - P.l - P.r) / 2 : (i * (W - P.l - P.r)) / (n - 1));
+  const y = (v: number) => P.t + (H - P.t - P.b) * (1 - v / max);
+  const step = Math.max(1, Math.ceil(n / Math.max(2, Math.floor((W - P.l - P.r) / 84))));
+  const showLabel = (i: number) => i === n - 1 || (i % step === 0 && n - 1 - i >= step);
+  const anchor = (i: number) => (n > 1 && i === n - 1 ? "end" : n > 1 && i === 0 ? "start" : "middle");
+  // only consecutive known values are joined: a gap in the data is a gap in the line
+  const segs = (get: (p: ComparePoint) => number | null) => points.slice(1).map((p, k) => {
+    const a = get(points[k]), b = get(p);
+    return a === null || a === undefined || b === null || b === undefined ? null
+      : { i: k + 1, d: `M${x(k).toFixed(1)},${y(a).toFixed(1)} L${x(k + 1).toFixed(1)},${y(b).toFixed(1)}`, prov: !!(points[k].provisional || p.provisional) };
+  }).filter(Boolean) as { i: number; d: string; prov: boolean }[];
+  const tip = hover === null ? [] : points[hover].tip;
+  const tipW = Math.max(0, ...tip.map((s) => s.length)) * 7 + 16;
+  const tipX = hover === null ? 0 : x(hover) + 12 + tipW > W - P.r ? x(hover) - 12 - tipW : x(hover) + 12;
+  const anyProv = points.some((p) => p.actual !== null && p.provisional);
+  return (
+    <div className="chart" ref={box} data-testid="compare-chart">
+      <div className="legend small">
+        <span><i className="lg-line" /> {legend.forecast}</span>
+        <span><i className="lg-actual" /> {legend.actual}</span>
+        {anyProv && <span><i className="lg-actual prov" /> {legend.provisional}</span>}
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={label} onMouseLeave={() => setHover(null)}>
+        {ticks.map((v) => (
+          <g key={v}>
+            <line x1={P.l} x2={W - P.r} y1={y(v)} y2={y(v)} className="grid" />
+            <text x={P.l - 6} y={y(v) + 4} textAnchor="end" className="axis">{fmtNum(v)}</text>
+          </g>
+        ))}
+        {points.map((p, i) => showLabel(i) && (
+          <text key={p.x} x={x(i)} y={H - 8} textAnchor={anchor(i)} className="axis">{fmtDate(p.x)}</text>
+        ))}
+        {hover !== null && <line x1={x(hover)} x2={x(hover)} y1={P.t} y2={H - P.b} className="guide" />}
+        {segs((p) => p.forecast).map((s) => <path key={`f${s.i}`} d={s.d} className="line" />)}
+        {segs((p) => p.actual).map((s) => <path key={`a${s.i}`} d={s.d} className={s.prov ? "actual-line prov" : "actual-line"} />)}
+        {points.map((p, i) => p.forecast !== null && (
+          <circle key={`fp${p.x}`} cx={x(i)} cy={y(p.forecast)} r={3} className="pt" data-testid="cmp-forecast-pt" />
+        ))}
+        {points.map((p, i) => p.actual !== null && (
+          <rect key={`ap${p.x}`} x={x(i) - 5} y={y(p.actual) - 5} width={10} height={10} rx={2}
+            className={p.provisional ? "actual-pt prov" : "actual-pt"} data-testid="cmp-actual-pt" data-status={p.provisional ? "provisional" : "complete"} />
+        ))}
+        {points.map((_p, i) => (
+          <rect key={i} x={x(i) - (W / n) / 2} y={P.t} width={W / n} height={H - P.t - P.b} fill="transparent"
+            onMouseEnter={() => setHover(i)} onClick={() => setHover(i)} />
+        ))}
+        {hover !== null && (
+          <g pointerEvents="none">
+            <rect x={tipX} y={P.t} width={tipW} height={tip.length * 18 + 10} rx={6} className="tipbox" />
+            {tip.map((s, k) => <text key={k} x={tipX + 8} y={P.t + 19 + k * 18} className="tip">{s}</text>)}
           </g>
         )}
       </svg>
@@ -563,11 +759,17 @@ export function Confirm({ open, title, children, onCancel, onConfirm, confirmLab
   confirmLabel?: string; danger?: boolean; disabled?: boolean;
 }) {
   const { t } = useI18n();
+  useEffect(() => {   // Escape = cancel, as on every dialog
+    if (!open) return;
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") onCancel(); };
+    window.addEventListener("keydown", esc);
+    return () => window.removeEventListener("keydown", esc);
+  }, [open, onCancel]);
   if (!open) return null;
   return (
-    <div className="modal-bg" role="dialog" aria-modal="true">
+    <div className="modal-bg" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
       <div className="modal">
-        <h3>{title}</h3>
+        <h3 id="confirm-title">{danger && <Icon name="warn" size={20} className="modal-ic-danger" />}{title}</h3>
         <div>{children}</div>
         <div className="row end">
           <button onClick={onCancel}>{t("common.cancel")}</button>

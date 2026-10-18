@@ -3,7 +3,7 @@ import { get } from "../api";
 import { useI18n } from "../i18n";
 import { GLOSSARY } from "../glossary";
 import { ALGORITHMS, GROUPS, type AlgoItem } from "../algorithms";
-import { Card, ErrorBox, fmtPct, useAsync, useMethods } from "../components/ui";
+import { Card, ErrorBox, PageHeader, fmtPct, useAsync, useMethods } from "../components/ui";
 import { FeatureCatalogue, TrainingExplain } from "./TrainingExplain";
 
 const LIMITS: { vi: string; en: string }[] = [
@@ -106,11 +106,10 @@ export default function Methodology() {
   }, [reg, settings.data]);
   return (
     <div className="stack methodology">
-      <h2>{t("nav.methodology")}</h2>
-      <p className="muted">{vi
+      <PageHeader icon="methodology" title={t("nav.methodology")} desc={vi
         ? "Mô tả các thuật toán thật sự đang chạy trong ứng dụng, theo đúng code hiện hành. Ngưỡng hiển thị được đọc trực tiếp từ cấu hình; ví dụ số được kiểm tra bằng test tự động."
-        : "Describes the algorithms actually running in the app, as implemented. Thresholds are read live from configuration; numeric examples are verified by automated tests."}</p>
-      <Card title={vi ? "Mục lục" : "Contents"}>
+        : "Describes the algorithms actually running in the app, as implemented. Thresholds are read live from configuration; numeric examples are verified by automated tests."} />
+      <Card icon="methodology" title={vi ? "Mục lục" : "Contents"}>
         <nav className="toc" aria-label={vi ? "Mục lục" : "Contents"}>
           <ol>
             {GROUPS.map((g) => (

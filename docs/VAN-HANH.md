@@ -27,6 +27,21 @@ Có thể tạo link HTTPS để người khác xem dashboard bằng Chrome mà 
 
 Hướng dẫn đầy đủ, giới hạn và xử lý lỗi: [REMOTE_ACCESS_GUIDE.md](../REMOTE_ACCESS_GUIDE.md).
 
+1.2.5: proxy (phiên bản 1.2.5) cho phép thêm các API GET của màn hình **Lịch sử Forecast & Thực tế**
+(`/api/history/overview|summary|rows|export.xlsx`). Proxy chỉ đọc file `scripts\remote\readonly_proxy.py` khi khởi
+động, nên sau khi cập nhật phải khởi động lại proxy (cùng cổng 8766). Tunnel cloudflared không cần khởi động lại,
+nên link giữ nguyên.
+
+### Lịch sử Forecast & Thực tế (1.2.5)
+
+- Ghi nhận tự động khi forecast được publish. Kiểm tra / ghi bù:
+  - `python -m app.cli history-reconcile`: idempotent, không tạo forecast mới;
+  - `python -m app.cli data-check`: có 5 kiểm tra `forecast_history_*`.
+- Alert `FORECAST_HISTORY_CAPTURE_FAILED`: forecast vẫn đã publish. Lịch sử được ghi lại ở lần publish sau, khi khởi
+  động lại, hoặc bằng lệnh trên.
+- Schema 4: rollback về 1.2.4 cần khôi phục bản sao lưu trước nâng cấp. Xem
+  [LICH-SU-FORECAST.md](LICH-SU-FORECAST.md) mục 9.
+
 ## Sao lưu
 
 - Giao diện: **Hệ thống & sao lưu → Sao lưu ngay**; hoặc `Backup.bat` / `scripts\backup.ps1`. An toàn khi ứng dụng đang chạy

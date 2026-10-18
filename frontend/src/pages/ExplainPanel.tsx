@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { get, qs } from "../api";
 import { useI18n } from "../i18n";
 import ShapTrace from "./ShapTrace";
+import { Icon } from "../components/icons";
 import { DateInput, ErrorBox, Loading, MethodLabel, fmtDate, fmtNum, fmtPctX, fmtTime, fmtX, useAsync, useMethods, weekdayName } from "../components/ui";
 
 function addDays(iso: string, n: number) {
@@ -112,7 +113,7 @@ export default function ExplainPanel({ runId, sku, fc, date, maxHorizon, origin,
       <div className="modal wide" onClick={(ev) => ev.stopPropagation()}>
         <div className="row between">
           <h3>{t("ex.title")}: {sku} · {fc}</h3>
-          <button onClick={onClose} aria-label={t("common.close")}>✕</button>
+          <button className="icon-btn ghost" onClick={onClose} aria-label={t("common.close")} title={t("common.close")}><Icon name="close" /></button>
         </div>
         <div className="row wrap">
           <button disabled={d <= origin} onClick={() => setD(addDays(d, -1))}>← {t("ex.prev_day")}</button>

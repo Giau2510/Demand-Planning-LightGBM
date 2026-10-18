@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { get, post, qs } from "../api";
 import { useSystem } from "../App";
 import { useI18n } from "../i18n";
-import { AssessmentBox, Card, DateInput, Empty, ErrorBox, Field, JobProgress, LineChart, Loading, MethodLabel, SourceBadge, Stat, Term, fmtDate, fmtNum, fmtPct, fmtSignedPct, fmtTime, useAction, useAsync } from "../components/ui";
+import { AssessmentBox, Card, DateInput, Empty, ErrorBox, Field, FilterBar, JobProgress, LineChart, Loading, MethodLabel, PageHeader, Pager, SearchInput, SourceBadge, Stat, Term, fmtDate, fmtNum, fmtPct, fmtSignedPct, fmtTime, useAction, useAsync } from "../components/ui";
+import { Icon } from "../components/icons";
 import { HorizonPicker } from "./Dashboard";
 import ExplainPanel from "./ExplainPanel";
 
@@ -94,8 +95,9 @@ export default function Results() {
     if (newId) setRunId(newId);
   };
 
-  if (runs.loading && !runs.data) return <Loading />;   // a reload must not unmount the page (job progress)
-  if (!runs.data?.length) return <div className="stack"><h2>{t("nav.results")}</h2><Empty text={t("dash.no_run")} /></div>;
+  const header = <PageHeader icon="results" title={t("nav.results")} desc={t("page.results.desc")} />;
+  if (runs.loading && !runs.data) return <div className="stack">{header}<Loading /></div>;   // a reload must not unmount the page (job progress)
+  if (!runs.data?.length) return <div className="stack">{header}<Empty text={t("dash.no_run")} hint={t("dash.no_run_hint")} /></div>;
   const r = run.data;
   const s = summary.data;
   const cov = r?.horizon_coverage;
@@ -103,10 +105,12 @@ export default function Results() {
   const total = tab === "totals" ? s?.n_series ?? 0 : daily.data?.total ?? 0;
   const actual = s?.actual;
   const today = actual?.date;
+  const nFilters = [q.trim(), sku, fc, tab === "daily" ? from : "", tab === "daily" ? to : ""].filter(Boolean).length;
+  const clearFilters = () => { setQ(""); setQd(""); setSku(""); setFc(""); setFrom(""); setTo(""); };
 
   return (
     <div className="stack">
-      <h2>{t("nav.results")}</h2>
+      {header}
       <ErrorBox error={runs.error || run.error || summary.error || daily.error || act.error} />
       {!activeRuns.length && (
         <div className="alert warn" data-testid="no-run-active">{t("fc.no_run_active").replace("{src}", sys?.active_source ?? "—")}</div>
@@ -127,29 +131,8 @@ export default function Results() {
             </select>
           </Field>
           {r && <HorizonPicker value={h} onChange={setH} options={horizonOptions} />}
-          <Field label={t("fc.search")}>
-            <span className="row">
-              <input data-testid="fc-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("fc.search_ph")} aria-label={t("fc.search")} />
-              {q && <button className="small" data-testid="fc-search-clear" onClick={() => setQ("")} aria-label={t("fc.search_clear")}>✕</button>}
-            </span>
-          </Field>
-          <Field label={t("fc.sku")}>
-            <input list="skus" value={sku} onChange={(e) => setSku(e.target.value)} placeholder={t("common.all")} />
-            <datalist id="skus">{r?.skus?.map((x: string) => <option key={x} value={x} />)}</datalist>
-          </Field>
-          <Field label={t("fc.fc")}>
-            <select value={fc} onChange={(e) => setFc(e.target.value)}>
-              <option value="">{t("common.all")}</option>
-              {r?.fcs?.map((x: string) => <option key={x} value={x}>{x}</option>)}
-            </select>
-          </Field>
-          {tab === "daily" && (
-            <>
-              <Field label={t("common.from")}><DateInput value={from} onChange={setFrom} ariaLabel={t("common.from")} /></Field>
-              <Field label={t("common.to")}><DateInput value={to} onChange={setTo} ariaLabel={t("common.to")} /></Field>
-            </>
-          )}
-          {r && <a className="btn" href={`/api/forecast-runs/${runId}/export.xlsx?horizon=${h}&lang=${lang}`}>{t("fc.export")} ({lang.toUpperCase()})</a>}
+          {r && <a className="btn" href={`/api/forecast-runs/${runId}/export.xlsx?horizon=${h}&lang=${lang}`} title={t("fc.export_scope")}>
+            <Icon name="export" />{t("fc.export")} ({lang.toUpperCase()})</a>}
         </div>
         <p className="small muted">{t("fc.horizon_help")}</p>
         {cov && (
@@ -170,10 +153,10 @@ export default function Results() {
 
       {r && s && (
         <div className="grid4">
-          <Stat label={`${t("fc.total")} (${h} ${t("common.days")})`} value={fmtNum(s.grand_total)} sub={`${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}`} />
-          <Stat label={<Term id="model_version">{t("fc.model_version")}</Term>} value={<span className="mono small">{r.model_version}</span>} sub={`${t("fc.run_id")}: ${r.id}`} />
-          <Stat label={t("common.source")} value={<SourceBadge source={r.data_source} />} sub={<span className="mono small">{r.scope_key}</span>} />
-          <Stat label={<Term id="origin">{t("fc.origin")}</Term>} value={fmtDate(r.forecast_origin)} sub={`${t("fc.data_as_of")}: ${fmtDate(r.data_as_of)} · ${t("fc.run_at")}: ${fmtTime(r.created_at)}`} />
+          <Stat icon="chart" label={`${t("fc.total")} (${h} ${t("common.days")})${nFilters ? ` · ${t("fc.filtered")}` : ""}`} value={fmtNum(s.grand_total)} sub={`${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}`} />
+          <Stat icon="model" label={<Term id="model_version">{t("fc.model_version")}</Term>} value={<span className="mono small">{r.model_version}</span>} sub={`${t("fc.run_id")}: ${r.id}`} />
+          <Stat icon="bigquery" label={t("common.source")} value={<SourceBadge source={r.data_source} />} sub={<span className="mono small">{r.scope_key}</span>} />
+          <Stat icon="clock" label={<Term id="origin">{t("fc.origin")}</Term>} value={fmtDate(r.forecast_origin)} sub={`${t("fc.data_as_of")}: ${fmtDate(r.data_as_of)} · ${t("fc.run_at")}: ${fmtTime(r.created_at)}`} />
         </div>
       )}
       {r?.lineage && (
@@ -186,7 +169,7 @@ export default function Results() {
       {r?.assessment && <AssessmentBox a={r.assessment} />}
 
       {s && (
-        <Card title={t("dash.trend")}>
+        <Card icon="chart" title={t("dash.trend")}>
           <ActualNotice actual={actual} run={r} />
           <LineChart points={s.daily.map((d: any) => ({ x: d.target_date, y: d.total }))} forecastLegend={t("chart.forecast_legend")}
             actual={actual?.total != null && today ? { x: today, y: actual.total, legend: t("chart.actual_legend"), tooltip: `${t("actual.as_of")} ${fmtTime(actual.as_of).slice(11)}` } : null} />
@@ -194,10 +177,32 @@ export default function Results() {
       )}
 
       <Card>
-        <div className="tabs">
-          <button className={tab === "totals" ? "tab active" : "tab"} onClick={() => setTab("totals")}>{t("fc.totals")}</button>
-          <button className={tab === "daily" ? "tab active" : "tab"} onClick={() => setTab("daily")}>{t("fc.daily_detail")}</button>
+        <div className="tabs" role="tablist" aria-label={t("fc.table_view")}>
+          <button role="tab" aria-selected={tab === "totals"} className={tab === "totals" ? "tab active" : "tab"} onClick={() => setTab("totals")}>{t("fc.totals")}</button>
+          <button role="tab" aria-selected={tab === "daily"} className={tab === "daily" ? "tab active" : "tab"} onClick={() => setTab("daily")}>{t("fc.daily_detail")}</button>
         </div>
+        <FilterBar active={nFilters} onClear={clearFilters}>
+          <Field label={t("fc.search")}>
+            <SearchInput value={q} onChange={setQ} label={t("fc.search")} placeholder={t("fc.search_ph")} clearLabel={t("fc.search_clear")}
+              testid="fc-search" clearTestid="fc-search-clear" />
+          </Field>
+          <Field label={t("fc.sku")}>
+            <input list="skus" value={sku} onChange={(e) => setSku(e.target.value)} placeholder={t("common.all")} aria-label={t("fc.sku")} />
+            <datalist id="skus">{r?.skus?.map((x: string) => <option key={x} value={x} />)}</datalist>
+          </Field>
+          <Field label={t("fc.fc")}>
+            <select value={fc} onChange={(e) => setFc(e.target.value)} aria-label={t("fc.fc")}>
+              <option value="">{t("common.all")}</option>
+              {r?.fcs?.map((x: string) => <option key={x} value={x}>{x}</option>)}
+            </select>
+          </Field>
+          {tab === "daily" && (
+            <>
+              <Field label={t("common.from")}><DateInput value={from} onChange={setFrom} ariaLabel={t("common.from")} /></Field>
+              <Field label={t("common.to")}><DateInput value={to} onChange={setTo} ariaLabel={t("common.to")} /></Field>
+            </>
+          )}
+        </FilterBar>
         {r && (
           <p className="small muted" data-testid="names-source">
             {r.data_source !== "BIGQUERY" ? t("fc.names_not_bq")
@@ -207,8 +212,10 @@ export default function Results() {
           </p>
         )}
         {total === 0 && (qd || sku || fc) && (tab === "totals" ? s : daily.data) && (
-          <div className="alert info small" data-testid="fc-no-results">{qd ? t("fc.no_results").replace("{q}", qd) : t("fc.no_results_filter")}</div>
+          <div className="alert info small" data-testid="fc-no-results">{qd ? t("fc.no_results").replace("{q}", qd) : t("fc.no_results_filter")}
+            {" "}<button className="link" onClick={clearFilters}>{t("filter.clear")}</button></div>
         )}
+        {(tab === "totals" ? summary.loading && !s : daily.loading && !daily.data) && <Loading />}
         {tab === "totals" && s && (
           <div className="scroll">
             <table className="tbl">
@@ -216,10 +223,10 @@ export default function Results() {
                 <th className="num" title={t("actual.col_help")}>{t("actual.col_today")}{today ? ` (${today.slice(5)})` : ""}</th><th>{t("fc.method")}</th><th></th></tr></thead>
               <tbody>
                 {s.series.map((x: any) => (
-                  <tr key={x.sku_id + x.fc_id}><td>{x.sku_id}</td><td><ProductName name={x.product_name} /></td><td>{x.fc_id}</td><td className="num">{fmtNum(x.total, 1)}</td>
+                  <tr key={x.sku_id + x.fc_id}><td className="sku">{x.sku_id}</td><td className="pname"><ProductName name={x.product_name} /></td><td className="nowrap">{x.fc_id}</td><td className="num">{fmtNum(x.total, 1)}</td>
                     <td className="num"><ActualCell value={x.actual_today} actual={actual} /></td>
-                    <td className="small"><MethodLabel code={x.method} /></td>
-                    <td><button className="link" onClick={() => setExplain({ sku: x.sku_id, fc: x.fc_id, date: s.start_date })}>{t("ex.open")}</button></td></tr>
+                    <td className="small method-c"><MethodLabel code={x.method} /></td>
+                    <td className="nowrap"><button className="link" onClick={() => setExplain({ sku: x.sku_id, fc: x.fc_id, date: s.start_date })}>{t("ex.open")}</button></td></tr>
                 ))}
               </tbody>
             </table>
@@ -232,24 +239,20 @@ export default function Results() {
                 <th className="num" title={t("actual.col_help")}>{t("actual.col_so_far")}</th><th>{t("fc.method")}</th><th></th></tr></thead>
               <tbody>
                 {daily.data.rows.map((x: any) => (
-                  <tr key={x.sku_id + x.fc_id + x.target_date}><td>{x.sku_id}</td><td><ProductName name={x.product_name} /></td><td>{x.fc_id}</td><td>{fmtDate(x.target_date)}</td><td className="num">{x.horizon_day}</td><td className="num">{fmtNum(x.yhat, 2)}</td>
+                  <tr key={x.sku_id + x.fc_id + x.target_date}><td className="sku">{x.sku_id}</td><td className="pname"><ProductName name={x.product_name} /></td><td className="nowrap">{x.fc_id}</td><td className="nowrap">{fmtDate(x.target_date)}</td><td className="num">{x.horizon_day}</td><td className="num">{fmtNum(x.yhat, 2)}</td>
                     <td className="num"><ActualCell value={x.actual_today} actual={daily.data.actual} /></td>
-                    <td className="small"><MethodLabel code={x.method} /></td>
-                    <td><button className="link" onClick={() => setExplain({ sku: x.sku_id, fc: x.fc_id, date: x.target_date })}>{t("ex.open")}</button></td></tr>
+                    <td className="small method-c"><MethodLabel code={x.method} /></td>
+                    <td className="nowrap"><button className="link" onClick={() => setExplain({ sku: x.sku_id, fc: x.fc_id, date: x.target_date })}>{t("ex.open")}</button></td></tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
-        <div className="row pager">
-          <button disabled={page === 0} onClick={() => setPage(page - 1)}>← {t("common.prev")}</button>
-          <span className="small">{t("common.page")} {page + 1} / {Math.max(1, Math.ceil(total / PAGE))} · {fmtNum(total)} {tab === "totals" ? t("common.series") : t("common.rows")}</span>
-          <button disabled={(page + 1) * PAGE >= total} onClick={() => setPage(page + 1)}>{t("common.next")} →</button>
-        </div>
+        <Pager page={page} total={total} size={PAGE} unit={tab === "totals" ? t("common.series") : t("common.rows")} onPage={setPage} />
       </Card>
 
-      <Card title={t("fc.accuracy")}>
-        {!acc.data?.available ? <Empty text={t("fc.no_actuals")} /> : (
+      <Card icon="performance" title={t("fc.accuracy")}>
+        {!acc.data?.available ? <Empty text={t("fc.no_actuals")} hint={t("fc.no_actuals_hint")} /> : (
           <table className="tbl">
             <thead><tr><th>{t("fc.horizon")}</th><th className="num"><Term id="wape">WAPE</Term></th><th className="num"><Term id="mae">MAE</Term></th><th className="num"><Term id="bias">Bias</Term></th><th className="num">{t("perf.points")}</th></tr></thead>
             <tbody>

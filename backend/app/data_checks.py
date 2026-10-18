@@ -107,6 +107,43 @@ def _run(c, db_path: Path, models_dir: Path | None) -> dict:
         "each run has one explanation row per series (runs published before migration 0003 have none)",
         _q(c, "SELECT r.id, r.n_series, (SELECT COUNT(*) FROM forecast_series_meta m WHERE m.run_id=r.id) AS n "
               "FROM forecast_runs r WHERE n != r.n_series"), fail=False))
+    has_history = bool(_q(c, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='forecast_history_days'"))
+    if has_history:     # 1.2.5 (migration 0004): D+1 forecast history
+        out.append(_check(
+            "forecast_history_values_unchanged",
+            "every stored D+1 value equals the published forecast value (same run, SKU, FC, date, quantity, method)",
+            _q(c, "SELECT h.forecast_run_id, COUNT(*) FROM forecast_history_values h LEFT JOIN forecast_values v "
+                  "ON v.run_id = h.forecast_run_id AND v.sku_id = h.sku_id AND v.fc_id = h.fc_id AND v.target_date = h.target_date "
+                  "WHERE v.run_id IS NULL OR ABS(v.yhat - h.yhat) > 1e-9 OR v.method != h.method GROUP BY h.forecast_run_id")))
+        out.append(_check(
+            "forecast_history_d1_only",
+            "history keeps only D+1: target_date = run_date + 1 (sessions and values)",
+            _q(c, "SELECT 'session', forecast_run_id, run_date, target_date FROM forecast_history_sessions "
+                  "WHERE target_date != date(run_date, '+1 day') UNION ALL SELECT 'value', forecast_run_id, run_date, "
+                  "target_date FROM forecast_history_values WHERE target_date != date(run_date, '+1 day') LIMIT 50")))
+        out.append(_check(
+            "forecast_history_selected_complete",
+            "a session selected when recorded holds all its D+1 rows (n_rows values)",
+            _q(c, "SELECT s.forecast_run_id, s.n_rows, (SELECT COUNT(*) FROM forecast_history_values v "
+                  "WHERE v.forecast_run_id = s.forecast_run_id) AS n FROM forecast_history_sessions s "
+                  "WHERE s.decision = 'SELECTED' AND n != s.n_rows")))
+        out.append(_check(
+            "forecast_history_official_is_newest",
+            "per scope and run date the official session is the newest eligible one (session time, publish time, run order)",
+            _q(c, "SELECT d.scope_key, d.run_date, d.forecast_run_id, x.forecast_run_id FROM forecast_history_days d "
+                  "JOIN forecast_history_sessions s ON s.forecast_run_id = d.forecast_run_id "
+                  "JOIN forecast_runs fs ON fs.id = s.forecast_run_id "
+                  "JOIN forecast_history_sessions x ON x.scope_key = d.scope_key AND x.run_date = d.run_date "
+                  "AND x.eligible = 1 AND x.forecast_run_id != d.forecast_run_id "
+                  "JOIN forecast_runs fx ON fx.id = x.forecast_run_id "
+                  "WHERE x.session_started_at > s.session_started_at OR (x.session_started_at = s.session_started_at "
+                  "AND (x.published_at > s.published_at OR (x.published_at = s.published_at AND fx.rowid > fs.rowid)))")))
+        out.append(_check(
+            "forecast_history_all_runs_recorded",
+            "every published forecast run is recorded in the history (missing ones are recorded at the next publish, "
+            "app start or 'app.cli history-reconcile')",
+            _q(c, "SELECT r.id, r.created_at FROM forecast_runs r LEFT JOIN forecast_history_sessions s "
+                  "ON s.forecast_run_id = r.id WHERE s.forecast_run_id IS NULL"), fail=False))
     model_bad = []
     if models_dir is not None:
         for rid, mv, mp, sha in _q(c, "SELECT id, model_version, model_path, model_sha256 FROM training_runs "
@@ -137,6 +174,7 @@ def _run(c, db_path: Path, models_dir: Path | None) -> dict:
     ver = c.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
     counts = {t: c.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0] for t in
               ("import_batches", "order_lines", "demand_daily", "training_runs", "forecast_runs", "forecast_values",
-               "d0_snapshots", "job_runs")}
+               "d0_snapshots", "job_runs") + (("forecast_history_sessions", "forecast_history_values",
+                                                "forecast_history_days") if has_history else ())}
     return {"db": str(db_path), "schema_version": ver, "checked_at": now.isoformat(timespec="seconds"),
             "status": status, "row_counts": counts, "checks": out}

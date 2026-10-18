@@ -3,7 +3,8 @@ import { Link } from "react-router-dom";
 import { get, post } from "../api";
 import { useSystem } from "../App";
 import { useI18n } from "../i18n";
-import { AssessmentBox, Bars, Card, Code, Empty, ErrorBox, JobProgress, LineChart, Loading, MethodLabel, OkBox, Pill, SourceBadge, Stat, Term, fmtDate, fmtNum, fmtPct, fmtSignedPct, fmtTime, useAction, useAsync } from "../components/ui";
+import { AssessmentBox, Bars, Card, Code, Empty, ErrorBox, JobProgress, LineChart, Loading, MethodLabel, OkBox, PageHeader, Pill, SourceBadge, Stat, Term, fmtDate, fmtNum, fmtPct, fmtSignedPct, fmtTime, useAction, useAsync } from "../components/ui";
+import { Icon } from "../components/icons";
 
 export function HorizonPicker({ value, onChange, options }: { value: number; onChange: (h: number) => void; options: number[] }) {
   const { t } = useI18n();
@@ -53,7 +54,7 @@ export default function Dashboard() {
     dash.reload();
   };
 
-  if (dash.loading && !dash.data) return <Loading />;
+  if (dash.loading && !dash.data) return <div className="stack"><PageHeader icon="dashboard" title={t("nav.dashboard")} desc={t("page.dashboard.desc")} /><Loading /></div>;
   const s = dash.data?.system;
   const f = dash.data?.forecast;
   const fresh = s?.freshness;
@@ -65,27 +66,25 @@ export default function Dashboard() {
 
   return (
     <div className="stack">
-      <div className="row between">
-        <h2>{t("nav.dashboard")}</h2>
-        <div className="row">
-          {s?.active_source === "DEMO" && <button onClick={demo} disabled={act.busy}>{t("dash.generate_demo")}</button>}
-          <label className="row small"><input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />{t("dash.train_force")}</label>
-          <button className="primary" onClick={train} disabled={act.busy || jobActive || !s?.scope}>{jobActive ? t("common.running") : t("dash.train_now")}</button>
-        </div>
-      </div>
+      <PageHeader icon="dashboard" title={t("nav.dashboard")} desc={t("page.dashboard.desc")} actions={<>
+        {s?.active_source === "DEMO" && <button onClick={demo} disabled={act.busy}><Icon name="demo" />{t("dash.generate_demo")}</button>}
+        <label className="row small"><input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />{t("dash.train_force")}</label>
+        <button className="primary" onClick={train} disabled={act.busy || jobActive || !s?.scope}>
+          <Icon name={jobActive ? "running" : "model"} className={jobActive ? "spin" : undefined} />{jobActive ? t("common.running") : t("dash.train_now")}</button>
+      </>} />
       <ErrorBox error={act.error || dash.error} />
       <OkBox text={act.ok} />
       {jobId && alreadyActive && jobActive && <div className="alert info small">{t("job.already_active")}</div>}
       {jobId && <JobProgress jobId={jobId} onDone={onJobDone} />}
 
       <div className="grid4">
-        <Stat label={t("common.source")} value={<SourceBadge source={s?.active_source} />} sub={s?.scope?.label ?? t("source.no_dataset")} />
-        <Stat label={<Term id="freshness">{t("dash.data_latest")}</Term>} value={fmtDate(fresh?.max_date)}
+        <Stat icon="bigquery" label={t("common.source")} value={<SourceBadge source={s?.active_source} />} sub={s?.scope?.label ?? t("source.no_dataset")} />
+        <Stat icon="calendar" label={<Term id="freshness">{t("dash.data_latest")}</Term>} value={fmtDate(fresh?.max_date)}
           sub={fresh?.lag_days !== undefined ? `${t("dash.lag")}: ${fresh.lag_days} ${t("common.days")}` : undefined} />
-        <Stat label={t("dash.data_status")}
+        <Stat icon="quality" label={t("dash.data_status")}
           value={!s?.scope ? <Pill status="NEEDS_CONFIG" /> : fresh?.stale ? <Pill status="STALE" /> : <Pill status="FRESH" />}
           sub={fresh?.stale && !fresh?.stale_enforced ? (t("common.source") + ": " + s?.active_source + " — " + (pick({ vi: "không chặn publish", en: "does not block publishing" }))) : undefined} tone={fresh?.stale ? "warn" : ""} />
-        <Stat label={<Term id="model_version">{t("fc.model_version")}</Term>} value={<span className="mono small">{run?.model_version ?? "—"}</span>}
+        <Stat icon="model" label={<Term id="model_version">{t("fc.model_version")}</Term>} value={<span className="mono small">{run?.model_version ?? "—"}</span>}
           sub={run ? `${t("fc.run_at")}: ${fmtTime(run.created_at)}` : undefined} />
       </div>
 
@@ -106,7 +105,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      <Card title={t("dash.latest_run")} actions={f && <HorizonPicker value={Math.min(horizon, run?.max_horizon ?? horizon)} onChange={setH} options={Array.from(new Set([...(run?.horizons ?? []), run?.max_horizon].filter(Boolean))).sort((a: any, b: any) => a - b) as number[]} />}>
+      <Card icon="results" title={t("dash.latest_run")} actions={f && <HorizonPicker value={Math.min(horizon, run?.max_horizon ?? horizon)} onChange={setH} options={Array.from(new Set([...(run?.horizons ?? []), run?.max_horizon].filter(Boolean))).sort((a: any, b: any) => a - b) as number[]} />}>
         {!f && fs?.status === "NO_FORECAST_FOR_ACTIVE_SOURCE" ? (
           <div className="alert warn" data-testid="dash-no-forecast">
             <b>{t("dash.no_fc_active").replace("{src}", s?.active_source ?? "—")}</b>
@@ -118,14 +117,14 @@ export default function Dashboard() {
             <p className="small">{t("dash.no_fc_train").replace("{src}", s?.active_source ?? "—")}</p>
             {fs.other_source_runs > 0 && <p className="small muted">{t("dash.no_fc_other").replace("{n}", String(fs.other_source_runs))}</p>}
           </div>
-        ) : !f ? <Empty text={t("dash.no_run")} /> : (
+        ) : !f ? <Empty text={t("dash.no_run")} hint={t("dash.no_run_hint")} /> : (
           <>
             {fs?.model_in_use && <AssessmentBox a={fs.model_in_use} compact />}
             <div className="grid4">
-              <Stat label={`${t("dash.horizon_total")} (${f.horizon} ${t("common.days")})`} value={fmtNum(f.grand_total)} sub={`${f.n_series} ${t("common.series")}`} />
-              <Stat label={`${t("fc.start")} → ${t("fc.end")}`} value={<span className="small">{fmtDate(f.start_date)} → {fmtDate(f.end_date)}</span>} />
-              <Stat label={<Term id="origin">{t("fc.origin")}</Term>} value={fmtDate(f.forecast_origin)} sub={`${t("fc.data_as_of")}: ${fmtDate(f.data_as_of)}`} />
-              <Stat label={t("fc.run_id")} value={<span className="mono small">{run.id}</span>} sub={<SourceBadge source={f.data_source} />} />
+              <Stat icon="chart" label={`${t("dash.horizon_total")} (${f.horizon} ${t("common.days")})`} value={fmtNum(f.grand_total)} sub={`${fmtNum(f.n_series)} ${t("common.series")}`} />
+              <Stat icon="calendar" label={`${t("fc.start")} → ${t("fc.end")}`} value={<span className="small">{fmtDate(f.start_date)} → {fmtDate(f.end_date)}</span>} />
+              <Stat icon="clock" label={<Term id="origin">{t("fc.origin")}</Term>} value={fmtDate(f.forecast_origin)} sub={`${t("fc.data_as_of")}: ${fmtDate(f.data_as_of)}`} />
+              <Stat icon="file" label={t("fc.run_id")} value={<span className="mono small">{run.id}</span>} sub={<SourceBadge source={f.data_source} />} />
             </div>
             {enabled.some((x) => x > run.max_horizon) && (
               <div className="alert warn small">{t("hz.missing").replace("{h}", enabled.filter((x) => x > run.max_horizon).join(", "))} <Link to="/results">{t("nav.results")} →</Link></div>
@@ -141,18 +140,19 @@ export default function Dashboard() {
             <div className="grid2">
               <div>
                 <h4>{t("dash.top_series")}</h4>
-                <Bars items={f.series.map((x: any) => ({ label: `${x.sku_id} · ${x.fc_id}`, value: x.total }))} />
+                <Bars items={f.series.map((x: any) => ({ label: `${x.sku_id} · ${x.fc_id}${x.product_name ? ` · ${x.product_name}` : ""}`, value: x.total }))} />
               </div>
               <div>
                 <h4><Term id="fallback">{t("dash.methods")}</Term></h4>
                 <table className="tbl">
+                  <thead><tr><th>{t("fc.method")}</th><th className="num">{t("common.series")}</th><th className="num">{t("fc.total")}</th></tr></thead>
                   <tbody>
                     {f.methods.map((m: any) => (
-                      <tr key={m.method}><td><MethodLabel code={m.method} /></td><td className="num">{m.n_series}</td><td className="num">{fmtNum(m.total)}</td></tr>
+                      <tr key={m.method}><td><MethodLabel code={m.method} /></td><td className="num">{fmtNum(m.n_series)}</td><td className="num">{fmtNum(m.total)}</td></tr>
                     ))}
                   </tbody>
                 </table>
-                <Link to="/results">{t("nav.results")} →</Link>
+                <p><Link to="/results">{t("nav.results")} →</Link></p>
               </div>
             </div>
           </>
@@ -160,8 +160,8 @@ export default function Dashboard() {
       </Card>
 
       <div className="grid2">
-        <Card title={<Term id="quality_gate">{t("dash.model_quality")}</Term>}>
-          {!accepted ? <Empty text={t("common.not_available")} /> : (
+        <Card icon="performance" title={<Term id="quality_gate">{t("dash.model_quality")}</Term>}>
+          {!accepted ? <Empty text={t("common.not_available")} hint={t("dash.no_model_hint")} /> : (
             <div className="grid3">
               <Stat label={<Term id="wape">WAPE</Term>} value={fmtPct(accepted.metrics?.wape)} />
               <Stat label={<Term id="mae">MAE</Term>} value={fmtNum(accepted.metrics?.mae, 2)} />
@@ -175,8 +175,9 @@ export default function Dashboard() {
             </p>
           )}
         </Card>
-        <Card title={t("dash.jobs")}>
+        <Card icon="jobs" title={t("dash.jobs")}>
           <table className="tbl">
+            <thead><tr><th>{t("job.type")}</th><th>{t("common.status")}</th><th>{t("job.finished")}</th><th>{t("job.reason")}</th></tr></thead>
             <tbody>
               {Object.entries(s?.latest_jobs ?? {}).map(([jt, j]: [string, any]) => (
                 <tr key={jt}>
@@ -192,8 +193,8 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      <Card title={t("dash.alerts")} actions={s?.alerts?.length ? <button onClick={ackAll}>{t("dash.ack_all")}</button> : null}>
-        {!s?.alerts?.length ? <Empty text={t("dash.no_alerts")} /> : (
+      <Card icon="alerts" title={t("dash.alerts")} actions={s?.alerts?.length ? <button onClick={ackAll}><Icon name="ack" />{t("dash.ack_all")}</button> : null}>
+        {!s?.alerts?.length ? <Empty icon="ok" text={t("dash.no_alerts")} /> : (
           <ul className="alerts">
             {s.alerts.map((a: any) => (
               <li key={a.id} className={`lvl-${a.level}`}>

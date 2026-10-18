@@ -2,7 +2,8 @@ import { Link } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { get, post, put } from "../api";
 import { useI18n } from "../i18n";
-import { Card, DateInput, ErrorBox, Field, Loading, OkBox, Pill, fmtBytes, fmtNum, fmtTime, useAction, useAsync } from "../components/ui";
+import { Card, DateInput, ErrorBox, Field, Loading, OkBox, PageHeader, Pill, fmtBytes, fmtNum, fmtTime, useAction, useAsync } from "../components/ui";
+import { Icon } from "../components/icons";
 
 function vstatus(v: any) {
   return v?.validation?.status ?? "UNCHECKED";
@@ -68,7 +69,7 @@ export function D0Mapping({ d0, reload, sqlVersionId }: { d0: any; reload: () =>
       <datalist id="d0-columns">{cols.map((c) => <option key={c} value={c} />)}</datalist>
       <div className="row wrap small">
         <button className="primary" disabled={act.busy || !dirty} data-testid="d0m-save"
-          onClick={async () => { if (await act.run(() => put("/api/bigquery/d0-mapping", { mapping: d0Body(d0.fields, m) }), t("d0m.saved"))) reload(); }}>{t("d0m.save")}</button>
+          onClick={async () => { if (await act.run(() => put("/api/bigquery/d0-mapping", { mapping: d0Body(d0.fields, m) }), t("d0m.saved"))) reload(); }}><Icon name="save" />{t("d0m.save")}</button>
         <button disabled={act.busy} data-testid="d0m-suggest-table" onClick={() => suggest("table")}>{t("d0m.suggest_table")}</button>
         {sqlVersionId ? <button disabled={act.busy} data-testid="d0m-suggest-sql" onClick={() => suggest(`sql:${sqlVersionId}`)}>{t("d0m.suggest_sql")} v{sqlVersionId}</button> : null}
         <span className="muted">{t("d0m.key")}: <span className="mono">{(d0.key_columns ?? []).join(" + ") || "—"}</span> · {t("d0m.hash")} <span className="mono">{d0.mapping_hash}</span></span>
@@ -110,7 +111,7 @@ function Feed({ kind, data, reload }: { kind: "history" | "d0"; data: any; reloa
     return r;
   };
   return (
-    <Card title={t(`sql.${kind}`)}>
+    <Card icon={kind === "d0" ? "clock" : "calendar"} title={t(`sql.${kind}`)}>
       <div data-testid={`sql-${kind}`} className="stack">
         <div className="row wrap small">
           <Field label={t("sql.mode")}>
@@ -136,9 +137,9 @@ function Feed({ kind, data, reload }: { kind: "history" | "d0"; data: any; reloa
         <textarea className="mono sql-editor" rows={14} value={text} spellCheck={false} aria-label={`editor-${kind}`}
           onChange={(e) => setText(e.target.value)} style={{ width: "100%" }} />
         <div className="row wrap">
-          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder={t("sql.note")} />
+          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder={t("sql.note")} aria-label={t("sql.note")} />
           <button className="primary" disabled={act.busy || !text.trim()} data-testid={`sql-save-${kind}`}
-            onClick={async () => { const r = await call(t("sql.save"), () => post(`/api/sql-sources/${kind}/versions`, { sql: text, note: note || null }), t("common.saved")); if (r) { setSel(r.saved_version_id); setNote(""); } }}>{t("sql.save")}</button>
+            onClick={async () => { const r = await call(t("sql.save"), () => post(`/api/sql-sources/${kind}/versions`, { sql: text, note: note || null }), t("common.saved")); if (r) { setSel(r.saved_version_id); setNote(""); } }}><Icon name="save" />{t("sql.save")}</button>
         </div>
         {cur && (
           <div className="small" data-testid={`sql-static-${kind}`}>
@@ -146,31 +147,31 @@ function Feed({ kind, data, reload }: { kind: "history" | "d0"; data: any; reloa
             {cur.static_check.ok ? <Pill status="OK" /> : <Pill status="FAILED" />}
             <ul>
               {cur.static_check.errors.map((e: any, i: number) => <li key={`e${i}`} className="bad-t">{e.code}{e.detail ? ` — ${e.detail}` : ""}</li>)}
-              {cur.static_check.notes.map((n: any, i: number) => <li key={`n${i}`}><span className="mono">{n.code}</span>{n.line ? ` (dòng ${n.line})` : ""} — {n.detail}</li>)}
+              {cur.static_check.notes.map((n: any, i: number) => <li key={`n${i}`}><span className="mono">{n.code}</span>{n.line ? ` (${t("sql.line")} ${n.line})` : ""} — {n.detail}</li>)}
             </ul>
           </div>
         )}
         <b className="small">{t("sql.versions")}</b>
         <div className="scroll">
           <table className="tbl small" data-testid={`sql-versions-${kind}`}>
-            <thead><tr><th>v</th><th>sha256</th><th>{t("sql.note")}</th><th>saved</th><th>status</th><th /></tr></thead>
+            <thead><tr><th>v</th><th>sha256</th><th>{t("sql.note")}</th><th>{t("sql.saved_at")}</th><th>{t("common.status")}</th><th /></tr></thead>
             <tbody>
               {data.versions.map((v: any) => (
                 <tr key={v.id} className={v.id === data.active_version_id ? "row-ok" : ""} data-status={vstatus(v)}>
-                  <td><b>v{v.id}</b>{v.id === data.active_version_id ? " ✓" : ""}</td>
+                  <td className="nowrap"><b>v{v.id}</b>{v.id === data.active_version_id ? <> <span className="pill ok">{t("sql.active_short")}</span></> : ""}</td>
                   <td className="mono">{v.sha256.slice(0, 12)}</td>
                   <td>{v.note ?? ""}</td>
-                  <td>{v.saved_at ? fmtTime(v.saved_at) : "—"}</td>
+                  <td className="nowrap">{v.saved_at ? fmtTime(v.saved_at) : "—"}</td>
                   <td><Pill status={vstatus(v) === "VALID" ? "OK" : vstatus(v) === "INVALID" ? "FAILED" : "PENDING"} label={t(`sql.status.${vstatus(v)}`)} />
                     {kind === "d0" && vstatus(v) === "VALID" && v.validated_for_current_mapping === false && <div className="bad-t" data-testid={`sql-stale-${v.id}`}>{t("d0m.stale")}</div>}
                     {v.validation?.checked_at && <div className="muted">{fmtTime(v.validation.checked_at)}</div>}
                     {v.validation?.error && <div className="bad-t">{v.validation.error.code}{v.validation.error.detail ? ` — ${String(v.validation.error.detail).slice(0, 300)}` : ""}</div>}</td>
                   <td className="row wrap">
-                    <button onClick={() => { setSel(v.id); setText(v.sql); }}>{t("sql.load")}</button>
-                    <button disabled={act.busy} data-testid={`sql-validate-${kind}-${v.id}`} onClick={() => call(`${t("sql.validate")} v${v.id}`, () => post(`/api/sql-sources/${kind}/versions/${v.id}/validate`))}>{t("sql.validate")}</button>
-                    <button disabled={act.busy} onClick={() => call(`${t("sql.preview")} v${v.id}`, () => post(`/api/sql-sources/${kind}/versions/${v.id}/preview`, { limit: 20 }))}>{t("sql.preview")}</button>
-                    <button disabled={act.busy} onClick={() => call(`${t("sql.test")} v${v.id}`, () => post(`/api/sql-sources/${kind}/versions/${v.id}/test`))}>{t("sql.test")}</button>
-                    {v.id !== data.active_version_id && <button disabled={act.busy} onClick={() => call(`${t("sql.restore")} v${v.id}`, () => post(`/api/sql-sources/${kind}/versions/${v.id}/restore`))}>{t("sql.restore")}</button>}
+                    <button className="small" onClick={() => { setSel(v.id); setText(v.sql); }}>{t("sql.load")}</button>
+                    <button className="small" disabled={act.busy} data-testid={`sql-validate-${kind}-${v.id}`} onClick={() => call(`${t("sql.validate")} v${v.id}`, () => post(`/api/sql-sources/${kind}/versions/${v.id}/validate`))}>{t("sql.validate")}</button>
+                    <button className="small" disabled={act.busy} onClick={() => call(`${t("sql.preview")} v${v.id}`, () => post(`/api/sql-sources/${kind}/versions/${v.id}/preview`, { limit: 20 }))}>{t("sql.preview")}</button>
+                    <button className="small" disabled={act.busy} onClick={() => call(`${t("sql.test")} v${v.id}`, () => post(`/api/sql-sources/${kind}/versions/${v.id}/test`))}>{t("sql.test")}</button>
+                    {v.id !== data.active_version_id && <button className="small" disabled={act.busy} onClick={() => call(`${t("sql.restore")} v${v.id}`, () => post(`/api/sql-sources/${kind}/versions/${v.id}/restore`))}>{t("sql.restore")}</button>}
                   </td>
                 </tr>
               ))}
@@ -216,10 +217,10 @@ function SyncStatus() {
   if (!st.data) return st.error ? <ErrorBox error={st.error} /> : <Loading />;
   const d = st.data;
   return (
-    <Card title={t("sync.title")}>
+    <Card icon="refresh" title={t("sync.title")}>
       <p className="small muted">{pick(d.notes)} · {d.timezone}</p>
       <table className="tbl small" data-testid="sync-status">
-        <thead><tr><th>Job</th><th>{t("sync.times")}</th><th>{t("sync.next")}</th><th>{t("sync.last")}</th><th>{t("sync.rows")}</th><th>{t("sync.new_upd")}</th><th>{t("sync.sql_version")}</th></tr></thead>
+        <thead><tr><th>{t("job.type")}</th><th>{t("sync.times")}</th><th>{t("sync.next")}</th><th>{t("sync.last")}</th><th>{t("sync.rows")}</th><th>{t("sync.new_upd")}</th><th>{t("sync.sql_version")}</th></tr></thead>
         <tbody>
           {Object.entries(d.jobs).map(([jt, j]: [string, any]) => {
             const lr = j.last_run;
@@ -243,9 +244,9 @@ function SyncStatus() {
       <OkBox text={act.ok} />
       <div className="row wrap small">
         <b>{t("sync.backfill")}</b>
-        <DateInput value={bf.start} onChange={(v) => setBf({ ...bf, start: v })} />
-        <DateInput value={bf.end} onChange={(v) => setBf({ ...bf, end: v })} />
-        <button disabled={act.busy || !bf.start || !bf.end || !d.bigquery_production_enabled} onClick={async () => { await act.run(() => post("/api/sync/backfill", bf)); st.reload(); }}>{t("sync.backfill")}</button>
+        <DateInput value={bf.start} onChange={(v) => setBf({ ...bf, start: v })} ariaLabel={t("common.from")} />
+        <DateInput value={bf.end} onChange={(v) => setBf({ ...bf, end: v })} ariaLabel={t("common.to")} />
+        <button className="prod" title={t("common.prod_action")} disabled={act.busy || !bf.start || !bf.end || !d.bigquery_production_enabled} onClick={async () => { await act.run(() => post("/api/sync/backfill", bf)); st.reload(); }}><Icon name="prod" />{t("sync.backfill")}</button>
       </div>
     </Card>
   );
@@ -254,11 +255,11 @@ function SyncStatus() {
 export default function SqlSources() {
   const { t } = useI18n();
   const s = useAsync(() => get("/api/sql-sources"), []);
-  if (!s.data) return s.error ? <ErrorBox error={s.error} /> : <Loading />;
+  const header = <PageHeader icon="sql" title={t("nav.sql")} desc={t("sql.help")} />;
+  if (!s.data) return <div className="stack">{header}{s.error ? <ErrorBox error={s.error} /> : <Loading />}</div>;
   return (
     <div className="stack">
-      <h2>{t("nav.sql")}</h2>
-      <p className="small">{t("sql.help")}</p>
+      {header}
       <SyncStatus />
       <Feed kind="history" data={s.data.history} reload={s.reload} />
       <Feed kind="d0" data={s.data.d0} reload={s.reload} />

@@ -2,7 +2,8 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { get, post, put } from "../api";
 import { useI18n } from "../i18n";
-import { Card, DateInput, ErrorBox, Field, Loading, OkBox, Term, fmtDatesInText, fmtPct, fmtTime, useAction, useAsync } from "../components/ui";
+import { Card, DateInput, ErrorBox, Field, Loading, OkBox, PageHeader, Term, fmtDatesInText, fmtPct, fmtTime, useAction, useAsync } from "../components/ui";
+import { Icon } from "../components/icons";
 
 type Setter = (patch: Record<string, any>) => void;
 
@@ -31,9 +32,9 @@ function Section({ section, title, children, warning }: { section: string; title
   };
   return (
     <Card title={title} actions={<>
-      <button onClick={() => setShowHist(!showHist)}>{t("common.history")}</button>
-      <button onClick={reset} disabled={act.busy}>{t("common.reset")}</button>
-      <button className="primary" onClick={save} disabled={act.busy}>{t("common.save")}</button>
+      <button onClick={() => setShowHist(!showHist)} aria-expanded={showHist}><Icon name="settingsHistory" />{t("common.history")}</button>
+      <button onClick={reset} disabled={act.busy}><Icon name="reset" />{t("common.reset")}</button>
+      <button className="primary" onClick={save} disabled={act.busy}><Icon name="save" />{t("common.save")}</button>
     </>}>
       {warning}
       <ErrorBox error={act.error} />
@@ -45,7 +46,7 @@ function Section({ section, title, children, warning }: { section: string; title
           <table className="tbl small">
             <tbody>
               {hist.data.map((h: any) => (
-                <tr key={h.id}><td>{fmtTime(h.changed_at)}</td><td className="mono">{fmtDatesInText(JSON.stringify(h.value).slice(0, 220))}</td><td>{h.note}</td></tr>
+                <tr key={h.id}><td className="nowrap">{fmtTime(h.changed_at)}</td><td className="mono">{fmtDatesInText(JSON.stringify(h.value).slice(0, 220))}</td><td>{h.note}</td></tr>
               ))}
             </tbody>
           </table>
@@ -91,7 +92,7 @@ function HorizonEditor({ v, set }: { v: any; set: Setter }) {
         <Field label={t("cfg.add_custom")} help={err ? <span className="bad-t">{t("cfg.invalid_int")}</span> : undefined}>
           <input type="number" min={1} step={1} value={custom} onChange={(e) => setCustom(e.target.value)} />
         </Field>
-        <button onClick={add}>{t("cfg.add")}</button>
+        <button onClick={add}><Icon name="save" />{t("cfg.add")}</button>
         <Field label={t("cfg.max_allowed")}><Num v={v} k="max_allowed_days" set={set} min={1} /></Field>
       </div>
     </div>
@@ -147,7 +148,7 @@ export default function Config() {
   const { t } = useI18n();
   return (
     <div className="stack">
-      <h2>{t("nav.config")}</h2>
+      <PageHeader icon="config" title={t("nav.config")} desc={t("page.config.desc")} />
       <Section section="horizons" title={t("cfg.horizons")}>{(v, set) => <HorizonEditor v={v} set={set} />}</Section>
 
       <Section section="quality" title={<Term id="quality_gate">{t("cfg.quality")}</Term>} warning={<div className="alert warn">{t("cfg.quality_warning")}</div>}>

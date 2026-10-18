@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { get, post } from "../api";
 import { useI18n } from "../i18n";
 import { Card, Code, ErrorBox, Field, OkBox, Pill, fmtTime, useAction, useAsync } from "../components/ui";
+import { Icon } from "../components/icons";
 
 const PILL: Record<string, string> = { SIGNED_IN: "OK", IN_PROGRESS: "RUNNING", NOT_SIGNED_IN: "PENDING", CANCELLED: "SKIPPED",
   BLOCKED: "FAILED", ERROR: "FAILED", TIMEOUT: "FAILED", REVOKED: "FAILED", CLIENT_CHANGED: "FAILED" };
@@ -78,7 +79,7 @@ export default function GoogleAuth({ onChange }: { onChange?: () => void }) {
     await run("/api/bigquery/oauth/client-file", { content }, t("ga.client_file_ok"));
   };
   return (
-    <Card title={t("ga.title")}>
+    <Card icon="key" title={t("ga.title")}>
       <div data-testid="ga-identity" className="small">
         <p>{t("ga.runtime")}: <b className="mono">{r.windows_user}</b>{r.computer ? <> @ {r.computer}</> : null} · {t("ga.method")}: <b>{t(`ga.method.${r.effective_method}`)}</b></p>
         <p>{t("ga.adc_checked")}: <span className="mono">{r.adc_path_checked}</span> — <b>{r.adc_exists ? t("ga.exists") : t("ga.missing")}</b>
@@ -99,17 +100,17 @@ export default function GoogleAuth({ onChange }: { onChange?: () => void }) {
       </div>
       <div className="row wrap">
         <button className="primary" data-testid="ga-signin" disabled={act.busy || !o.configured || o.status === "IN_PROGRESS"}
-          onClick={() => run("/api/bigquery/oauth/start")}>{t("ga.signin")}</button>
+          onClick={() => run("/api/bigquery/oauth/start")}><Icon name="signin" />{t("ga.signin")}</button>
         {o.status === "IN_PROGRESS" && <button onClick={() => run("/api/bigquery/oauth/cancel")}>{t("ga.cancel")}</button>}
         <button data-testid="ga-signout" disabled={act.busy || o.status !== "SIGNED_IN" && o.status !== "REVOKED"}
-          onClick={() => run("/api/bigquery/oauth/logout")}>{t("ga.signout")}</button>
-        {o.auth_url && <a href={o.auth_url} target="_blank" rel="noreferrer" className="small">{t("ga.open_link")}</a>}
+          onClick={() => run("/api/bigquery/oauth/logout")}><Icon name="signout" />{t("ga.signout")}</button>
+        {o.auth_url && <a href={o.auth_url} target="_blank" rel="noreferrer" className="small">{t("ga.open_link")} <Icon name="open" size={14} /></a>}
       </div>
       {o.status === "IN_PROGRESS" && <p className="small muted">{t("ga.redirect_hint")}</p>}
       {!o.configured && <div className="alert warn small" data-testid="ga-not-configured">{t("ga.not_configured")}</div>}
       <div className="row wrap">
         <button data-testid="ga-access" disabled={act.busy} onClick={async () => { setGates(null); const r = await act.run(() => post("/api/bigquery/access-check")); if (r) setGates(r); id.reload(); }}>
-          {act.busy ? t("ga.checking") : t("ga.access")}</button>
+          <Icon name={act.busy ? "running" : "quality"} className={act.busy ? "spin" : undefined} />{act.busy ? t("ga.checking") : t("ga.access")}</button>
         {gates && <b className="small" data-testid="ga-access-summary">{t(summaryKey(gates))}</b>}
       </div>
       {gates && (
@@ -143,7 +144,7 @@ export default function GoogleAuth({ onChange }: { onChange?: () => void }) {
         <button disabled={act.busy || !clientId} onClick={async () => {
           await run("/api/bigquery/oauth/client", { client_id: clientId, client_secret: secret || null }, t("common.saved"));
           setSecret("");
-        }}>{t("ga.save_client")}</button>
+        }}><Icon name="save" />{t("ga.save_client")}</button>
       </details>
     </Card>
   );

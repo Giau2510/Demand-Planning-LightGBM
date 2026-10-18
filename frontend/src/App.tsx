@@ -1,10 +1,12 @@
-import { createContext, useContext, type ReactNode } from "react";
-import { NavLink, Route, Routes } from "react-router-dom";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { get, post, put } from "./api";
 import { useI18n } from "./i18n";
 import { ErrorBox, SourceBadge, useAction, useAsync } from "./components/ui";
+import { Icon, type IconName } from "./components/icons";
 import Dashboard from "./pages/Dashboard";
 import Results from "./pages/Results";
+import ForecastHistory from "./pages/ForecastHistory";
 import Performance from "./pages/Performance";
 import Config from "./pages/Config";
 import Methodology from "./pages/Methodology";
@@ -24,11 +26,24 @@ type StatusCtx = { status: any; reload: () => void };
 const SystemContext = createContext<StatusCtx>({ status: null, reload: () => {} });
 export const useSystem = () => useContext(SystemContext);
 
-const NAV: { group: string; items: [string, string][] }[] = [
-  { group: "nav.group.forecast", items: [["/", "nav.dashboard"], ["/results", "nav.results"], ["/performance", "nav.performance"], ["/snapshots", "nav.snapshots"], ["/methodology", "nav.methodology"]] },
-  { group: "nav.group.data", items: [["/import", "nav.import"], ["/batches", "nav.batches"], ["/quality", "nav.quality"]] },
-  { group: "nav.group.admin", items: [["/config", "nav.config"], ["/bigquery", "nav.bigquery"], ["/mapping", "nav.mapping"], ["/sql", "nav.sql"], ["/features", "nav.features"], ["/schedules", "nav.schedules"], ["/jobs", "nav.jobs"], ["/system", "nav.system"]] },
+/** Sidebar: [route, label key, icon]. The page header of each route uses the same icon. */
+const NAV: { group: string; items: [string, string, IconName][] }[] = [
+  { group: "nav.group.forecast", items: [["/", "nav.dashboard", "dashboard"], ["/results", "nav.results", "results"],
+    ["/forecast-history", "nav.fhistory", "fhistory"], ["/performance", "nav.performance", "performance"],
+    ["/snapshots", "nav.snapshots", "snapshots"], ["/methodology", "nav.methodology", "methodology"]] },
+  { group: "nav.group.data", items: [["/import", "nav.import", "import"], ["/batches", "nav.batches", "batches"], ["/quality", "nav.quality", "quality"]] },
+  { group: "nav.group.admin", items: [["/config", "nav.config", "config"], ["/bigquery", "nav.bigquery", "bigquery"], ["/mapping", "nav.mapping", "mapping"],
+    ["/sql", "nav.sql", "sql"], ["/features", "nav.features", "features"], ["/schedules", "nav.schedules", "schedules"], ["/jobs", "nav.jobs", "jobs"],
+    ["/system", "nav.system", "system"]] },
 ];
+
+/** Per-viewer convenience only (collapsed sidebar): storage may be unavailable, the default is "expanded". */
+function readFlag(key: string): boolean {
+  try { return localStorage.getItem(key) === "1"; } catch { return false; }
+}
+function writeFlag(key: string, on: boolean) {
+  try { localStorage.setItem(key, on ? "1" : "0"); } catch { /* storage unavailable */ }
+}
 
 function SourceSwitcher() {
   const { t } = useI18n();
@@ -98,38 +113,67 @@ export function SourceBanner() {
 function Shell({ children }: { children: ReactNode }) {
   const { t, lang, setLang } = useI18n();
   const { status } = useSystem();
+  const [collapsed, setCollapsed] = useState(() => readFlag("df.nav.collapsed"));   // desktop: icons only
+  const [navOpen, setNavOpen] = useState(false);                                    // small screens: drawer
+  const loc = useLocation();
+  useEffect(() => setNavOpen(false), [loc.pathname]);
+  useEffect(() => {
+    if (!navOpen) return;
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setNavOpen(false); };
+    window.addEventListener("keydown", esc);
+    return () => window.removeEventListener("keydown", esc);
+  }, [navOpen]);
+  const toggle = () => { setCollapsed(!collapsed); writeFlag("df.nav.collapsed", !collapsed); };
   return (
-    <div className="shell">
-      <aside className="side">
+    <div className={`shell${collapsed ? " collapsed" : ""}${navOpen ? " nav-open" : ""}`}>
+      <a href="#main" className="skip">{t("nav.skip")}</a>
+      <aside className="side" id="side-nav" aria-label={t("nav.menu")}>
         <div className="brand">
-          <div className="brand-t">{t("app.title")}</div>
-          <div className="brand-s">{t("app.subtitle")}</div>
+          <span className="brand-logo" aria-hidden="true"><Icon name="chart" size={18} /></span>
+          <div className="brand-text">
+            <div className="brand-t">{t("app.title")}</div>
+            <div className="brand-s">{t("app.subtitle")}</div>
+          </div>
         </div>
         <nav>
           {NAV.map((g) => (
-            <div key={g.group} className="nav-g">
-              <div className="nav-gt">{t(g.group)}</div>
-              {g.items.map(([to, key]) => (
-                <NavLink key={to} to={to} end={to === "/"} className={({ isActive }) => (isActive ? "nav-i active" : "nav-i")}>{t(key)}</NavLink>
+            <div key={g.group} className="nav-g" role="group" aria-label={t(g.group)}>
+              <div className="nav-gt" aria-hidden="true">{t(g.group)}</div>
+              {g.items.map(([to, key, icon]) => (
+                <NavLink key={to} to={to} end={to === "/"} title={collapsed ? t(key) : undefined}
+                  className={({ isActive }) => (isActive ? "nav-i active" : "nav-i")}>
+                  <Icon name={icon} size={18} /><span className="nav-t">{t(key)}</span>
+                </NavLink>
               ))}
             </div>
           ))}
         </nav>
-        <div className="side-f small">v{status?.version ?? "…"}</div>
+        <div className="side-f">
+          <span className="side-ver">v{status?.version ?? "…"}</span>
+          <button className="side-toggle icon-btn small" onClick={toggle} aria-expanded={!collapsed} aria-controls="side-nav"
+            aria-label={t(collapsed ? "nav.expand" : "nav.collapse")} title={t(collapsed ? "nav.expand" : "nav.collapse")}>
+            <Icon name={collapsed ? "expand" : "collapse"} />
+          </button>
+        </div>
       </aside>
+      <button className="side-overlay" aria-label={t("common.close")} tabIndex={-1} onClick={() => setNavOpen(false)} />
       <main className="main">
         <div className="topbar">
           <div className="row">
+            <button className="menu-btn icon-btn" onClick={() => setNavOpen(true)} aria-label={t("nav.menu")} title={t("nav.menu")}
+              aria-expanded={navOpen} aria-controls="side-nav"><Icon name="menu" /></button>
             <SourceBadge source={status?.active_source} />
-            <span className="small muted">{status?.scope?.label ?? ""}</span>
+            <span className="small muted scope-label" title={status?.scope?.label ?? ""}>{status?.scope?.label ?? ""}</span>
           </div>
           <div className="row">
             <SourceSwitcher />
-            <button className="lang" onClick={() => setLang(lang === "vi" ? "en" : "vi")} aria-label="language">{t("lang.toggle")}</button>
+            <button className="lang" onClick={() => setLang(lang === "vi" ? "en" : "vi")} title={t("lang.switch")}>
+              <Icon name="language" />{t("lang.toggle")}
+            </button>
           </div>
         </div>
         <SourceBanner />
-        <div className="content">{children}</div>
+        <div className="content" id="main" tabIndex={-1}>{children}</div>
       </main>
     </div>
   );
@@ -144,6 +188,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/results" element={<Results />} />
+          <Route path="/forecast-history" element={<ForecastHistory />} />
           <Route path="/performance" element={<Performance />} />
           <Route path="/config" element={<Config />} />
           <Route path="/methodology" element={<Methodology />} />

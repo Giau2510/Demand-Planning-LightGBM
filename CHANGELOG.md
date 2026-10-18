@@ -5,6 +5,58 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.2.5 - 2026-10-18 (Forecast & actual history D+1 + UI redesign, released together)
+
+### A. Forecast & actual history (new page `/forecast-history`, rules in [docs/LICH-SU-FORECAST.md](docs/LICH-SU-FORECAST.md))
+
+* Migration **0004** (additive, schema 3 -> 4): `forecast_history_sessions` / `forecast_history_values` (immutable) and
+  `forecast_history_days` (official session per scope and run date; only the pointer moves, audited). No existing table
+  or row changed; forecast, model, snapshot, job, settings and scheduler unchanged.
+* Each published forecast run is recorded right after its commit (never inside it: a history failure cannot undo a
+  forecast; alert `FORECAST_HISTORY_CAPTURE_FAILED`), only its D+1 values (target = run date + 1, Vietnam date of the
+  job start / publish). The newest valid session of a run date is official; a session that started earlier never
+  replaces a newer one; a run without D+1 values replaces nothing. Idempotent retry from the immutable runs at the
+  next publish, at app start and with `python -m app.cli history-reconcile`. Runs published before 1.2.5 are recorded
+  from their stored values (`RECOVERED`), nothing is invented for days without a run.
+* Actual is read when shown (never stored with the forecast, never changes it): loaded D-1 day (no row = 0 on a loaded
+  day, as in the training panel), else the latest D0 snapshot, else "no actual data yet" (never 0). "Complete" only when
+  the D-1 load of that day ran on the configured completion signal; otherwise "Provisional" - on production no signal
+  is configured, so every actual is provisional and the page says why.
+* Page: own menu entry; run date and forecast date shown apart; filters (run date / range, FC, SKU or name without
+  accents, actual status) shared by KPI (stored forecast, actual available, deviation, WAPE = sum|F-A| / sum A on the
+  rows that have an actual, "Tạm tính" marks), chart (`CompareChart`: blue forecast, orange actual, gaps never joined,
+  hollow provisional points), sessions (official + traced others), paged SKU x FC table (11 columns, server sort) and
+  Excel (format H1, all filtered rows, refused - never cut - above 1,000,000 rows).
+* API (GET only): `/api/history/overview|summary|rows|export.xlsx`; the read-only remote proxy (1.2.5) allows exactly
+  these. `data-check`: 5 new `forecast_history_*` checks.
+* Tests: backend `test_v125_forecast_history.py` (20), frontend `v125-history.test.tsx` (8).
+
+### B. UI redesign (scope D)
+
+No API, SQL, forecast formula, scheduler condition, permission or data change. Design system in
+[docs/UI-DESIGN-SYSTEM.md](docs/UI-DESIGN-SYSTEM.md).
+
+* New dependency **lucide-react 1.48.0** (ISC, pinned; the project had no icon library): one semantic icon set
+  (`components/icons.tsx`), notice in [docs/THIRD-PARTY-NOTICES.md](docs/THIRD-PARTY-NOTICES.md). Emoji / bare tick
+  glyphs used as controls replaced (calendar button, close buttons, yes / no marks).
+* Tokens for colour (fixed meanings: blue primary + forecast, orange actual, green / amber / red / blue states, purple
+  DEMO; text pairs >= 4.5:1), type scale, spacing, radius, shadow, icon sizes; every status badge, alert and banner
+  carries an icon next to its text.
+* Shell: sidebar with icons and a clear current page, collapsible on desktop (per-browser choice), drawer below 900 px;
+  sticky top bar; skip link; visible keyboard focus.
+* Shared components: `PageHeader` on all 16 pages (title, purpose, actions; kept while loading / failing), `Card` /
+  `Stat` icons, `FilterBar` (filters in effect + clear), `SearchInput`, `Pager`, `IconButton`, `YesNo`, `Empty` with
+  guidance, spinner `Loading`, `Confirm` labelled + Escape; production-affecting buttons marked with a shield icon and
+  tooltip (confirmations unchanged).
+* Tables: sticky distinct header, row hover, tabular numbers, SKU on one line, wrapping product names, frames that
+  scroll; Results no longer cuts off the "how it was computed" column. Chart drawn in real pixels: dates never overlap,
+  the last date is always labelled, value labels sized to the largest total, tooltip box, a dot per day.
+* Small fixes found in the review: `.alert.error` (not usable model, empty feature groups) had no style; the Features
+  page coverage line was Vietnamese only; SQL source column headers and "line" were not translated.
+* Tests: `v125.test.tsx` (11): all routes render with header + active sidebar item, every button named, icons hidden
+  from screen readers, contrast of token pairs, no emoji icons, filter count / clear, sidebar collapse with and without
+  storage, drawer, dialog, chart labels. Existing tests unchanged (86 -> 97 passed).
+
 ## 1.2.4 - 2026-10-17 (explanation survives a reload of identical data, product names + search, D-1 / D-0 switches) [reports/demandforecast_v124_history_names_schedules_20261017.md]
 
 Database schema unchanged (3); settings: new keys `bigquery.product_names_table / _key_column / _name_column` (defaults

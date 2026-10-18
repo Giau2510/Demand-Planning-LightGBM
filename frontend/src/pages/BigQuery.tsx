@@ -3,7 +3,8 @@ import { get, post, put } from "../api";
 import { useSystem } from "../App";
 import { useI18n } from "../i18n";
 import GoogleAuth from "./GoogleAuth";
-import { Card, DateInput, ErrorBox, Field, Loading, OkBox, Pill, fmtBytes, fmtDate, fmtNum, fmtPct, fmtTime, useAction, useAsync } from "../components/ui";
+import { Card, DateInput, ErrorBox, Field, Loading, OkBox, PageHeader, Pill, YesNo, fmtBytes, fmtDate, fmtNum, fmtPct, fmtTime, useAction, useAsync } from "../components/ui";
+import { Icon } from "../components/icons";
 
 function Issues({ items, tone }: { items: any[]; tone: "bad" | "warn" }) {
   const { t } = useI18n();
@@ -87,7 +88,7 @@ export function DupReport({ rep }: { rep: any }) {
     <div className="stack small" data-testid="bq-dup-report">
       {rep.format === "csv" && <div className="alert warn">{t("bq.dup_report_csv")}: {rep.xlsx_error}</div>}
       {!files.length && <div className="alert bad">{t("bq.dup_report_failed")}: {rep.error ?? rep.xlsx_error}</div>}
-      <div className="row wrap">{files.map((f) => <a key={f} className="btn" href={reportUrl(f)}>{t("bq.dup_report")}: {f}</a>)}</div>
+      <div className="row wrap">{files.map((f) => <a key={f} className="btn" href={reportUrl(f)}><Icon name="download" />{t("bq.dup_report")}: {f}</a>)}</div>
     </div>
   );
 }
@@ -154,7 +155,7 @@ export function IngestCheckView({ r }: { r: any }) {
           {cmp.status === "PASSED" && <tr><td>{t("bq.ing.compare")}</td><td className="num" colSpan={3}>{fmtNum(cmp.series_days_new)} / {fmtNum(cmp.series_days_updated)} / {fmtNum(cmp.series_days_unchanged)} / {fmtNum(cmp.series_days_removed)}</td></tr>}
         </tbody></table>
       )}
-      {r.readiness && <p className="small muted">{t("bq.ing.readiness")}: {t("bq.ing.r.source")} <b>{r.readiness.active_source}</b> · {t("bq.ing.r.production")} <b>{r.readiness.production_enabled ? "✔" : "✘"}</b> · {t("bq.ing.r.validation")} <b>{r.readiness.validation_current ? "✔" : "✘"}</b> · D-1 <b>{r.readiness.d1_schedule_enabled ? "ON" : "OFF"}</b></p>}
+      {r.readiness && <p className="small muted row wrap mid">{t("bq.ing.readiness")}: {t("bq.ing.r.source")} <b>{r.readiness.active_source}</b> · {t("bq.ing.r.production")} <YesNo v={!!r.readiness.production_enabled} /> · {t("bq.ing.r.validation")} <YesNo v={!!r.readiness.validation_current} /> · D-1 <YesNo v={!!r.readiness.d1_schedule_enabled} yes="ON" no="OFF" /></p>}
     </div>
   );
 }
@@ -170,7 +171,7 @@ export function SourceTables() {
   useEffect(() => {
     if (st.data?.d1 && st.data?.d0) setIds({ d1: st.data.d1.table_id, d0: st.data.d0.table_id });
   }, [st.data]);
-  if (!st.data?.d1 || !st.data?.d0) return <Card title={t("bq.tables")}>{st.error ? <ErrorBox error={st.error} /> : <Loading />}</Card>;
+  if (!st.data?.d1 || !st.data?.d0) return <Card icon="bigquery" title={t("bq.tables")}>{st.error ? <ErrorBox error={st.error} /> : <Loading />}</Card>;
   const row = (kind: "d1" | "d0") => {
     const s = st.data[kind];
     const lc = res[kind] ?? s.last_check;
@@ -181,9 +182,9 @@ export function SourceTables() {
         </Field>
         <div className="row wrap small">
           <button data-testid={`table-${kind}-check`} disabled={act.busy}
-            onClick={async () => { const r = await act.run(() => post(`/api/bigquery/source-tables/${kind}/check`, { table_id: ids[kind] })); if (r) setRes({ ...res, [kind]: r }); }}>{t("bq.table_check")}</button>
+            onClick={async () => { const r = await act.run(() => post(`/api/bigquery/source-tables/${kind}/check`, { table_id: ids[kind] })); if (r) setRes({ ...res, [kind]: r }); }}><Icon name="quality" size={14} />{t("bq.table_check")}</button>
           <button className="primary" data-testid={`table-${kind}-save`} disabled={act.busy || (kind === "d1" && s.production_enabled && ids.d1 !== s.table_id)}
-            onClick={async () => { const r = await act.run(() => put(`/api/bigquery/source-tables/${kind}`, { table_id: ids[kind] }), t("common.saved")); if (r) { setRes({}); st.reload(); } }}>{t("bq.table_save")}</button>
+            onClick={async () => { const r = await act.run(() => put(`/api/bigquery/source-tables/${kind}`, { table_id: ids[kind] }), t("common.saved")); if (r) { setRes({}); st.reload(); } }}><Icon name="save" size={14} />{t("bq.table_save")}</button>
           {lc ? <Pill status={lc.status === "PASSED" ? "OK" : "FAILED"} label={`${lc.status} · ${fmtTime(lc.checked_at)}`} /> : <span className="muted">{t("bq.table_never_checked")}</span>}
           {kind === "d0" && <span className="muted">{t("bq.table_mode")}: <b>{s.mode}</b></span>}
         </div>
@@ -193,7 +194,7 @@ export function SourceTables() {
     );
   };
   return (
-    <Card title={t("bq.tables")}>
+    <Card icon="bigquery" title={t("bq.tables")}>
       <p className="small">{t("bq.tables_note")}</p>
       <ErrorBox error={act.error} />
       <OkBox text={act.ok} />
@@ -214,7 +215,7 @@ export default function BigQuery() {
   useEffect(() => {
     if (st.data) setV(st.data.settings);
   }, [st.data]);
-  if (!v) return st.error ? <ErrorBox error={st.error} /> : <Loading />;
+  if (!v) return <div className="stack"><PageHeader icon="bigquery" title={t("nav.bigquery")} desc={t("page.bigquery.desc")} />{st.error ? <ErrorBox error={st.error} /> : <Loading />}</div>;
   const set = (p: any) => setV({ ...v, ...p });
   const save = async () => {
     const r = await act.run(() => put("/api/settings/bigquery", v), t("common.saved"));
@@ -236,12 +237,12 @@ export default function BigQuery() {
 
   return (
     <div className="stack">
-      <h2>{t("nav.bigquery")}</h2>
+      <PageHeader icon="bigquery" title={t("nav.bigquery")} desc={t("page.bigquery.desc")} />
       {!configured && <div className="alert warn"><b>{t("bq.not_configured")}</b><br />{t("bq.blocked_note")}</div>}
       <ErrorBox error={act.error} />
       <OkBox text={act.ok} />
       <GoogleAuth onChange={() => st.reload()} />
-      <Card title={t("nav.bigquery")} actions={<button className="primary" onClick={save} disabled={act.busy}>{t("common.save")}</button>}>
+      <Card icon="config" title={t("bq.settings")} actions={<button className="primary" onClick={save} disabled={act.busy}><Icon name="save" />{t("common.save")}</button>}>
         <div className="form-grid">
           <Field label={t("bq.project")}><input value={v.project_id} onChange={(e) => set({ project_id: e.target.value })} /></Field>
           <Field label={t("bq.dataset")}><input value={v.dataset_id} onChange={(e) => set({ dataset_id: e.target.value })} placeholder="(chưa có / not provided)" /></Field>
@@ -272,26 +273,27 @@ export default function BigQuery() {
           <Field label={t("bq.completion_status")}><input value={v.completion_status_column} onChange={(e) => set({ completion_status_column: e.target.value })} /></Field>
           <Field label={t("bq.completion_value")}><input value={v.completion_status_value} onChange={(e) => set({ completion_status_value: e.target.value })} /></Field>
         </div>
-        <div className="alert info small">{t("bq.adc_help")}<br />ADC file: {st.data?.adc_default_file_exists ? "✔" : "✘"} · GOOGLE_APPLICATION_CREDENTIALS: {st.data?.adc_env_set ? "✔" : "✘"}</div>
+        <div className="alert info small">{t("bq.adc_help")}<br />ADC file: <YesNo v={!!st.data?.adc_default_file_exists} /> · GOOGLE_APPLICATION_CREDENTIALS: <YesNo v={!!st.data?.adc_env_set} /></div>
         <p className="small muted">{t("bq.cost_note")}</p>
       </Card>
 
       <SourceTables />
 
-      <Card title={t("bq.checks")}>
+      <Card icon="quality" title={t("bq.checks")}>
         <div className="row wrap">
-          <button onClick={() => call("/api/bigquery/check-auth")} disabled={act.busy}>{t("bq.check_auth")}</button>
-          <button onClick={() => call("/api/bigquery/test-connection")} disabled={act.busy || !v.dataset_id}>{t("bq.test")}</button>
-          <button onClick={() => call("/api/bigquery/schema")} disabled={act.busy || !configured}>{t("bq.schema")}</button>
-          <button onClick={() => call("/api/bigquery/preview")} disabled={act.busy || !configured}>{t("bq.preview")}</button>
-          <button onClick={() => call("/api/bigquery/profile", { days: 30 })} disabled={act.busy || !configured}>{t("bq.profile")}</button>
-          <button className="primary" data-testid="bq-validate" onClick={() => call("/api/bigquery/validate")} disabled={act.busy || !configured}>{t("bq.validate")}</button>
-          <button className="primary" data-testid="bq-ingest-check" onClick={() => call("/api/bigquery/ingest-check")} disabled={act.busy || !configured}>{t("bq.ingest_check")}</button>
+          <button onClick={() => call("/api/bigquery/check-auth")} disabled={act.busy}><Icon name="key" />{t("bq.check_auth")}</button>
+          <button onClick={() => call("/api/bigquery/test-connection")} disabled={act.busy || !v.dataset_id}><Icon name="bigquery" />{t("bq.test")}</button>
+          <button onClick={() => call("/api/bigquery/schema")} disabled={act.busy || !configured}><Icon name="mapping" />{t("bq.schema")}</button>
+          <button onClick={() => call("/api/bigquery/preview")} disabled={act.busy || !configured}><Icon name="search" />{t("bq.preview")}</button>
+          <button onClick={() => call("/api/bigquery/profile", { days: 30 })} disabled={act.busy || !configured}><Icon name="chart" />{t("bq.profile")}</button>
+          <button className="primary" data-testid="bq-validate" onClick={() => call("/api/bigquery/validate")} disabled={act.busy || !configured}><Icon name="quality" />{t("bq.validate")}</button>
+          <button className="primary" data-testid="bq-ingest-check" onClick={() => call("/api/bigquery/ingest-check")} disabled={act.busy || !configured}><Icon name="ok" />{t("bq.ingest_check")}</button>
         </div>
         <p className="small muted">{t("bq.flow")}</p>
         <p className="small muted">{t("bq.ingest_check_note")}</p>
         {needCreds && <div className="alert warn" data-testid="bq-no-creds">{t("bq.no_creds")}</div>}
         <table className="tbl">
+          <thead><tr><th>{t("bq.check_col")}</th><th>{t("common.status")}</th><th>{t("bq.last_checked")}</th><th>{t("common.details")}</th></tr></thead>
           <tbody>
             {["auth", "connection", "schema", "mapping", "profile", "validation"].map((k) => (
               <tr key={k}>
@@ -307,26 +309,26 @@ export default function BigQuery() {
           <p key={k} className="small">{t("bq.last_sync")}: <b>{fmtTime(s.synced_at)}</b> · watermark {s.watermark} · {s.rows_valid} rows · {fmtBytes(s.estimated_bytes)}</p>
         ))}
         <div className="row wrap">
-          <DateInput value={est.start} onChange={(v) => setEst({ ...est, start: v })} />
-          <DateInput value={est.end} onChange={(v) => setEst({ ...est, end: v })} />
-          <button onClick={() => call("/api/bigquery/estimate", est)} disabled={act.busy || !configured || !est.start || !est.end}>{t("bq.estimate")}</button>
+          <Field label={t("common.from")}><DateInput value={est.start} onChange={(v) => setEst({ ...est, start: v })} ariaLabel={t("common.from")} /></Field>
+          <Field label={t("common.to")}><DateInput value={est.end} onChange={(v) => setEst({ ...est, end: v })} ariaLabel={t("common.to")} /></Field>
+          <button onClick={() => call("/api/bigquery/estimate", est)} disabled={act.busy || !configured || !est.start || !est.end}><Icon name="chart" />{t("bq.estimate")}</button>
         </div>
       </Card>
 
       {st.data?.validation && (
-        <Card title={t("bq.validation")}>
+        <Card icon="quality" title={t("bq.validation")}>
           <ValidationView v={st.data.validation} current={!!st.data.validation_current} />
         </Card>
       )}
 
       {st.data?.ingest_check && (
-        <Card title={t("bq.ingest_title")}>
+        <Card icon="ok" title={t("bq.ingest_title")}>
           <IngestCheckView r={st.data.ingest_check} />
         </Card>
       )}
 
       {st.data?.duplicate_reports?.length > 0 && (
-        <Card title={t("bq.dup_reports")}>
+        <Card icon="file" title={t("bq.dup_reports")}>
           <ul className="small" data-testid="bq-dup-reports">
             {st.data.duplicate_reports.map((f: any) => <li key={f.name}><a href={reportUrl(f.name)}>{f.name}</a> · {fmtTime(f.modified)} · {fmtBytes(f.size)}</li>)}
           </ul>
@@ -334,7 +336,7 @@ export default function BigQuery() {
       )}
 
       {out && out.path !== "/api/bigquery/validate" && out.path !== "/api/bigquery/ingest-check" && (
-        <Card title={out.path}>
+        <Card icon="file" title={out.path}>
           {out.r.estimated_bytes !== undefined && <p>{t("bq.est_bytes")}: <b>{fmtBytes(out.r.estimated_bytes)}</b></p>}
           {out.r.rows ? (
             <div className="scroll">
@@ -347,19 +349,20 @@ export default function BigQuery() {
         </Card>
       )}
 
-      <Card title={t("bq.production")}>
+      <Card icon="prod" title={t("bq.production")}>
         <table className="tbl">
+          <thead><tr><th>{t("bq.requirement")}</th><th>{t("common.status")}</th></tr></thead>
           <tbody>
             {Object.entries(reqs).map(([k, ok]) => (
               <tr key={k}><td>{t(`bq.check.${k}`)}</td><td>{ok ? <Pill status="OK" /> : <Pill status="NEEDS_CONFIG" />}</td></tr>
             ))}
           </tbody>
         </table>
-        <div className="row">
+        <div className="row wrap mid sep">
           {v.production_enabled ? <Pill status="ACTIVE" /> : <Pill status="NEEDS_CONFIG" />}
-          <button className="primary" onClick={() => call("/api/bigquery/activate")} disabled={act.busy || !st.data?.activation?.ready || v.production_enabled}>{t("bq.activate")}</button>
-          <button data-testid="bq-deactivate" onClick={() => { if (window.confirm(t("bq.deactivate_confirm"))) call("/api/bigquery/deactivate"); }}
-            disabled={act.busy || !v.production_enabled}>{t("bq.deactivate")}</button>
+          <button className="primary prod" title={t("common.prod_action")} onClick={() => call("/api/bigquery/activate")} disabled={act.busy || !st.data?.activation?.ready || v.production_enabled}><Icon name="prod" />{t("bq.activate")}</button>
+          <button className="prod" data-testid="bq-deactivate" title={t("common.prod_action")} onClick={() => { if (window.confirm(t("bq.deactivate_confirm"))) call("/api/bigquery/deactivate"); }}
+            disabled={act.busy || !v.production_enabled}><Icon name="power" />{t("bq.deactivate")}</button>
         </div>
       </Card>
     </div>

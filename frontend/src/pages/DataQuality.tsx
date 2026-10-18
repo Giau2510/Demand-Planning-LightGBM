@@ -1,29 +1,29 @@
 import { useState } from "react";
 import { get } from "../api";
 import { useI18n } from "../i18n";
-import { Card, Code, ErrorBox, Loading, Pill, SourceBadge, Stat, Term, fmtDate, fmtDateish, fmtNum, fmtPct, fmtTime, useAsync } from "../components/ui";
+import { Card, Code, ErrorBox, Loading, PageHeader, Pill, SourceBadge, Stat, Term, fmtDate, fmtDateish, fmtNum, fmtPct, fmtTime, useAsync } from "../components/ui";
+import { Icon } from "../components/icons";
 
 export default function DataQuality() {
   const { t } = useI18n();
   const [n, setN] = useState(0);
   const rep = useAsync(() => get(`/api/data-quality${n ? "?refresh=true" : ""}`), [n]);
-  if (rep.loading && !rep.data) return <Loading />;
+  const header = <PageHeader icon="quality" title={t("nav.quality")} desc={t("page.quality.desc")}
+    actions={<button onClick={() => setN(n + 1)} disabled={rep.loading}><Icon name="refresh" className={rep.loading ? "spin" : undefined} />{t("dq.recheck")}</button>} />;
+  if (rep.loading && !rep.data) return <div className="stack">{header}<Loading /></div>;
   const r = rep.data;
   const s = r?.stats ?? {};
   return (
     <div className="stack">
-      <div className="row between">
-        <h2>{t("nav.quality")}</h2>
-        <button onClick={() => setN(n + 1)}>{t("dq.recheck")}</button>
-      </div>
+      {header}
       <ErrorBox error={rep.error} />
       {r && (
         <>
           <div className="grid4">
-            <Stat label={t("common.source")} value={<SourceBadge source={r.scope?.data_source} />} sub={<span className="mono small">{s.batch_id ?? r.scope?.scope_key}</span>} />
-            <Stat label={t("dq.checked_at")} value={<span className="small">{fmtTime(r.checked_at)}</span>} />
-            <Stat label={t("dq.can_train")} value={r.can_train ? <Pill status="OK" label={t("common.yes")} /> : <Pill status="FAILED" label={t("common.no")} />} />
-            <Stat label={t("dq.can_publish")} value={r.can_publish ? <Pill status="OK" label={t("common.yes")} /> : <Pill status="FAILED" label={t("common.no")} />} />
+            <Stat icon="bigquery" label={t("common.source")} value={<SourceBadge source={r.scope?.data_source} />} sub={<span className="mono small">{s.batch_id ?? r.scope?.scope_key}</span>} />
+            <Stat icon="clock" label={t("dq.checked_at")} value={<span className="small">{fmtTime(r.checked_at)}</span>} />
+            <Stat icon="model" label={t("dq.can_train")} value={r.can_train ? <Pill status="OK" label={t("common.yes")} /> : <Pill status="FAILED" label={t("common.no")} />} />
+            <Stat icon="results" label={t("dq.can_publish")} value={r.can_publish ? <Pill status="OK" label={t("common.yes")} /> : <Pill status="FAILED" label={t("common.no")} />} />
           </div>
           <div className="grid4">
             <Stat label={t("dq.rows_read")} value={fmtNum(s.rows_read)} />
@@ -37,7 +37,7 @@ export default function DataQuality() {
             <Stat label="SKU / FC" value={`${fmtNum(s.n_skus)} / ${fmtNum(s.n_fcs)}`} sub={`${fmtNum(s.n_series)} ${t("common.series")}`} />
             <Stat label={t("dq.zero_share")} value={fmtPct(s.zero_demand_share)} />
           </div>
-          <Card title={t("dq.checks")}>
+          <Card icon="quality" title={t("dq.checks")}>
             <p className="small muted">{t("dq.explain")}</p>
             <table className="tbl">
               <thead><tr><th>{t("imp.severity")}</th><th>{t("imp.explain")}</th><th className="num">#</th><th></th></tr></thead>

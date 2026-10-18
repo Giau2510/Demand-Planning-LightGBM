@@ -1,4 +1,4 @@
-# Data dictionary (SQLite, schema version 3)
+# Data dictionary (SQLite, schema version 4 since 1.2.5; tables of version 3 unchanged)
 
 Generated from `PRAGMA table_info / index_list / foreign_key_list` of a read-only **copy** of the live database (integrity `ok`, foreign-key violations 0) and annotated from the code. Row counts are from that copy on 2026-10-15 and only indicate scale. Empty *Meaning* = the column name is self-describing; nothing has been invented. See [DATA-MODEL.md](DATA-MODEL.md) for relationships, lifecycle and rules.
 
@@ -118,6 +118,57 @@ Code: `data/demand.py, sync.py` - rows in copy: 38533
 | `promo_share` | REAL | yes |  |  |  |
 | `voucher_share` | REAL | yes |  |  |  |
 | `loaded_at` | TEXT | no |  |  | UTC time the row was (re)built |
+
+## `forecast_history_days` (1.2.5, migration 0004)
+
+Official forecast session per scope and run date (Vietnam date). The only mutable history table: a newer valid session of
+the SAME run date moves `forecast_run_id` (audit `FORECAST_HISTORY_SELECTED`); rows are never deleted, keys never change,
+the pointer must be an eligible session of the same scope and run date (triggers). Code: `forecast_history.py`.
+
+| Column | Type | Null | Key | Default | Meaning / rule |
+|---|---|---|---|---|---|
+| `scope_key` | TEXT | no | PK(1) |  | dataset (same rule as `demand_daily`) |
+| `run_date` | TEXT | no | PK(2) |  | VN date of the session time |
+| `data_source` | TEXT | no |  |  | DEMO / MANUAL_IMPORT / BIGQUERY |
+| `target_date` | TEXT | no |  |  | run_date + 1 |
+| `forecast_run_id` | TEXT | no | FK -> forecast_history_sessions |  | official session |
+| `selected_at` | TEXT | no |  |  | UTC time the pointer was last set |
+
+## `forecast_history_sessions` (1.2.5, migration 0004)
+
+Every published forecast run seen by the history and the decision taken when it was recorded. Immutable.
+
+| Column | Type | Null | Key | Default | Meaning / rule |
+|---|---|---|---|---|---|
+| `forecast_run_id` | TEXT | no | PK, FK -> forecast_runs.id |  |  |
+| `scope_key`, `data_source` | TEXT | no |  |  | from the run |
+| `run_date`, `target_date` | TEXT | no |  |  | VN date of the session time; run_date + 1 |
+| `session_started_at` | TEXT | no |  |  | start of the job that produced the run, else the publish time (UTC) |
+| `published_at` | TEXT | no |  |  | forecast_runs.created_at |
+| `training_run_id`, `model_version`, `data_as_of` | TEXT | no |  |  | from the run |
+| `horizon_day` | INTEGER | yes |  |  | horizon of the D+1 values in the run |
+| `n_rows`, `total_yhat` | INTEGER / REAL | no / yes |  |  | D+1 rows and total of the run |
+| `usage_status` | TEXT | yes |  |  | usage assessment of the training run |
+| `eligible` | INTEGER | no |  |  | 1 when the run has D+1 values |
+| `decision`, `decision_reason` | TEXT | no / yes |  |  | SELECTED / OLDER_THAN_SELECTED / NOT_ELIGIBLE; e.g. REPLACES:&lt;run&gt; |
+| `capture_mode` | TEXT | no |  |  | AT_PUBLISH / RECOVERED (CHECK) |
+| `captured_at` | TEXT | no |  |  | UTC |
+
+Indexes: `ix_fh_sessions_day`(scope_key, run_date)
+
+## `forecast_history_values` (1.2.5, migration 0004)
+
+D+1 values of a session that was selected when recorded, copied from `forecast_values`. Immutable.
+
+| Column | Type | Null | Key | Default | Meaning / rule |
+|---|---|---|---|---|---|
+| `forecast_run_id` | TEXT | no | PK(1) FK -> forecast_history_sessions |  |  |
+| `sku_id`, `fc_id` | TEXT | no | PK(2), PK(3) |  |  |
+| `scope_key`, `run_date`, `target_date` | TEXT | no |  |  | target_date = run_date + 1 (data-check) |
+| `yhat`, `method` | REAL / TEXT | no |  |  | exactly the published value (data-check) |
+| `product_name` | TEXT | yes |  |  | name known when recorded (display prefers the current mapping) |
+
+Indexes: `ix_fh_values_target`(scope_key, target_date, sku_id, fc_id), `ix_fh_values_fc`(scope_key, fc_id, target_date)
 
 ## `forecast_runs`
 
@@ -375,5 +426,9 @@ Code: `data/quality.py` - rows in copy: 3
 Indexes: `ix_validation_reports_scope`(scope_key, created_at)
 
 ## Triggers
+
+1.2.5: `trg_fh_sessions_no_update/no_delete`, `trg_fh_values_no_update/no_delete`, `trg_fh_days_no_delete`,
+`trg_fh_days_keys_fixed`, `trg_fh_days_same_day(_insert)` (history immutability; the official pointer is an eligible session
+of the same run date).
 
 `trg_forecast_values_no_update`, `trg_forecast_values_no_delete`, `trg_forecast_runs_no_update`, `trg_forecast_runs_no_delete`, `trg_d0_values_no_update`, `trg_series_meta_no_update`, `trg_series_meta_no_delete` - all block UPDATE/DELETE of published forecast data or UPDATE of D0 snapshot values (immutability).

@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { get, post, put } from "../api";
 import { useI18n } from "../i18n";
-import { Card, Code, ErrorBox, Field, JobProgress, Loading, OkBox, Pill, fmtDate, fmtTime, jobOutcome, useAction, useAsync } from "../components/ui";
+import { Card, Code, ErrorBox, Field, JobProgress, Loading, OkBox, PageHeader, Pill, fmtDate, fmtTime, jobOutcome, useAction, useAsync } from "../components/ui";
+import { Icon, type IconName } from "../components/icons";
 
 /** Pill tone for the effective state reported by the backend (never computed from the form). */
 const STATE_PILL: Record<string, string> = { OFF: "SKIPPED", ON: "OK", ON_NOT_READY: "RETRY_WAIT", ON_NOT_LOADED: "PENDING",
@@ -45,6 +46,8 @@ function LastRun({ v }: { v: any }) {
   );
 }
 
+const FLOW_ICON: Record<FlowKey, IconName> = { d1: "calendar", d0: "clock", train: "model" };
+
 function FlowCard({ flow, v, title, intro, children, onSaved, confirmOn }: {
   flow: FlowKey; v: any; title: string; intro: ReactNode; children: (form: any, set: (p: any) => void) => ReactNode;
   onSaved: () => void; confirmOn?: string;
@@ -65,8 +68,8 @@ function FlowCard({ flow, v, title, intro, children, onSaved, confirmOn }: {
     onSaved();
   };
   return (
-    <Card title={title}>
-      <div data-testid={`flow-${flow}`}>
+    <Card icon={FLOW_ICON[flow]} title={title}>
+      <div data-testid={`flow-${flow}`} className="stack tight">
         <p className="small muted">{intro}</p>
         <ErrorBox error={act.error} />
         <OkBox text={act.ok} />
@@ -79,14 +82,15 @@ function FlowCard({ flow, v, title, intro, children, onSaved, confirmOn }: {
         <div className="form-grid">{children(form, set)}</div>
         <div className="row wrap">
           <button data-testid={`save-${flow}`} disabled={act.busy || !dirty || invalid}
-            onClick={() => save(form, t("sch.saved_times"))}>{t("sch.save_times")}</button>
+            onClick={() => save(form, t("sch.saved_times"))}><Icon name="save" />{t("sch.save_times")}</button>
           {v.enabled
-            ? <button data-testid={`toggle-${flow}`} disabled={act.busy} onClick={() => save({ enabled: false }, t("sch.saved_off"))}>{t("sch.turn_off")}</button>
-            : <button className="primary" data-testid={`toggle-${flow}`} disabled={act.busy || dirty || !v.readiness.ready}
-                title={!v.readiness.ready ? t("sch.cannot_enable") : dirty ? t("sch.save_first") : undefined}
-                onClick={() => { if (confirmOn && !window.confirm(confirmOn)) return; save({ enabled: true }, t("sch.saved_on")); }}>{t("sch.turn_on")}</button>}
-          <button data-testid={`run-${flow}`} disabled={act.busy || running || !(v.manual_readiness ?? v.readiness).ready}
-            title={!(v.manual_readiness ?? v.readiness).ready ? t("sch.cannot_run") : undefined}
+            ? <button className="prod" data-testid={`toggle-${flow}`} disabled={act.busy} title={t("common.prod_action")}
+                onClick={() => save({ enabled: false }, t("sch.saved_off"))}><Icon name="power" />{t("sch.turn_off")}</button>
+            : <button className="primary prod" data-testid={`toggle-${flow}`} disabled={act.busy || dirty || !v.readiness.ready}
+                title={!v.readiness.ready ? t("sch.cannot_enable") : dirty ? t("sch.save_first") : t("common.prod_action")}
+                onClick={() => { if (confirmOn && !window.confirm(confirmOn)) return; save({ enabled: true }, t("sch.saved_on")); }}><Icon name="power" />{t("sch.turn_on")}</button>}
+          <button className="prod" data-testid={`run-${flow}`} disabled={act.busy || running || !(v.manual_readiness ?? v.readiness).ready}
+            title={!(v.manual_readiness ?? v.readiness).ready ? t("sch.cannot_run") : t("common.prod_action")}
             onClick={async () => {
               if (!window.confirm(t("sch.run_confirm"))) return;
               const r = await act.run(() => post(`/api/schedules/${flow}/run`));
@@ -96,7 +100,7 @@ function FlowCard({ flow, v, title, intro, children, onSaved, confirmOn }: {
                 setRunning(true);
               }
               onSaved();
-            }}>{t("sch.run_now")}</button>
+            }}><Icon name="run" />{t("sch.run_now")}</button>
         </div>
         {runId && <JobProgress jobId={runId} onDone={() => { setRunning(false); onSaved(); }} />}
         {dirty && <div className="alert warn small">{t("sch.unsaved")}</div>}
@@ -127,9 +131,11 @@ function Time({ value, onChange, testid }: { value: string; onChange: (v: string
 export default function Schedules() {
   const { t } = useI18n();
   const data = useAsync(() => get("/api/schedules"), []);
-  if (data.loading && !data.data) return <Loading />;
+  const header = <PageHeader icon="schedules" title={t("nav.schedules")} desc={t("sch.intro")}
+    actions={<button onClick={data.reload} disabled={data.loading}><Icon name="refresh" />{t("common.refresh")}</button>} />;
+  if (data.loading && !data.data) return <div className="stack">{header}<Loading /></div>;
   if (data.error && !data.data) return (
-    <div className="stack"><h2>{t("nav.schedules")}</h2><ErrorBox error={data.error} /><button onClick={data.reload}>{t("common.refresh")}</button></div>
+    <div className="stack">{header}<ErrorBox error={data.error} /></div>
   );
   const d = data.data;
   if (!d) return null;
@@ -137,13 +143,11 @@ export default function Schedules() {
   const s = d.scheduler;
   return (
     <div className="stack" data-testid="schedules-page">
-      <h2>{t("nav.schedules")}</h2>
-      <p className="small" data-testid="sched-status">
+      {header}
+      <p className="small row wrap mid" data-testid="sched-status">
         {s.running ? <Pill status="RUNNING" label={t("job.sched_running")} /> : <Pill status="FAILED" label={t("job.sched_stopped")} />}{" "}
         {t("sch.now")}: {fmtTime(d.now_vn)} ({d.timezone}) · {t("job.last_tick")}: {fmtTime(s.last_tick)} · {t("common.source")}: <b>{d.active_source}</b>
-        {" "}<button className="small" onClick={data.reload}>{t("common.refresh")}</button>
       </p>
-      <p className="small muted">{t("sch.intro")}</p>
 
       <FlowCard flow="d1" v={f.d1} title={t("sch.d1.title")} onSaved={data.reload}
         intro={<>{t("sch.d1.intro")} <span data-testid="d1-window">{t("sch.window_start")}: <b>{fmtDate(d.data_window.start)}</b> · {t("sch.window_end")}: <b>{fmtDate(d.data_window.end)}</b> ({t("sch.yesterday_vn")})</span></>}>
@@ -178,7 +182,7 @@ export default function Schedules() {
         </>)}
       </FlowCard>
 
-      <Card title={t("sch.offline.title")}>
+      <Card icon="info" title={t("sch.offline.title")}>
         <ul className="small" data-testid="offline-rules">
           <li>{t("sch.offline.d1")}</li><li>{t("sch.offline.d0")}</li><li>{t("sch.offline.train")}</li><li>{t("sch.offline.switch")}</li>
         </ul>

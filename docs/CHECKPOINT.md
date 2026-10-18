@@ -382,3 +382,27 @@ Jobs page; link kept, no push. Report `reports/demandforecast_v124_history_names
 | Deploy production 1.2.3 -> 1.2.4 | DONE 22:52-22:59 | UPGRADE OK, app pid 35168; backups backup-20261017-225247-manual.zip (SHA-256 7190A546...13E4) + -225648-cli.zip; data + settings identical (audit +1); rollback -To 1.2.3 -CheckOnly OK |
 | Shared link | KEPT | same URL, proxy 13024 / cloudflared 31076; 502 for ~130 s (22:56:47-22:58:58); 23/23 link checks, Edge 5 pages 0 errors |
 | Production actions | DONE | EEDA47 attested (sha cbd943c0..., SAME_CONTENT); names refreshed 9,657/9,657; explanation OK (33.8 s cold, ~8.5 s next; 7.7 s through the link); D-1 ON (next 18/10 03:00), D-0 ON (next 18/10 08:00); off/on tested; no job started |
+
+
+# 1.2.5 UI redesign (scope D) + Forecast & actual history (2026-10-17 23:20 - )
+
+Owner request "PHẠM VI D - redesign UI/UX", then (18/10 00:50) the master prompt "v1.2.5: Lịch sử Forecast D+1 + hoàn tất
+UI redesign + deploy chung một lần". ONE release / deployment for both scopes. Local commit allowed by that prompt
+(release.ps1 needs a clean tree); no push.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Checkpoint | DONE | `checkpoints/checkpoint-20261017-v125-ui-before.zip` (frontend src + package files, SHA-256 ECEDB45C...D3BB) at commit 3f35975 |
+| Inventory | DONE | 16 routes + explanation / TreeSHAP dialogs; no icon or chart library (hand-made SVG chart); emoji calendar / close buttons; `.alert.error` unstyled |
+| Design system | DONE | tokens + CSS status icons (`styles.css`), `components/icons.tsx` (lucide-react 1.48.0, ISC), shared components in `components/ui.tsx`; docs/UI-DESIGN-SYSTEM.md |
+| Pages | DONE | all 16 pages + GoogleAuth / explanation / trace dialogs: PageHeader, icons, filters, tables, empty states, production markers |
+| Tests | DONE | vitest 97/97 (11 new in v125.test.tsx, existing unchanged), typecheck OK, build OK; lint not configured |
+| Visual check | DONE | repo source backend on a read-only copy of the live DB (scratch, port 8891, scheduler off): Edge screenshots of the 16 routes before / after (1440 px), phone width 390 px via iframe, tablet 1024 px; Edge render 16/16 with header + icons, 0 console errors (2 pre-existing React Router INFO notices) |
+| History: checkpoint | DONE | `checkpoints/checkpoint-20261018-v125-history-before.zip` (backend app + tests, frontend src, scripts/remote, docs; SHA-256 03D2C59B...D11A) |
+| History: survey | DONE | forecast runs only exist when published (initial model / promotion / exception / extension); the daily training makes candidates only -> history days only on publish days; no completion signal configured on production (D-1 = fallback 06:00 + row-count check) -> every actual PROVISIONAL; remote proxy allowlist needs the new GET paths |
+| History: backend | DONE | migration 0004 (additive), `forecast_history.py`, `api/history_routes.py`, hooks after the 4 publish paths, reconcile at start + `app.cli history-reconcile`, 5 data-check checks, Excel H1, proxy 1.2.5 allowlist |
+| History: frontend | DONE | `/forecast-history` (menu entry), `CompareChart`, filters / KPI / sessions / paged table / Excel link |
+| Tests | DONE | backend 438 passed / 7 skipped (20 new); vitest 105/105 (8 new), typecheck, build |
+| DB copy | DONE | migration on a fresh read-only copy (18/10 01:16): old row counts unchanged, data-check WARN (pre-existing forecast_series_meta) + 5 history checks OK; BIGQUERY 17/10 -> 18/10 FCC0EB 17,125 rows RECOVERED; summary 0.10 s, rows 0.06 s, Excel 3.8 s |
+| Release / rehearsal / deploy | IN PROGRESS | |
+

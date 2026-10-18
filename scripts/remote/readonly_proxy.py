@@ -28,7 +28,7 @@ import time
 import urllib.parse
 from collections import defaultdict, deque
 
-VERSION = "1.2.1"
+VERSION = "1.2.5"
 ID = r"[A-Za-z0-9][A-Za-z0-9_.-]{0,80}"
 FR = r"/api/forecast-runs/" + ID
 ALLOWED_API = [re.compile(p + r"\Z") for p in (
@@ -45,6 +45,7 @@ ALLOWED_API = [re.compile(p + r"\Z") for p in (
     r"/api/data-quality", r"/api/data-quality/history",
     r"/api/sql-sources", r"/api/bigquery/source-tables", r"/api/bigquery/d0-mapping",
     r"/api/imports", r"/api/imports/" + ID,
+    r"/api/history/(overview|summary|rows|export\.xlsx)",       # 1.2.5: Forecast & actual history (GET, read-only)
 )]
 # query parameters that would start heavy work on a read endpoint
 DENIED_QUERY = {"/api/data-quality": {"refresh"}, "/api/system/health-check": {"full"}}

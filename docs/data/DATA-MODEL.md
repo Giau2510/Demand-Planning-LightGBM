@@ -1,4 +1,4 @@
-# Data model, lifecycle and data rules (current state, schema 3)
+# Data model, lifecycle and data rules (current state, schema 4 since 1.2.5: D+1 forecast history added)
 
 Status: verified against the code in `backend/app` and a read-only copy of the live database on 2026-10-15
 (application 1.1.6 deployed, 1.1.7 source; schema version 3). Column-level detail: [DATA-DICTIONARY.md](DATA-DICTIONARY.md).
@@ -15,6 +15,7 @@ Anything marked **UNKNOWN** could not be verified from the code or the database 
 | Intraday (D0) demand | `d0_snapshots` + `d0_snapshot_values` | One immutable snapshot per successful read |
 | Models | `training_runs` row + file `<models>/<model_version>.txt` | File integrity: `training_runs.model_sha256` |
 | Published forecasts | `forecast_runs` + `forecast_values` + `forecast_series_meta` | Immutable (triggers) |
+| D+1 forecast history (1.2.5, schema 4) | `forecast_history_sessions` + `forecast_history_values` + `forecast_history_days` | Copy of the D+1 values of the official session per run date, taken from `forecast_values`; sessions / values immutable, only the per-day pointer moves (audited). Actual is NOT stored: read from `demand_daily` / `d0_snapshots`. Rules: [../LICH-SU-FORECAST.md](../LICH-SU-FORECAST.md) |
 | Settings | `app_settings` (+ `settings_history`) **and code defaults** | See section 9 |
 | Storage location | `%LOCALAPPDATA%\DemandForecast\storage.json` + `storage-id.json` in the data folder | Per Windows user; `paths.py` is the only resolver |
 | Google OAuth client secret + refresh token | Windows Credential Manager of the Windows user running the app | Never in the DB, files, logs or backups (`bq/secret_store.py`) |
@@ -38,6 +39,9 @@ erDiagram
     forecast_runs ||--o{ forecast_values : "run_id (FK)"
     forecast_runs ||--o{ forecast_series_meta : "run_id (FK)"
     d0_snapshots ||--o{ d0_snapshot_values : "snapshot_id (FK)"
+    forecast_runs ||--o| forecast_history_sessions : "forecast_run_id (FK, 1.2.5)"
+    forecast_history_sessions ||--o{ forecast_history_values : "forecast_run_id (FK)"
+    forecast_history_sessions ||--o{ forecast_history_days : "official session (FK)"
     import_batches ||..o{ demand_daily : "id = scope_key (logical)"
     import_batches ||..o{ training_runs : "id = scope_key (logical)"
     import_batches ||..o{ d0_snapshots : "DEMO id = scope_key (logical)"

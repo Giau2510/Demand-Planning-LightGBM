@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from . import __version__, db, paths
-from .api import bq_routes, data_routes, forecast_routes, ops_routes, schedule_routes
+from .api import bq_routes, data_routes, forecast_routes, history_routes, ops_routes, schedule_routes
 from .jobs import scheduler as sched_mod
 from .logging_setup import setup_logging
 from .messages import AppError
@@ -36,6 +36,15 @@ async def lifespan(app: FastAPI):
         "path_sources": d["sources"], "db_created_now": not storage["db_exists"]}})
     from .data.importer import cleanup_stale_uploads
     cleanup_stale_uploads()
+    # 1.2.5: published runs not yet in the forecast history (published before 1.2.5, or a failed recording) are recorded
+    # from the immutable forecast runs; never blocks the start
+    try:
+        from . import forecast_history
+        rec = forecast_history.reconcile()
+        if rec["missing"]:
+            log.info("forecast history reconciled", extra={"ctx": {"recorded": rec["recorded"], "errors": rec["errors"]}})
+    except Exception:  # noqa: BLE001
+        log.warning("forecast history not reconciled at start", exc_info=True)
     if os.environ.get("DF_DISABLE_SCHEDULER") != "1":
         sched_mod.SCHEDULER = sched_mod.Scheduler(int(os.environ.get("DF_TICK_SECONDS", "30")))
         sched_mod.SCHEDULER.start()
@@ -117,6 +126,7 @@ def create_app() -> FastAPI:
     app.include_router(schedule_routes.router)
     app.include_router(data_routes.router)
     app.include_router(forecast_routes.router)
+    app.include_router(history_routes.router)
 
     dist = paths.frontend_dist()
     if (dist / "index.html").exists():
