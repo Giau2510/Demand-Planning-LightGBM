@@ -42,7 +42,7 @@ read-only).
    `GET http://127.0.0.1:8765/api/health`; `%LOCALAPPDATA%\Programs\DemandForecast\current.txt`;
    `%LOCALAPPDATA%\DemandForecast\storage.json` (hash); active jobs (`/api/jobs`); next scheduler slot
    (D0 08:00-18:00 every 2 h, D-1 from 01:00, training 07:00, 1.2.6 end-of-day forecast backup 23:55 and actual close
-   23:59, Vietnam time; defaults - the installation may have saved other times).
+   23:59, both OFF by default, Vietnam time; defaults - the installation may have saved other times).
 
 ## 3. Coding conventions
 

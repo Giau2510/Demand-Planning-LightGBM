@@ -44,20 +44,37 @@ nên link giữ nguyên.
 
 ### Snapshot forecast cuối ngày và chốt thực tế 23:59 (1.2.6)
 
-- Hai flow mới trên trang Lịch chạy dữ liệu, mặc định BẬT:
+- Hai flow mới trên trang Lịch chạy dữ liệu, mặc định **TẮT** (cả khi nâng cấp từ 1.2.5: thiết lập cũ không có khóa
+  của chúng):
   - `eod`: 23:55, snapshot 7 ngày forecast kế tiếp;
   - `close`: 23:59, chốt thực tế và đối soát dữ liệu đến muộn.
+- Chỉ bật sau khi kiểm tra sau deploy đạt và chủ sở hữu cho phép (quyết định 18/10/2026). Bật trên trang Lịch chạy dữ
+  liệu; mốc trước thời điểm bật không chạy.
 - Cả hai chỉ sao chép dữ liệu cục bộ. Không đọc BigQuery, không huấn luyện, không forecast, không publish.
 - Tắt / bật / đổi giờ tại trang Lịch chạy dữ liệu. Giờ phải trong khoảng 20:00–23:59.
 - Theo dõi:
   - lịch sử job ghi ngày nghiệp vụ, trạng thái snapshot / bản chốt, số dòng;
   - alert WARNING `EOD_SNAPSHOT_INCOMPLETE`, `EOD_NO_VALID_FORECAST`, `ACTUAL_CLOSE_NO_DATA`;
-  - `data-check` có 3 kiểm tra `eod_snapshot_*` / `actual_close_revisions`.
+  - alert ERROR `EOD_SNAPSHOT_VERIFY_FAILED`: bản sao không khớp nguồn, không lưu gì, job *Thất bại* và **không tự thử
+    lại**. Kiểm tra (`data-check`, forecast nguồn) rồi bấm "Chạy ngay 1 lần" của flow `eod`;
+  - `data-check` có 6 kiểm tra `eod_*` / `actual_close_revisions`, gồm `eod_backup_protection_triggers` (FAIL khi
+    thiếu trigger bảo vệ).
 - Snapshot `INCOMPLETE` / `NO_SOURCE` có thể hoàn thành bằng nút "Chạy ngay 1 lần" của flow `eod`. Nút này chụp ngày
   có mốc gần nhất đã qua.
-- Dung lượng khoảng 11,8 MB mỗi ngày với dữ liệu hiện tại. Chưa có chính sách xóa; cần quyết định thời hạn lưu.
-- Schema 5: rollback về 1.2.5 cần khôi phục bản sao lưu trước nâng cấp ([LICH-SU-FORECAST.md](LICH-SU-FORECAST.md)
-  mục 9).
+- Dung lượng khoảng 11,8 MB mỗi ngày với dữ liệu hiện tại. Lưu **90 ngày** (chủ sở hữu quyết định 18/10/2026). Dọn
+  bằng tay, không có lịch tự dọn:
+  1. `scripts\eod-retention.ps1`: dry run, chỉ đọc. Xem số snapshot / số dòng / khoảng ngày sẽ xóa, các snapshot được
+     giữ và `plan_id`.
+  2. `scripts\eod-retention.ps1 -Apply -Plan <plan_id>`: tự sao lưu (đã kiểm tra) rồi xóa đúng kế hoạch đó. Kế hoạch đã
+     đổi thì bị từ chối, chạy dry run lại.
+  3. `data-check` cảnh báo `eod_snapshot_retention_due` khi còn snapshot quá 90 ngày chờ dọn.
+  4. Mỗi lần `-Apply` có việc cần xóa tạo thêm một bản sao lưu (khoảng 76 MB); file DB không nhỏ đi vì SQLite dùng
+     lại các trang đã giải phóng.
+
+  Snapshot chưa đủ 90 ngày không thể bị xóa (database tự chặn). Chi tiết: [LICH-SU-FORECAST.md](LICH-SU-FORECAST.md)
+  mục 14.
+- Schema 6: rollback về 1.2.5 cần khôi phục bản sao lưu trước nâng cấp **bằng `restore.ps1` của thư mục 1.2.5**
+  ([LICH-SU-FORECAST.md](LICH-SU-FORECAST.md) mục 9).
 
 ## Sao lưu
 

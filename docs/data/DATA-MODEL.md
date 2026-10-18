@@ -1,4 +1,4 @@
-# Data model, lifecycle and data rules (current state, schema 5 since 1.2.6: end-of-day forecast backup and actual close added; schema 4 since 1.2.5: D+1 forecast history)
+# Data model, lifecycle and data rules (current state, schema 6 since 1.2.6: end-of-day forecast backup, actual close and the 90-day backup retention added; schema 4 since 1.2.5: D+1 forecast history)
 
 Status: verified against the code in `backend/app` and a read-only copy of the live database on 2026-10-15
 (application 1.1.6 deployed, 1.1.7 source; schema version 3). Column-level detail: [DATA-DICTIONARY.md](DATA-DICTIONARY.md).
@@ -16,7 +16,8 @@ Anything marked **UNKNOWN** could not be verified from the code or the database 
 | Models | `training_runs` row + file `<models>/<model_version>.txt` | File integrity: `training_runs.model_sha256` |
 | Published forecasts | `forecast_runs` + `forecast_values` + `forecast_series_meta` | Immutable (triggers) |
 | D+1 forecast history (1.2.5, schema 4) | `forecast_history_sessions` + `forecast_history_values` + `forecast_history_days` | Copy of the D+1 values of the official session per run date, taken from `forecast_values`; sessions / values immutable, only the per-day pointer moves (audited). Actual is NOT stored: read from `demand_daily` / `d0_snapshots`. Rules: [../LICH-SU-FORECAST.md](../LICH-SU-FORECAST.md) |
-| End-of-day forecast backup (1.2.6, schema 5) | `forecast_eod_snapshots` + `forecast_eod_snapshot_values` | Per scope and business day S, a copy of S+1..S+7 of the official session of the newest run date <= S; values only for a COMPLETE snapshot; never changed or deleted. Used for display only for a run date without an official session. NOT a source of truth: `forecast_values` stays it |
+| End-of-day forecast backup (1.2.6, schema 5) | `forecast_eod_snapshots` + `forecast_eod_snapshot_values` | Per scope and business day S, a copy of S+1..S+7 of the official session of the newest run date <= S; values only for a COMPLETE snapshot; never changed. Used for display only for a run date without an official session. NOT a source of truth: `forecast_values` stays it. Kept 90 days (schema 6, below): deleted only by the operator's retention run |
+| Backup retention record (1.2.6, schema 6) | `forecast_eod_snapshot_retention` | One permanent row per deleted snapshot (what, when, cutoff, backup). Its DELETING row is also the only permit the triggers accept for a DELETE, for a business date older than today (Vietnam) - 90 days. Never deleted; DELETING -> DELETED once (`eod_retention.py`, LICH-SU-FORECAST.md section 14) |
 | Actual close at 23:59 (1.2.6, schema 5) | `actual_closes` + `actual_close_values` | Independent copy of the day's actual as shown at the close (revision 1) and immutable, consecutive revisions for late data. The figure on screen is still read from `demand_daily` / `d0_snapshots`; the close adds the status CLOSED and the trace |
 | Settings | `app_settings` (+ `settings_history`) **and code defaults** | See section 9 |
 | Storage location | `%LOCALAPPDATA%\DemandForecast\storage.json` + `storage-id.json` in the data folder | Per Windows user; `paths.py` is the only resolver |

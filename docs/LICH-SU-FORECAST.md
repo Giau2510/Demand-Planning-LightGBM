@@ -6,8 +6,10 @@ forecast và so sánh với thực tế. Mã nguồn: `backend/app/forecast_hist
 `backend/tests/test_v125_forecast_history.py`, `frontend/src/v125-history.test.tsx`.
 
 1.2.6 thêm snapshot forecast cuối ngày (dự phòng 7 ngày), dùng cho ngày chạy không có phiên hợp lệ, và chốt thực tế
-lúc 23:59 (mục 10–13). Mã nguồn: `backend/app/forecast_backup.py`, `backend/app/actual_close.py`; migration
-`0005_eod_backup_actual_close.sql`. Test: `backend/tests/test_v126_eod_backup_close.py`, `frontend/src/v126.test.tsx`.
+lúc 23:59 (mục 10–13), cùng chính sách lưu snapshot 90 ngày (mục 14). Hai lịch mới mặc định **TẮT**. Mã nguồn:
+`backend/app/forecast_backup.py`, `backend/app/actual_close.py`, `backend/app/eod_retention.py`; migration
+`0005_eod_backup_actual_close.sql`, `0006_eod_snapshot_retention.sql`. Test: `backend/tests/test_v126_eod_backup_close.py`,
+`backend/tests/test_v126_retention_defaults.py`, `frontend/src/v126.test.tsx`.
 
 ## 1. Quy tắc nghiệp vụ (chủ sở hữu đã xác nhận, 18/10/2026)
 
@@ -148,16 +150,19 @@ Gồm 4 sheet: Thông tin (bộ lọc, KPI, quy tắc), Phiên forecast, Theo ng
   trị đã lưu (`RECOVERED`).
 - **Chưa có tín hiệu hoàn tất** nên không có thực tế nào "Đã hoàn tất" (mục 3).
 - **1.2.6 — dung lượng snapshot dự phòng.** Mỗi snapshot hoàn chỉnh lưu 7 × số chuỗi SKU × FC. Đo trên bản sao DB
-  ngày 18/10/2026: 119.889 dòng, khoảng 11,8 MB mỗi ngày, tức khoảng 4,3 GB mỗi năm nếu chạy mỗi ngày. Chưa có chính
-  sách lưu giữ: không xóa snapshot nào, vì trigger cấm xóa. Cần chủ sở hữu quyết định thời hạn lưu trước khi DB quá
-  lớn; việc dọn sẽ cần một migration riêng được phê duyệt.
+  ngày 18/10/2026: 119.889 dòng, khoảng 11,8 MB mỗi ngày, tức khoảng 4,3 GB mỗi năm nếu chạy mỗi ngày. Chủ sở hữu
+  quyết định lưu **90 ngày** (18/10/2026): khoảng 90 × 11,8 MB ≈ 1,1 GB khi dọn đều đặn. Dọn bằng tay, dry run trước
+  (mục 14). Sau khi một snapshot quá 90 ngày bị xóa, ngày chạy chỉ có forecast dự phòng từ snapshot đó sẽ trống trên
+  màn hình (không có số, không điền 0).
 
 ## 9. Rollback
 
-**1.2.6 (schema 5):** bản 1.2.5 từ chối DB schema 5, nên rollback = khôi phục bản sao lưu `pre-migration-v4` (tự tạo
-khi nâng cấp) hoặc bản backup trước deploy, rồi `rollback-version.ps1 -To 1.2.5`. Mất snapshot cuối ngày và bản chốt
-ghi sau nâng cấp, cùng mọi dữ liệu khác ghi sau thời điểm đó. Cách hạ schema thủ công (`DROP TABLE` 4 bảng của 0005)
-là thao tác phá hủy, cần phê duyệt riêng.
+**1.2.6 (schema 6):** bản 1.2.5 từ chối DB schema 5 và 6, nên rollback = khôi phục bản sao lưu trước nâng cấp (bản
+`deploy-upgrade` tạo trước khi hỏi xác nhận, hoặc bản `pre-migration-v4` tự tạo khi nâng cấp) **bằng `restore.ps1` của
+thư mục 1.2.5** (bản của 1.2.6 sẽ migrate lại DB vừa khôi phục lên schema 6), rồi `rollback-version.ps1 -To 1.2.5`. Mất
+snapshot cuối ngày, bản chốt, bản ghi dọn snapshot và mọi dữ liệu khác ghi sau thời điểm sao lưu (job, snapshot D0,
+D-1, forecast publish sau nâng cấp). DB schema 6 lúc khôi phục vẫn được giữ trong file `backup-…-pre-restore.zip` tự
+tạo. Cách hạ schema thủ công (`DROP TABLE` các bảng của 0005/0006) là thao tác phá hủy, cần phê duyệt riêng.
 
 **1.2.5 (schema 4):**
 
@@ -176,14 +181,17 @@ Schema 4 mới hơn 1.2.4, nên `rollback-version.ps1 -To 1.2.4` sẽ từ chố
 
 ## 10. Snapshot forecast cuối ngày (1.2.6)
 
-Job `EOD_FORECAST_SNAPSHOT`, flow `eod` trên trang Lịch chạy dữ liệu, mặc định **BẬT lúc 23:55** (giờ Việt Nam).
+Job `EOD_FORECAST_SNAPSHOT`, flow `eod` trên trang Lịch chạy dữ liệu, giờ mặc định **23:55** (giờ Việt Nam), mặc định
+**TẮT**. Chủ sở hữu quyết định (18/10/2026): chỉ bật trên trang Lịch chạy dữ liệu sau khi kiểm tra sau deploy đạt và
+được cho phép. Thiết lập đã lưu mà không có khóa `eod_enabled` (mọi bản cài nâng cấp từ 1.2.5) cũng đọc là TẮT;
+migration không ghi thiết lập nào. Lựa chọn đã lưu của người vận hành không bị ghi đè.
 
 | Quy tắc | Cách triển khai |
 |---|---|
 | Ngày nghiệp vụ S | Ngày Việt Nam của mốc lịch (`params.business_date`). Chạy lại sau nửa đêm (grace, retry, chạy bù) vẫn là S. Chạy thủ công lấy mốc gần nhất **đã qua**: trước 23:55 là hôm qua, không bao giờ snapshot một ngày chưa kết thúc. |
 | Phiên nguồn | Phiên chính thức (`forecast_history_days`) của **ngày chạy mới nhất ≤ S**, đúng quy tắc chọn phiên hiện có. Trước khi chụp, job ghi nhận các run đã publish mà lịch sử chưa có (`forecast_history.reconcile()`, idempotent, như lúc khởi động). Không huấn luyện, không forecast, không publish, không đọc BigQuery. |
 | Phạm vi 7 ngày | Ngày được dự báo S+1 … S+7 (D+1 = ngày chạy + 1, như lịch sử D+1). Grain SKU × FC × ngày, đúng dòng của `forecast_values` (kèm `horizon_day` trong run nguồn). |
-| `COMPLETE` | Chỉ khi run nguồn có **mọi** chuỗi của nó ở **cả 7 ngày**. Bản sao được kiểm lại số dòng và tổng trong cùng transaction; lệch thì rollback (`EOD_SNAPSHOT_VERIFY_FAILED`, job thử lại). |
+| `COMPLETE` | Chỉ khi run nguồn có **mọi** chuỗi của nó ở **cả 7 ngày**. Bản sao được kiểm lại số dòng và tổng trong cùng transaction. Lệch thì cả transaction rollback, không lưu snapshot nào (kể cả dòng đầu mục), và job kết thúc **FAILED** với alert ERROR `EOD_SNAPSHOT_VERIFY_FAILED`. Lỗi này **không tự thử lại**: `jobs/runner.py` chỉ thử lại lỗi tạm thời (`Retryable`, `TIMEOUT`), lỗi không phải `AppError` và `BQ_ERROR` / `BQ_AUTH_MISSING`; mốc lịch của ngày đó cũng không được lên lịch lại. Người vận hành kiểm tra rồi chạy lại bằng tay ("Chạy ngay"). |
 | `INCOMPLETE` / `NO_SOURCE` | Run nguồn thiếu ngày, hoặc không có phiên hợp lệ. Chỉ lưu dòng đầu mục (lý do, ngày thiếu), **không** lưu giá trị nào (trigger cấm). Có alert WARNING `EOD_SNAPSHOT_INCOMPLETE` / `EOD_NO_VALID_FORECAST`. Job: kết quả `INCOMPLETE`, hoặc `SKIPPED`. Không dùng demo, không điền 0. |
 | Idempotent | Một snapshot cho mỗi (scope, ngày nghiệp vụ) (UNIQUE). Snapshot `COMPLETE` không bao giờ đổi (trigger). Lần chạy sau chỉ có thể hoàn thành dòng `INCOMPLETE` / `NO_SOURCE` của cùng ngày (`attempts` + 1). Hai job đồng thời: transaction `BEGIN IMMEDIATE` + khóa job, nên chỉ một bản. |
 | Phụ thuộc | Nếu đang có job `TRAIN_PUBLISH` / `FORECAST_EXTEND` chạy thì chờ (`WAITING_FOR_FORECAST_JOB`, kiểm lại mỗi 5 phút, không tốn lượt thử), tối đa tới 06:00 ngày S+1; sau đó chụp và ghi `forecast_job_still_running`. |
@@ -210,8 +218,8 @@ Có bộ lọc "Nguồn forecast" (tham số `forecast_source`), áp dụng cho 
 
 ## 12. Chốt thực tế 23:59 (1.2.6)
 
-Job `ACTUAL_CLOSE`, flow `close`, mặc định **BẬT lúc 23:59** (giờ Việt Nam). Giờ của cả hai flow phải trong khoảng
-20:00–23:59, vì chúng đại diện cho cuối ngày.
+Job `ACTUAL_CLOSE`, flow `close`, giờ mặc định **23:59** (giờ Việt Nam), mặc định **TẮT** như flow `eod` (mục 10).
+Giờ của cả hai flow phải trong khoảng 20:00–23:59, vì chúng đại diện cho cuối ngày.
 
 | Quy tắc | Cách triển khai |
 |---|---|
@@ -225,8 +233,11 @@ Job `ACTUAL_CLOSE`, flow `close`, mặc định **BẬT lúc 23:59** (giờ Vi�
 
 ## 13. Lịch chạy, giám sát, kiểm tra (1.2.6)
 
-- **Lịch.** Hai flow mới có công tắc và giờ riêng trên trang Lịch chạy dữ liệu (`/api/schedules/eod|close`). Bật/tắt
-  chỉ qua trang này (`SCHEDULE_SWITCH_VIA_FLOW_API`). Không đổi giờ D-0 / D-1 / huấn luyện.
+- **Lịch.** Hai flow mới có công tắc và giờ riêng trên trang Lịch chạy dữ liệu (`/api/schedules/eod|close`), mặc định
+  TẮT. Bật/tắt chỉ qua trang này (`SCHEDULE_SWITCH_VIA_FLOW_API`). Khi bật, thời điểm bật được lưu (`eod_enabled_at` /
+  `close_enabled_at`): mốc trước thời điểm đó không bao giờ chạy. Khi TẮT, scheduler không lên lịch job nào và một job
+  theo lịch / thử lại của flow TẮT bị bỏ qua (`EOD_SCHEDULE_DISABLED` / `CLOSE_SCHEDULE_DISABLED`). Không đổi giờ D-0 /
+  D-1 / huấn luyện.
 - **Chạy bù.** Mốc của hôm qua bị lỡ thì chạy bù một lần (trigger `CATCH_UP`, vẫn cho đúng ngày đó). Ngày cũ hơn ghi
   `MISSED_SLOT_NO_BACKFILL`. Mốc trước lần đầu scheduler của phiên bản này thấy flow (`sync_state`
   `flows_first_seen`) không bao giờ chạy: nâng cấp không tạo snapshot hay bản chốt cho ngày cũ.
@@ -237,10 +248,15 @@ Job `ACTUAL_CLOSE`, flow `close`, mặc định **BẬT lúc 23:59** (giờ Vi�
   - `audit_log` ghi `EOD_FORECAST_SNAPSHOT`, `ACTUAL_CLOSED` và `ACTUAL_CLOSE_REVISED`.
   - Alert WARNING khi snapshot không đủ 7 ngày, khi không có forecast hợp lệ, hoặc khi ngày không có thực tế để chốt.
   - Không gửi alert ra dịch vụ ngoài.
-- **`data-check`** có thêm 3 kiểm tra:
+- **`data-check`** có thêm 6 kiểm tra:
   - `eod_snapshot_complete`: đầu mục COMPLETE đủ 7 ngày × chuỗi; đếm giá trị trong 14 ngày gần nhất; snapshot khác không có giá trị;
   - `eod_snapshot_values_match_source`: 14 ngày gần nhất, giá trị bằng forecast đã publish;
-  - `actual_close_revisions`: revision 1..n liên tiếp, đủ số dòng.
+  - `actual_close_revisions`: revision 1..n liên tiếp, đủ số dòng;
+  - `eod_snapshot_retention_due` (WARN): còn snapshot quá 90 ngày chờ dọn, đúng kế hoạch của dry run; snapshot được
+    giữ vì còn là dự phòng trong 90 ngày không bị liệt kê (mục 14);
+  - `eod_backup_protection_triggers` (FAIL): thiếu một trigger bảo vệ của 0005 / 0006;
+  - `eod_snapshot_retention_records` (FAIL): bản ghi dọn còn ở `DELETING`, snapshot đã ghi xóa vẫn còn, hoặc số dòng
+    xóa khác số dòng ghi nhận.
 
 **Bảng (migration 0005, chỉ thêm):**
 
@@ -250,3 +266,65 @@ Job `ACTUAL_CLOSE`, flow `close`, mặc định **BẬT lúc 23:59** (giờ Vi�
 | `forecast_eod_snapshot_values` | Giá trị 7 ngày (SKU, FC, ngày, horizon, forecast, method); chỉ cho snapshot COMPLETE; bất biến | PK `(snapshot_id, target_date, sku_id, fc_id)`, WITHOUT ROWID |
 | `actual_closes` | Bản chốt và các revision: nguồn, tham chiếu, thời điểm đọc nguồn, số dòng, tổng, sha256, trạng thái, revision trước, tổng trước, số đổi / thêm / bớt, giờ cắt, thời điểm chốt, job; bất biến | PK `id`; UNIQUE `(scope_key, business_date, revision)` |
 | `actual_close_values` | SKU × FC × số lượng của từng revision; bất biến | PK `(close_id, sku_id, fc_id)`, WITHOUT ROWID |
+
+## 14. Lưu snapshot cuối ngày 90 ngày (1.2.6, migration 0006)
+
+Chủ sở hữu quyết định (18/10/2026): snapshot forecast cuối ngày được lưu **90 ngày**. Mã nguồn `backend/app/eod_retention.py`,
+lệnh `app.cli eod-retention`, script `scripts\eod-retention.ps1`.
+
+| Quy tắc | Cách triển khai |
+|---|---|
+| Tuổi | Theo **ngày nghiệp vụ** của snapshot (`business_date`, ngày Việt Nam mà snapshot đại diện). Không theo giờ tạo UTC, không theo tuổi file. |
+| Hết hạn | `business_date < ngày cắt`, với ngày cắt = hôm nay (giờ Việt Nam) − 90 ngày. Snapshot **đúng 90 ngày** được giữ. Ví dụ ngày 18/10/2026: ngày cắt 20/07/2026, snapshot 19/07 bị xóa, 20/07 được giữ. Snapshot của ngày nghiệp vụ 18/10/2026 (nếu có) được giữ tới hết 16/01/2027 và có thể xóa từ 17/01/2027. |
+| Mọi trạng thái | `COMPLETE`, `INCOMPLETE`, `NO_SOURCE` hết hạn như nhau. Hai loại sau chỉ có dòng đầu mục, không có giá trị. |
+| Giữ lại | Snapshot COMPLETE đã hết hạn nhưng **còn là dự phòng hiển thị** cho một ngày chạy trong 90 ngày (không có snapshot mới hơn ở giữa) được giữ, lý do `SERVES_BACKUP_INSIDE_WINDOW`, tới khi ngày chạy đó ra khỏi cửa sổ. Snapshot có số giá trị khác dòng đầu mục cũng được giữ (`VALUES_DO_NOT_MATCH_HEADER`, data-check báo). Nếu có bảng khác tham chiếu bảng snapshot thì từ chối cả lần chạy (`EOD_RETENTION_UNKNOWN_REFERENCE`). |
+| Không bao giờ xóa | `forecast_values`, lịch sử D+1, bản chốt thực tế, log, job hay bảng khác. |
+| Dry run | Mặc định của lệnh. Mở DB chỉ đọc, in kế hoạch: số snapshot, số dòng, khoảng ngày, theo trạng thái, danh sách từng snapshot, các snapshot được giữ và lý do, số còn lại, `plan_id`. Không ghi gì. |
+| Xóa thật | Chỉ khi có `--apply --plan <plan_id>` của lần dry run đã duyệt. Kế hoạch đổi (thêm/bớt snapshot) thì `plan_id` đổi và lệnh từ chối (`EOD_RETENTION_PLAN_CHANGED`). Trước khi xóa tạo một bản sao lưu đã kiểm tra (`backup-…-pre-eod-retention.zip`, `integrity_check`). |
+| Transaction | Mỗi snapshot một transaction `BEGIN IMMEDIATE`: ghi phiếu xóa `DELETING` → xóa giá trị → xóa đầu mục → phiếu thành `DELETED`, kiểm lại không còn dòng nào trước khi commit. Lỗi ở một snapshot thì snapshot đó rollback trọn vẹn, lần chạy dừng, ghi `audit_log` và alert ERROR `EOD_RETENTION_FAILED`; các snapshot đã xóa trước đó vẫn có bản ghi. Chạy lại thì tiếp tục, không xóa hai lần. |
+| Nhật ký | Mỗi snapshot đã xóa có một dòng vĩnh viễn trong `forecast_eod_snapshot_retention` (id, ngày, trạng thái, run nguồn, số dòng, sha256, tổng, ngày cắt, bản sao lưu, thời điểm). Mỗi lần chạy có `audit_log` `EOD_SNAPSHOT_RETENTION_STARTED` (trước lần xóa đầu: kế hoạch, bản sao lưu) và `EOD_SNAPSHOT_RETENTION` (sau cùng: số dự kiến và thực tế, khoảng ngày, thời điểm, kết quả). |
+| Không tự động | Migration 0006 **không xóa gì**. Không có lịch tự dọn; scheduler không bao giờ chạy việc này. |
+
+**Bảo vệ ở database (trigger 0006).** Migration 0006 thay hai trigger cấm xóa của 0005 trong cùng một transaction, nên
+không có lúc nào bảng mất bảo vệ. Lệnh DELETE trên `forecast_eod_snapshots` / `forecast_eod_snapshot_values` vẫn bị từ
+chối, trừ khi đủ cả các điều kiện sau:
+
+- có phiếu `DELETING` cho đúng snapshot đó (id, scope, ngày), và phiếu là lần INSERT gần nhất của **chính connection
+  đang xóa** (`seq = last_insert_rowid()`). `eod_retention.py` cấp cho mỗi phiếu một `seq` ngẫu nhiên 62 bit, nên trên
+  thực tế không INSERT nào vào bảng khác trùng được: connection khác không dùng được phiếu, và một INSERT khác sau
+  phiếu làm phiếu mất hiệu lực;
+- ngày nghiệp vụ trước ngày cắt của phiếu **và** trước `date('now', '+7 hours', '-90 days')` do chính SQLite tính.
+  Việt Nam là UTC+7, không đổi giờ mùa hè. Snapshot chưa đủ 90 ngày không thể bị xóa, dù ứng dụng tính sai;
+- giá trị phải xóa trước; đầu mục còn giá trị thì bị từ chối.
+
+Phiếu chỉ ghi được khi không có phiếu nào khác đang mở. Phiếu không bao giờ bị xóa và chỉ đổi được một lần, từ
+`DELETING` sang `DELETED`, khi snapshot đã hết dòng.
+
+`INSERT OR REPLACE` xóa dòng bị trùng khóa mà không kích hoạt trigger xóa, vì SQLite chỉ kích hoạt khi bật
+`PRAGMA recursive_triggers`, và ứng dụng không bật. Vì vậy 0006 thêm trigger từ chối mọi INSERT trùng khóa trên cả năm
+bảng của 1.2.6 (`*_no_replace`), trước khi xung đột được giải quyết. Ứng dụng không dùng REPLACE trên các bảng này;
+một INSERT trùng thường vốn đã lỗi. Chỉ lệnh DDL (xóa trigger hoặc bảng) mới vượt được các bảo vệ này; `data-check`
+`eod_backup_protection_triggers` báo FAIL khi thiếu trigger.
+
+**Phiếu `DELETING` còn sót.** Ứng dụng không thể để sót phiếu: phiếu và việc xóa nằm trong cùng một transaction, lỗi
+thì rollback cả hai. Phiếu sót chỉ có thể do SQL gõ tay. Khi đó `data-check` báo FAIL, mọi lần dọn sau bị từ chối
+(không ghi được phiếu mới), và phiếu không dùng được cho connection khác. Không sửa DB để gỡ. Dừng dọn, giữ nguyên, và
+xin phê duyệt một bước bảo trì riêng: khôi phục bản sao lưu trước đó, hoặc gỡ phiếu có kiểm soát.
+
+**Dung lượng.** Xóa không làm file DB nhỏ đi: SQLite giữ các trang đã giải phóng để dùng lại cho snapshot mới (không
+chạy `VACUUM`). Đo trên bản sao 18/10/2026: xóa 119.889 dòng mất khoảng 2 giây. Mỗi lần `-Apply` có việc cần xóa tạo
+thêm một bản sao lưu (DB + model, khoảng 76 MB). Thư mục `backups` không tự dọn.
+
+**Vận hành** (sau khi bật 1.2.6; lần đầu có snapshot hết hạn khoảng 90 ngày sau ngày bật flow `eod`):
+
+```powershell
+scripts\eod-retention.ps1                          # dry run: đọc kế hoạch, ghi lại plan_id
+scripts\eod-retention.ps1 -Apply -Plan <plan_id>   # xóa đúng kế hoạch đó (tự sao lưu trước)
+```
+
+Sau khi xóa, ngày chạy chỉ có forecast dự phòng từ snapshot đó sẽ trống trên màn hình: không có số, không điền 0, KPI
+không tính ngày đó.
+
+| Bảng (migration 0006, thêm) | Vai trò | Khóa |
+|---|---|---|
+| `forecast_eod_snapshot_retention` | Phiếu xóa và nhật ký vĩnh viễn của mỗi snapshot đã xóa: lần chạy, snapshot, scope, ngày, khoảng ngày, trạng thái snapshot, run nguồn, số dòng, sha256, tổng, ngày tạo snapshot, số ngày chính sách, ngày cắt, trạng thái phiếu, số dòng đã xóa, người yêu cầu, bản sao lưu, thời điểm | PK `seq` AUTOINCREMENT; UNIQUE `snapshot_id` |

@@ -151,7 +151,10 @@ Code: `data/demand.py, sync.py` - rows in copy: 38533
 
 End-of-day forecast backup per scope and business day S: the next 7 forecast days (S+1..S+7) of the official session of
 the newest run date <= S. One row per (scope, day) (UNIQUE). A COMPLETE row never changes; an INCOMPLETE / NO_SOURCE row
-may only be completed by a later attempt of the same day; no row is deleted (triggers). Code: `forecast_backup.py`.
+may only be completed by a later attempt of the same day. Code: `forecast_backup.py`. Deletion (1.2.6, migration 0006):
+only by the 90-day retention (`eod_retention.py`): a permit row in `forecast_eod_snapshot_retention` inserted by the same
+connection, business date older than its cutoff and than `date('now', '+7 hours', '-90 days')`, values first (triggers
+`trg_fes_delete_retention_only`, `trg_fes_values_delete_retention_only`); every other DELETE is refused.
 
 | Column | Type | Null | Key | Default | Meaning / rule |
 |---|---|---|---|---|---|
@@ -170,8 +173,35 @@ Index: `ix_fes_scope_day`(scope_key, status, business_date)
 ## `forecast_eod_snapshot_values` (1.2.6, migration 0005)
 
 Values of a COMPLETE end-of-day snapshot, copied from `forecast_values` (WITHOUT ROWID). Insert allowed only for a
-COMPLETE snapshot; never updated or deleted (triggers). About 7 x 17,127 = 119,889 rows (~11.8 MB) per day on production
-data (measured on a copy, 18/10/2026).
+COMPLETE snapshot; never updated; deleted only with their snapshot by the 90-day retention (triggers, migration 0006).
+About 7 x 17,127 = 119,889 rows (~11.8 MB) per day on production data (measured on a copy, 18/10/2026).
+
+## `forecast_eod_snapshot_retention` (1.2.6, migration 0006)
+
+Permit and permanent record of each end-of-day snapshot deleted by the 90-day retention (`eod_retention.py`, CLI
+`eod-retention`, LICH-SU-FORECAST.md section 14). Insert only for an existing snapshot (same id, scope, day, status,
+n_rows) older than the database's 90-day floor, and only when no other permit is DELETING; keys never change;
+DELETING -> DELETED once, only after the snapshot and its values are gone; never deleted (triggers `trg_fesr_*`).
+
+| Column | Type | Null | Key | Default | Meaning / rule |
+|---|---|---|---|---|---|
+| `seq` | INTEGER | no | PK AUTOINCREMENT |  | permit identity, random 62-bit value set by `eod_retention.py`: a DELETE is allowed only while `seq = last_insert_rowid()` of the deleting connection |
+| `run_id` | TEXT | no |  |  | RET-... one retention run (several snapshots, one transaction each) |
+| `snapshot_id` | TEXT | no | UNIQUE |  | the deleted snapshot (no FK: the row outlives it) |
+| `scope_key`, `data_source`, `business_date`, `first_target_date`, `last_target_date`, `snapshot_status` | TEXT | no |  |  | copied from the snapshot |
+| `source_run_id`, `source_run_date`, `values_sha256`, `total_yhat` | TEXT / REAL | yes |  |  | copied from the snapshot (trace after deletion) |
+| `n_rows`, `snapshot_created_at` | INTEGER / TEXT | no |  |  | values recorded by the header; snapshot creation time (UTC) |
+| `policy_days`, `cutoff_date` | INTEGER / TEXT | no |  |  | 90 (CHECK >= 90); business_date < cutoff_date = today (Vietnam) - 90 |
+| `state`, `rows_deleted` | TEXT / INTEGER | no / yes |  |  | DELETING (inside the transaction only) / DELETED; values actually deleted |
+| `requested_by`, `backup_file` | TEXT | no / yes |  |  | CLI; verified backup taken before the run |
+| `started_at`, `finished_at` | TEXT | no / yes |  |  | UTC |
+
+Index: `ix_fesr_scope_day`(scope_key, business_date)
+
+Migration 0006 also refuses an `INSERT OR REPLACE` that collides with an existing key on `forecast_eod_snapshots`,
+`forecast_eod_snapshot_values`, `actual_closes`, `actual_close_values` and this table (`*_no_replace` triggers): REPLACE
+deletes the colliding row without firing delete triggers (the app does not set `PRAGMA recursive_triggers`).
+`data-check` `eod_backup_protection_triggers` fails when one of these triggers is missing.
 
 | Column | Type | Null | Key | Default | Meaning / rule |
 |---|---|---|---|---|---|

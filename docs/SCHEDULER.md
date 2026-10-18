@@ -13,13 +13,20 @@ nhật ký riêng. Không còn công tắc chung cho mọi job.
 | `D0_SYNC` — D-0, ngày hiện tại (`schedule.d0_enabled`, mặc định **TẮT**) | 08:00, 10:00, 12:00, 14:00, 16:00, 18:00 | DEMO (mô phỏng, gắn nhãn DEMO), BIGQUERY. MANUAL_IMPORT: *bị bỏ qua* (dữ liệu tĩnh) |
 | `D1_SYNC` — D-1, ngày đã đóng (`schedule.d1_enabled`, mặc định **TẮT**) | chờ tín hiệu từ 01:00, kiểm tra mỗi 30 phút; giờ dự phòng 06:00 | chỉ BIGQUERY |
 | `TRAIN_PUBLISH` — huấn luyện hằng ngày (`schedule.train_enabled`, giữ trạng thái công tắc chung cũ) | 07:00 | mọi nguồn; với BIGQUERY chỉ chạy sau khi D-1 hôm nay thành công (theo lịch hoặc chạy tay, 1.2.1) |
-| `EOD_FORECAST_SNAPSHOT` — 1.2.6, snapshot forecast cuối ngày, 7 ngày kế tiếp (`schedule.eod_enabled`, mặc định **BẬT**) | 23:55 (cho phép 20:00–23:59) | mọi nguồn có bộ dữ liệu; chỉ sao chép dữ liệu cục bộ, chờ job huấn luyện / forecast đang chạy |
-| `ACTUAL_CLOSE` — 1.2.6, chốt thực tế của ngày + đối soát dữ liệu đến muộn (`schedule.close_enabled`, mặc định **BẬT**) | 23:59 (cho phép 20:00–23:59) | DEMO, BIGQUERY; MANUAL_IMPORT *bị bỏ qua*; chờ lần đọc D-0 đang chạy |
+| `EOD_FORECAST_SNAPSHOT` — 1.2.6, snapshot forecast cuối ngày, 7 ngày kế tiếp (`schedule.eod_enabled`, mặc định **TẮT**) | 23:55 (cho phép 20:00–23:59) | mọi nguồn có bộ dữ liệu; chỉ sao chép dữ liệu cục bộ, chờ job huấn luyện / forecast đang chạy |
+| `ACTUAL_CLOSE` — 1.2.6, chốt thực tế của ngày + đối soát dữ liệu đến muộn (`schedule.close_enabled`, mặc định **TẮT**) | 23:59 (cho phép 20:00–23:59) | DEMO, BIGQUERY; MANUAL_IMPORT *bị bỏ qua*; chờ lần đọc D-0 đang chạy |
 
 1.2.6: hai job cuối ngày mang **ngày nghiệp vụ của mốc** (`params.business_date`, ngày Việt Nam), nên chạy sau nửa đêm
 (grace, retry, chạy bù) vẫn cho đúng ngày đó. Mốc của hôm qua bị lỡ được chạy bù một lần; ngày cũ hơn ghi
 `MISSED_SLOT_NO_BACKFILL`. Mốc trước lần đầu scheduler của phiên bản này thấy flow (`sync_state` `flows_first_seen`)
-không bao giờ chạy. Quy tắc dữ liệu: [LICH-SU-FORECAST.md](LICH-SU-FORECAST.md) mục 10–13.
+không bao giờ chạy. Quy tắc dữ liệu: [LICH-SU-FORECAST.md](LICH-SU-FORECAST.md) mục 10–14.
+
+Hai luồng cuối ngày mặc định **TẮT** (chủ sở hữu quyết định 18/10/2026: bật trên trang Lịch chạy dữ liệu chỉ sau khi
+kiểm tra sau deploy đạt). Thiết lập đã lưu mà thiếu khóa `eod_enabled` / `close_enabled` (nâng cấp từ 1.2.5) cũng đọc
+là TẮT; migration không ghi thiết lập. Khi TẮT, scheduler không lên lịch job cuối ngày nào. Lỗi kiểm tra bản sao
+snapshot (`EOD_SNAPSHOT_VERIFY_FAILED`) kết thúc job ở **FAILED** kèm alert ERROR, **không tự thử lại** (chỉ lỗi
+BigQuery và lỗi không phải `AppError` được thử lại). Dọn snapshot quá 90 ngày là thao tác tay, không có lịch
+(`scripts\eod-retention.ps1`, dry run trước).
 
 ## Công tắc từng luồng (1.1.8)
 
@@ -96,7 +103,10 @@ sau giờ làm mới của nguồn, cấu hình bảng tín hiệu hoàn tất, 
   - Từ 1.2.0, lượt tick đó được **hoãn** với cảnh báo WARNING `SCHEDULER_TICK_DEFERRED`. Lượt sau (60 s) lập lịch lại đúng
     các slot đó; idempotency key ngăn chạy trùng. Các lỗi khác vẫn là ERROR.
 - **Retry** exponential backoff: chờ `retry_base_seconds × 2^(lần−1)`, tối đa `retry_max_seconds`, tối đa `max_attempts`
-  lần (mặc định 60 s, 1800 s, 4 lần). Hết lượt → *Thất bại* + cảnh báo `RETRIES_EXHAUSTED`.
+  lần (mặc định 60 s, 1800 s, 4 lần). Hết lượt → *Thất bại* + cảnh báo `RETRIES_EXHAUSTED`. Chỉ được thử lại: lỗi tạm
+  thời (`Retryable`), `TIMEOUT`, lỗi không phải `AppError` (`JOB_ERROR`) và `BQ_ERROR` / `BQ_AUTH_MISSING`
+  (`jobs/runner.py`). Một `AppError` khác, ví dụ `EOD_SNAPSHOT_VERIFY_FAILED`, kết thúc *Thất bại* ngay ở lần đầu, kèm
+  cảnh báo ERROR mang chính mã lỗi đó.
 - **Timeout** mỗi job (mặc định 3600 s): quá hạn → job bị đánh dấu `TIMEOUT`, huấn luyện bị hủy trước bước publish.
   D-1 / D-0 không có cơ chế hủy: lần đọc đang chạy có thể chạy nốt sau khi job đã bị đánh dấu `TIMEOUT` (dữ liệu vẫn
   nhất quán vì mỗi lần ghi là một transaction có đối soát).

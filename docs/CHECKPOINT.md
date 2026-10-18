@@ -430,3 +430,18 @@ no push; local commits allowed.
 | Report | DONE | reports/demandforecast_v125_eod_backup_actual_finalization.md (not versioned) |
 | Git | DONE (local) | 581fcdc code + tests, then this docs commit; not pushed; no package built, nothing deployed |
 
+
+# 1.2.6 blocker resolution: 90-day retention, flows OFF by default, F1 docs, release + rehearsal (2026-10-18 13:00 - )
+
+Owner master prompt "1.2.6 BLOCKER RESOLUTION" (decisions B1 retention 90 days, B2 new flows OFF by default, F1 docs
+match runner.py). No production write, no deploy, no push; local commits allowed.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Checkpoint | DONE | `checkpoints/checkpoint-20261018-v126-blockers-before.zip` (git archive of HEAD ba74335: backend/app, backend/tests, frontend/src, package files, docs, CHANGELOG, AGENTS, scripts), SHA-256 DC5F177F...EA33 |
+| B1 retention | DONE (source) | migration 0006 (retention table, delete triggers replaced, REPLACE guards), `eod_retention.py`, CLI `eod-retention` (dry run default, `--apply --plan`), `scripts/eod-retention.ps1` (packaged), 3 data-check checks |
+| B2 defaults | DONE (source) | `eod_enabled` / `close_enabled` default false; stored 1.2.5 schedule without the keys reads OFF; tests updated where they exercise the flows ON |
+| F1 | DONE | messages.py, LICH-SU-FORECAST.md, SCHEDULER.md, VAN-HANH.md, CHANGELOG: EOD_SNAPSHOT_VERIFY_FAILED = FAILED + ERROR alert, no automatic retry, nothing stored |
+| Review | DONE | data-reviewer: SAFE WITH CONDITIONS, no blocker; fixed: INSERT OR REPLACE guard, random permit seq, trigger-presence check, held snapshots not reported as due, start audit, plan_id includes status / rows |
+| DB copy | DONE | p4/integ126b.py copyB: schema 4 -> 6, all 23 existing tables identical, schedule JSON unchanged (eod/close OFF), synthetic expired snapshot 119,889 rows deleted in ~2 s (+ ~60 s verified backup), other tables identical |
+| Commit / release / rehearsal / report | IN PROGRESS | see reports/demandforecast_v126_blocker_resolution_release_rehearsal.md |

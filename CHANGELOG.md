@@ -5,17 +5,34 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
-## 1.2.6 - unreleased (end-of-day forecast backup + 23:59 actual close; not packaged, not deployed) [reports/demandforecast_v125_eod_backup_actual_finalization.md]
+## 1.2.6 - 2026-10-18 (end-of-day forecast backup + 23:59 actual close + 90-day backup retention; new flows OFF by default; not deployed, owner approval pending) [reports/demandforecast_v125_eod_backup_actual_finalization.md, reports/demandforecast_v126_blocker_resolution_release_rehearsal.md]
 
-Rules in [docs/LICH-SU-FORECAST.md](docs/LICH-SU-FORECAST.md) sections 10-13.
+Rules in [docs/LICH-SU-FORECAST.md](docs/LICH-SU-FORECAST.md) sections 10-14.
 
 * Migration **0005** (additive, schema 4 -> 5): `forecast_eod_snapshots` / `forecast_eod_snapshot_values` and
   `actual_closes` / `actual_close_values`, with immutability triggers. No existing table or row changed (verified on a
   copy of the production database: 8 table fingerprints identical before / after).
-* **End-of-day forecast backup** (job `EOD_FORECAST_SNAPSHOT`, flow `eod`, default ON at 23:55 Vietnam time).
+* Migration **0006** (schema 5 -> 6): table `forecast_eod_snapshot_retention` and the two 0005 triggers that refused
+  every DELETE on the backup tables replaced, in the same transaction, by triggers that refuse every DELETE except the
+  90-day retention path (owner-approved trigger change, B1). Also refuses `INSERT OR REPLACE` over an existing key on
+  the five 1.2.6 tables (REPLACE deletes without firing delete triggers). No row is changed or deleted by the
+  migration.
+* **90-day retention of the end-of-day backup** (owner decision 18/10/2026; `eod_retention.py`, CLI `eod-retention`,
+  `scripts\eod-retention.ps1`, packaged).
+  - Expired = business date (Vietnam) < today - 90 days; a snapshot exactly 90 days old is kept. A snapshot still
+    shown as backup for a run date inside the 90 days is held.
+  - Dry run by default (read-only plan with `plan_id`); deletion only with `--apply --plan <plan_id>` of the reviewed
+    plan, after a verified backup; one transaction per snapshot; permanent record per deleted snapshot + audit; a
+    failure rolls that snapshot back and stops the run (ERROR alert `EOD_RETENTION_FAILED`).
+  - The database refuses any deletion younger than 90 days or without a permit of the same connection. Never touches
+    forecasts, the D+1 history or actual closes. Not scheduled: an operator step.
+  - After a snapshot is deleted, a run date that only had that backup shows no forecast (never 0).
+* **End-of-day forecast backup** (job `EOD_FORECAST_SNAPSHOT`, flow `eod`, 23:55 Vietnam time, **OFF by default**).
   - Copies the next 7 forecast days (S+1..S+7) of the official session of the newest run date <= S.
   - COMPLETE only when every series has all 7 days, verified in the same transaction. Otherwise the snapshot is
     INCOMPLETE / NO_SOURCE without any value, with a WARNING alert.
+  - A failed verification (`EOD_SNAPSHOT_VERIFY_FAILED`) rolls back, stores nothing and ends the job FAILED with an
+    ERROR alert; it is **not retried automatically** (earlier text of this entry said it retried: corrected).
   - One snapshot per scope and day. A complete one is never changed.
   - Waits for a running training / forecast job. Never trains, forecasts, publishes or reads BigQuery.
 * **Backup in the history**: a run date WITHOUT an official session shows the D+1 of the newest COMPLETE snapshot that
@@ -23,7 +40,7 @@ Rules in [docs/LICH-SU-FORECAST.md](docs/LICH-SU-FORECAST.md) sections 10-13.
   - Labelled "Dự phòng" with the snapshot day, time made and source run. Chart: dashed segment.
   - New filter `forecast_source`; new columns at the end of the Excel sheets (format H2).
   - The official forecast always wins. No covering snapshot = an empty day, never 0.
-* **Actual close at 23:59** (job `ACTUAL_CLOSE`, flow `close`, default ON at 23:59 Vietnam time).
+* **Actual close at 23:59** (job `ACTUAL_CLOSE`, flow `close`, 23:59 Vietnam time, **OFF by default**).
   - Revision 1 is an independent copy of the actual shown at the close (D-1 if loaded, else the last D0 snapshot). It
     covers only the SKU x FC rows present in the source; a day without data is CLOSED_NO_DATA, never 0.
   - Without the source's completion signal the day is "Đã chốt – cần xác minh" (CLOSED), never "Đã hoàn tất".
@@ -37,11 +54,18 @@ Rules in [docs/LICH-SU-FORECAST.md](docs/LICH-SU-FORECAST.md) sections 10-13.
   - Slots before this version first ran are never run (`sync_state` `flows_first_seen`).
   - Times must be 20:00-23:59.
   - D-0 / D-1 / training schedules unchanged.
-* `data-check`: 3 new checks (`eod_snapshot_complete`, `eod_snapshot_values_match_source`, `actual_close_revisions`).
-* Changed defaults: new schedule keys `eod_enabled` / `close_enabled` = true, `eod_time` = 23:55, `close_time` = 23:59.
-* Storage: about 11.8 MB per day for the backup with the current 17,127 series. No retention policy yet (owner
-  decision).
-* Rollback to 1.2.5 = restore the pre-upgrade backup (schema 5).
+  - Both day-end flows are **OFF by default** (owner decision 18/10/2026): switched on on the Schedules page only after
+    the post-deployment check. A stored schedule without their keys (every installation upgraded from 1.2.5) reads OFF;
+    the migrations write no setting; a saved choice is kept.
+* `data-check`: 6 new checks (`eod_snapshot_complete`, `eod_snapshot_values_match_source`, `actual_close_revisions`,
+  `eod_snapshot_retention_due` (WARN), `eod_snapshot_retention_records`, `eod_backup_protection_triggers`).
+* Changed defaults: new schedule keys `eod_enabled` / `close_enabled` = **false**, `eod_time` = 23:55,
+  `close_time` = 23:59.
+* Storage: about 11.8 MB per day for the backup with the current 17,127 series; about 1.1 GB with the 90-day retention
+  run regularly.
+* Rollback to 1.2.5 = restore the pre-upgrade backup (schema 6) with **1.2.5's** `restore.ps1`, then
+  `rollback-version.ps1 -To 1.2.5`; everything written after that backup is lost (kept in the automatic `pre-restore`
+  backup).
 
 ## 1.2.5 - 2026-10-18 (Forecast & actual history D+1 + UI redesign, released together) [reports/demandforecast_v125_history_ui_20261018.md]
 
