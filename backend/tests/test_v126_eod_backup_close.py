@@ -66,6 +66,12 @@ def _bq_active():
     ss.update("general", {"active_source": "BIGQUERY"})
 
 
+def _day_end_on():
+    """Both day-end flows are OFF by default (owner decision 18/10/2026, test_v126_retention_defaults.py); the tests
+    of their scheduled behaviour switch them on first, as the operator does after the post-deployment check."""
+    ss.update("schedule", {"eod_enabled": True, "close_enabled": True})
+
+
 def _fp() -> dict:
     """Row count + sha256 of every forecast table (published values, D+1 history, official pointers, backups)."""
     out = {}
@@ -192,6 +198,7 @@ def test_rerun_and_concurrent_runs_never_duplicate_or_change_a_complete_snapshot
 
 def test_without_a_valid_forecast_no_snapshot_is_faked(client):
     _bq_active()
+    _day_end_on()
     _at("2026-10-18 23:56")
     j0 = _jobs()
     r = runner.execute("EOD_FORECAST_SNAPSHOT", "EOD_FORECAST_SNAPSHOT:2026-10-18", "SCHEDULE", None,
@@ -231,6 +238,7 @@ def test_a_short_source_is_incomplete_never_used_and_completed_later_by_a_valid_
 
 def test_the_job_waits_for_a_running_forecast_job_and_keeps_the_slot_business_date():
     _bq_active()
+    _day_end_on()
     fh.capture(_run("2026-10-18 09:00", origin="2026-10-18", horizon=15, keys=KEYS))
     with db.tx() as c:
         c.execute("INSERT INTO job_runs(id, job_type, idempotency_key, trigger, status, created_at, started_at) "
@@ -359,6 +367,7 @@ def test_the_close_uses_the_vietnam_business_date_and_refuses_an_early_close():
 
 def test_close_retries_and_concurrent_closes_write_one_revision():
     _bq_active()
+    _day_end_on()
     _snapshot("2026-10-18", {("S1", "HN"): 3}, "2026-10-18 18:00")
     _at("2026-10-18 23:59")
     r1 = runner.execute("ACTUAL_CLOSE", "ACTUAL_CLOSE:2026-10-18", "SCHEDULE", None, {"business_date": "2026-10-18"})
@@ -457,7 +466,7 @@ def _first_seen(at: str):
 
 
 def test_day_end_slots_carry_their_business_date_and_run_once():
-    base = ss.ScheduleSettings(train_enabled=False)
+    base = ss.ScheduleSettings(train_enabled=False, eod_enabled=True, close_enabled=True)
     seen = {"eod": "2026-10-17T00:00:00+07:00", "close": "2026-10-17T00:00:00+07:00"}
     with db.read() as c:
         assert plan(datetime(2026, 10, 18, 23, 56, tzinfo=VN), base, "BIGQUERY", None, c) == []     # never seen: nothing
@@ -479,6 +488,7 @@ def test_day_end_slots_carry_their_business_date_and_run_once():
 
 
 def test_a_restart_never_doubles_a_slot_and_installing_never_back_dates(small_demo):
+    _day_end_on()
     t = datetime(2026, 10, 18, 23, 56, tzinfo=VN)
     timeutil.set_now_override(lambda: t.astimezone(timezone.utc))
     first = Scheduler()
@@ -501,7 +511,7 @@ def test_a_restart_never_doubles_a_slot_and_installing_never_back_dates(small_de
 def test_whole_missed_days_are_recorded_and_only_yesterday_is_caught_up(small_demo):
     now = datetime(2026, 10, 20, 8, 0, tzinfo=VN)
     _first_seen("2026-10-01T00:00:00+07:00")
-    sched = ss.ScheduleSettings(train_enabled=False)
+    sched = ss.ScheduleSettings(train_enabled=False, eod_enabled=True, close_enabled=True)
     with db.read() as c:
         acts = plan(now, sched, "DEMO", now - timedelta(days=4), c,
                     {"eod": "2026-10-01T00:00:00+07:00", "close": "2026-10-01T00:00:00+07:00"})
@@ -516,7 +526,9 @@ def test_schedules_api_shows_both_new_flows_and_their_switches(client, small_dem
     ov = client.get("/api/schedules").json()
     assert {"d1", "d0", "train", "eod", "close"} <= set(ov["flows"])
     assert ov["flows"]["eod"]["config"] == {"time": "23:55"} and ov["flows"]["close"]["config"] == {"time": "23:59"}
-    assert ov["flows"]["eod"]["readiness"]["ready"] and ov["flows"]["close"]["enabled"] is True
+    assert ov["flows"]["eod"]["readiness"]["ready"] and ov["flows"]["close"]["enabled"] is False    # default OFF
+    r = client.put("/api/schedules/close", json={"enabled": True})
+    assert r.status_code == 200 and ss.get("schedule").close_enabled is True
     r = client.put("/api/schedules/close", json={"enabled": False})
     assert r.status_code == 200 and ss.get("schedule").close_enabled is False
     r = client.put("/api/settings/schedule", json={**ss.get("schedule").model_dump(), "close_enabled": True})
@@ -552,7 +564,8 @@ def test_migration_0005_on_a_v4_database_keeps_every_row(tmp_path, monkeypatch):
             before = {t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tabs}
             vals0 = c.execute("SELECT COUNT(*), SUM(yhat) FROM forecast_values").fetchone()
         res = db.migrate(target)
-        assert (res["from"], res["to"], res["applied"]) == (4, 5, ["0005_eod_backup_actual_close.sql"])
+        assert (res["from"], res["to"], res["applied"]) == (4, 6, ["0005_eod_backup_actual_close.sql",
+                                                                   "0006_eod_snapshot_retention.sql"])
         assert db.migrate(target)["applied"] == []
         with db.read() as c:
             assert {t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tabs} == before

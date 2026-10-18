@@ -112,9 +112,25 @@ CATALOG: dict[str, tuple[str, str]] = {
                               "(không dùng dữ liệu demo, không điền 0).",
                               "There is no valid forecast session for the active dataset — no end-of-day forecast snapshot was "
                               "made (no demo data, no zeros)."),
-    "EOD_SNAPSHOT_VERIFY_FAILED": ("Bản sao snapshot cuối ngày không khớp forecast nguồn (số dòng hoặc tổng) — không lưu gì; job sẽ thử lại.",
+    "EOD_SNAPSHOT_VERIFY_FAILED": ("Bản sao snapshot cuối ngày không khớp forecast nguồn (số dòng hoặc tổng) — không lưu gì. Job "
+                                   "dừng ở trạng thái FAILED, không tự thử lại; chạy lại bằng tay sau khi kiểm tra.",
                                    "The end-of-day snapshot copy does not match its source forecast (rows or total) — nothing was "
-                                   "stored; the job retries."),
+                                   "stored. The job ends FAILED and is not retried automatically; run it again by hand after "
+                                   "checking."),
+    "EOD_RETENTION_PLAN_CHANGED": ("Kế hoạch dọn snapshot đã thay đổi so với bản dry run được duyệt — không xóa gì. Chạy dry run lại "
+                                   "và duyệt kế hoạch mới.",
+                                   "The snapshot clean-up plan changed since the reviewed dry run — nothing was deleted. Run the "
+                                   "dry run again and review the new plan."),
+    "EOD_RETENTION_SCHEMA": ("Database chưa ở schema 6 (1.2.6) — chưa thể dọn snapshot cuối ngày.",
+                             "The database is not at schema 6 (1.2.6) yet — end-of-day snapshots cannot be cleaned up."),
+    "EOD_RETENTION_UNKNOWN_REFERENCE": ("Có bảng khác tham chiếu snapshot cuối ngày — không xóa gì cho tới khi quan hệ này được "
+                                        "xem xét.",
+                                        "Another table references the end-of-day snapshots — nothing is deleted until that "
+                                        "reference is reviewed."),
+    "EOD_RETENTION_FAILED": ("Dọn snapshot cuối ngày dừng giữa chừng: snapshot lỗi được hoàn tác, các snapshot đã xóa trước đó "
+                             "được ghi nhận. Xem chi tiết lỗi và bản backup trước khi chạy lại.",
+                             "The end-of-day snapshot clean-up stopped: the failing snapshot was rolled back, the ones deleted "
+                             "before it are recorded. Check the error and the backup before running it again."),
     "ACTUAL_CLOSE_NO_DATA": ("Chốt thực tế 23:59: ngày này chưa có dữ liệu thực tế (không có D-1 và không có snapshot D0) — đã ghi "
                              "nhận 'không có dữ liệu', không coi là 0.",
                              "23:59 actual close: this day has no actual data (no D-1 load and no D0 snapshot) — recorded as "

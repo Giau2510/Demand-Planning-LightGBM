@@ -162,4 +162,25 @@ describe("v1.2.6 schedules page: end-of-day backup and actual close", () => {
     expect(put.url).toBe("/api/schedules/eod");
     expect(put.body).toEqual({ time: "23:50" });
   });
+
+  it("shows both day-end flows OFF exactly as the backend reports them (1.2.6 default) and switches one on only on request", async () => {
+    const offFlows = () => {
+      const s = schedules();
+      const off = (v: any) => ({ ...v, enabled: false, state: "OFF", next_runs: [], last_run: null });
+      return { ...s, flows: { ...s.flows, eod: off(s.flows.eod), close: off(s.flows.close) } };
+    };
+    const calls = mock((_u, c) => (c.method === "PUT" ? { ...offFlows().flows.eod, enabled: true, state: "ON", saved: true } : offFlows()));
+    await act(async () => { render(wrap(<Schedules />)); });
+    await waitFor(() => expect(screen.getByTestId("flow-eod")).toBeTruthy());
+    for (const f of ["eod", "close"]) {
+      expect(screen.getByTestId(`state-${f}`).textContent).toContain("Tắt");
+      expect(screen.getByTestId(`toggle-${f}`).textContent).toContain("Bật luồng này");
+      expect(screen.getByTestId(`next-${f}`).textContent).not.toContain("23:5");
+    }
+    expect(calls.filter((c) => c.method === "PUT")).toHaveLength(0);       // showing the page never switches a flow on
+    await act(async () => { fireEvent.click(screen.getByTestId("toggle-eod")); });
+    const put = calls.find((c) => c.method === "PUT")!;
+    expect(put.url).toBe("/api/schedules/eod");
+    expect(put.body).toEqual({ enabled: true });
+  });
 });

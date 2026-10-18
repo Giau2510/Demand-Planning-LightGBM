@@ -15,6 +15,15 @@ from pathlib import Path
 
 CLOSED = ("REPLACED", "DELETED", "CANCELLED")
 STUCK_AFTER = timedelta(hours=6)
+# 1.2.6: triggers that make the end-of-day backup / actual closes immutable (0005) and allow only the 90-day retention
+# to delete a backup (0006, which replaced trg_fes_no_delete / trg_fes_values_no_delete)
+EOD_TRIGGERS = ("trg_fes_complete_fixed", "trg_fes_keys_fixed", "trg_fes_values_no_update", "trg_fes_values_complete_only",
+                "trg_actual_closes_no_update", "trg_actual_closes_no_delete", "trg_actual_close_values_no_update",
+                "trg_actual_close_values_no_delete", "trg_actual_closes_consecutive")
+RETENTION_TRIGGERS = ("trg_fes_delete_retention_only", "trg_fes_values_delete_retention_only", "trg_fesr_insert_checked",
+                      "trg_fesr_keys_fixed", "trg_fesr_finish_only", "trg_fesr_no_delete", "trg_fesr_no_replace",
+                      "trg_fes_no_replace", "trg_fes_values_no_replace", "trg_actual_closes_no_replace",
+                      "trg_actual_close_values_no_replace")
 
 
 def _q(c, sql, params=()):
@@ -173,6 +182,32 @@ def _run(c, db_path: Path, models_dir: Path | None) -> dict:
                   "GROUP BY scope_key, business_date HAVING MIN(revision) != 1 OR MAX(revision) != COUNT(*)")
             + _q(c, "SELECT a.id, a.n_rows, (SELECT COUNT(*) FROM actual_close_values v WHERE v.close_id = a.id) AS n "
                     "FROM actual_closes a WHERE n != a.n_rows")))
+        from .eod_retention import dry_run
+        plan = dry_run(db_path)              # the same read-only plan as scripts\eod-retention.ps1 (held ones excluded)
+        out.append(_check(
+            "eod_snapshot_retention_due",
+            "no end-of-day snapshot older than 90 days (Vietnam business date) waits for deletion: run "
+            "scripts\\eod-retention.ps1 (dry run first, then -Apply -Plan <plan_id>); a snapshot still shown as backup "
+            "inside the 90 days is held and not listed",
+            [(i["id"], i["scope_key"], i["business_date"], i["status"]) for i in plan["delete"]["items"]], fail=False))
+    has_ret = bool(_q(c, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='forecast_eod_snapshot_retention'"))
+    if has_eod:
+        want = set(EOD_TRIGGERS) | (set(RETENTION_TRIGGERS) if has_ret else {"trg_fes_no_delete", "trg_fes_values_no_delete"})
+        have = {r[0] for r in _q(c, "SELECT name FROM sqlite_master WHERE type='trigger'")}
+        out.append(_check(
+            "eod_backup_protection_triggers",
+            "every trigger that protects the end-of-day backup, the actual closes and the retention records exists "
+            "(migrations 0005 / 0006)", [(t,) for t in sorted(want - have)]))
+    if has_ret:         # 1.2.6 (migration 0006): 90-day retention records
+        out.append(_check(
+            "eod_snapshot_retention_records",
+            "every retention record is DELETED (an open DELETING permit never outlives its transaction), its snapshot "
+            "and values are gone and its business date is before its cutoff",
+            _q(c, "SELECT r.snapshot_id, r.state, r.business_date, r.cutoff_date FROM forecast_eod_snapshot_retention r "
+                  "WHERE r.state != 'DELETED' OR r.business_date >= r.cutoff_date "
+                  "OR EXISTS (SELECT 1 FROM forecast_eod_snapshots s WHERE s.id = r.snapshot_id) "
+                  "OR EXISTS (SELECT 1 FROM forecast_eod_snapshot_values v WHERE v.snapshot_id = r.snapshot_id) "
+                  "OR r.rows_deleted IS NOT r.n_rows")))
     model_bad = []
     if models_dir is not None:
         for rid, mv, mp, sha in _q(c, "SELECT id, model_version, model_path, model_sha256 FROM training_runs "
@@ -206,6 +241,6 @@ def _run(c, db_path: Path, models_dir: Path | None) -> dict:
                "d0_snapshots", "job_runs") + (("forecast_history_sessions", "forecast_history_values",
                                                 "forecast_history_days") if has_history else ())
               + (("forecast_eod_snapshots", "forecast_eod_snapshot_values", "actual_closes", "actual_close_values")
-                 if has_eod else ())}
+                 if has_eod else ()) + (("forecast_eod_snapshot_retention",) if has_ret else ())}
     return {"db": str(db_path), "schema_version": ver, "checked_at": now.isoformat(timespec="seconds"),
             "status": status, "row_counts": counts, "checks": out}

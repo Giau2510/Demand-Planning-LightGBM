@@ -183,10 +183,13 @@ class ScheduleSettings(BaseModel):
     timeout_seconds: int = Field(3600, ge=30, le=6 * 3600)
     max_catchup_jobs_per_tick: int = Field(1, ge=1, le=10)
     # 1.2.6: end-of-day forecast backup (next 7 days) and actual close of the day. Local copies only (no BigQuery read,
-    # no training, no forecast). ON by default; slots before this version first ran are never caught up
-    # (sync_state 'flows_first_seen'); a missed slot of yesterday is caught up once.
-    eod_enabled: bool = True
-    close_enabled: bool = True
+    # no training, no forecast). OFF by default (owner decision 18/10/2026: switched on on /schedules only after the
+    # post-deployment check): a stored schedule without these keys - every installation upgraded from 1.2.5 - reads
+    # OFF, so nothing is planned until the operator switches a flow on (which records *_enabled_at; slots before it
+    # are never run). Slots before this version first ran are never caught up either (sync_state
+    # 'flows_first_seen'); a missed slot of yesterday is caught up once.
+    eod_enabled: bool = False
+    close_enabled: bool = False
     eod_enabled_at: str | None = None
     close_enabled_at: str | None = None
     eod_time: str = "23:55"

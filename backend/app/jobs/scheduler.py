@@ -7,8 +7,8 @@ its own switch (1.1.8, see jobs/flows.py) and is planned only when that switch i
                                        `d1_fallback_time` it verifies the source has a plausible full day before syncing
   TRAIN_PUBLISH schedule.train_enabled at `train_time` (BIGQUERY: only once today's D-1 succeeded - the scheduled
                                        D1_SYNC or, 1.2.1, a manual regular D-1 run of today, see flows.d1_success_today)
-  EOD_FORECAST_SNAPSHOT schedule.eod_enabled   at `eod_time` (1.2.6, default 23:55): backup of the next 7 forecast days
-  ACTUAL_CLOSE          schedule.close_enabled at `close_time` (1.2.6, default 23:59): close of the day's actual
+  EOD_FORECAST_SNAPSHOT schedule.eod_enabled   at `eod_time` (1.2.6, default OFF, 23:55): backup of the next 7 forecast days
+  ACTUAL_CLOSE          schedule.close_enabled at `close_time` (1.2.6, default OFF, 23:59): close of the day's actual
                         Both carry the business date of their slot (params.business_date, Vietnam date): a run after
                         midnight (grace, retry, catch-up) still works on that day. The slot of YESTERDAY is caught up
                         once when it was missed; older days are recorded as missed. Slots before the moment this version

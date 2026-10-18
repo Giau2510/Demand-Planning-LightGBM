@@ -6,7 +6,8 @@
   eod    1.2.6 end-of-day backup of the next 7 forecast days (local copy)       job EOD_FORECAST_SNAPSHOT schedule.eod_enabled
   close  1.2.6 actual close of the day at 23:59 + late-data revisions (local)   job ACTUAL_CLOSE  schedule.close_enabled
 
-A flow can be switched ON only when it is READY for the active data source. Saving times never runs a job.
+A flow can be switched ON only when it is READY for the active data source. Saving times never runs a job. eod and
+close are OFF until switched on here (1.2.6 default, also for a stored schedule without their keys).
 On BIGQUERY the daily training follows TODAY's D-1: a D1_SYNC that succeeded today (scheduled, retried or run by hand,
 never a backfill) and loaded the closed days up to yesterday (1.2.1: a successful manual D-1 counts as well). The
 in-process scheduler reads these settings at every tick (nothing is registered in memory), so a restart restores the

@@ -18,6 +18,9 @@
   data-check [--db FILE] [--models-dir DIR] read-only data invariants (batches, demand, forecasts, models, jobs)
   bq-check                                  Google sign-in + BigQuery access gates for THIS Windows account (reads
                                             metadata, runs SELECT 1; writes nothing to BigQuery; prints no secret)
+  eod-retention [--db FILE] [--apply --plan ID]   1.2.6: 90-day retention of the end-of-day forecast backup. Default:
+                                            dry run (read-only) printing the plan and its plan_id; --apply deletes
+                                            exactly that reviewed plan after a verified backup
 Exit codes: 0 ok, 1 problems, 2 refused (app running / unsafe), 3 storage error.
 """
 from __future__ import annotations
@@ -130,6 +133,11 @@ def main(argv=None) -> int:
     sub.add_parser("product-names-refresh", help="1.2.4: read the product names of the local SKUs from BigQuery")
     sub.add_parser("history-reconcile", help="1.2.5: record published forecast runs missing from the forecast history "
                                              "(idempotent; reads the stored runs, creates no forecast)")
+    er = sub.add_parser("eod-retention", help="1.2.6: 90-day retention of the end-of-day forecast backup (dry run unless "
+                                              "--apply)")
+    er.add_argument("--db", help="dry run on this database file (read-only); default: the configured database")
+    er.add_argument("--apply", action="store_true", help="delete the snapshots of the reviewed plan (needs --plan)")
+    er.add_argument("--plan", help="plan_id printed by the dry run that was reviewed")
     a = ap.parse_args(argv)
     from . import paths
     try:
@@ -170,6 +178,16 @@ def _run(a) -> int:
         res = data_checks.run(target, models)
         print(json.dumps(res, indent=2, default=str, ensure_ascii=False))
         return 1 if res["status"] == "FAIL" else 0
+    if a.cmd == "eod-retention" and not a.apply:
+        from pathlib import Path
+        from . import eod_retention
+        target = Path(a.db) if a.db else paths.db_path()
+        if not target.exists():
+            print(json.dumps({"ok": False, "code": "STORAGE_NOT_FOUND", "detail": str(target)}, ensure_ascii=False))
+            return 3
+        res = eod_retention.dry_run(target)
+        print(json.dumps({"ok": not res["refused"], **res}, indent=2, default=str, ensure_ascii=False))
+        return 2 if res["refused"] else 0
     if a.cmd == "storage-init":
         cfg = paths.init_storage_config(a.data_dir, a.logs_dir, a.backups_dir, a.reports_dir)
         paths.ensure_storage()
@@ -260,6 +278,21 @@ def _run(a) -> int:
         res = forecast_history.reconcile()
         print(json.dumps({"ok": not res["errors"], **res}, indent=2, ensure_ascii=False, default=str))
         return 1 if res["errors"] else 0
+    elif a.cmd == "eod-retention":                 # --apply (the dry run is handled above, read-only)
+        from . import eod_retention
+        from .messages import AppError
+        if a.db or not a.plan:
+            print(json.dumps({"ok": False, "refused": "--apply works on the configured database only and needs "
+                                                      "--plan <plan_id> from a reviewed dry run"}, ensure_ascii=False))
+            return 2
+        paths.ensure_storage()
+        try:
+            res = eod_retention.apply(a.plan)
+        except AppError as e:
+            print(json.dumps({"ok": False, "code": e.code, "detail": e.detail}, ensure_ascii=False))
+            return 2
+        print(json.dumps({"ok": not res["error"], **res}, indent=2, ensure_ascii=False, default=str))
+        return 1 if res["error"] else 0
     elif a.cmd == "info":
         from . import __version__
         print(json.dumps({"version": __version__, "data_dir": str(paths.data_dir()), "db": str(paths.db_path()),
