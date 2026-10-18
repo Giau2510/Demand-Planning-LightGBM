@@ -444,4 +444,8 @@ match runner.py). No production write, no deploy, no push; local commits allowed
 | F1 | DONE | messages.py, LICH-SU-FORECAST.md, SCHEDULER.md, VAN-HANH.md, CHANGELOG: EOD_SNAPSHOT_VERIFY_FAILED = FAILED + ERROR alert, no automatic retry, nothing stored |
 | Review | DONE | data-reviewer: SAFE WITH CONDITIONS, no blocker; fixed: INSERT OR REPLACE guard, random permit seq, trigger-presence check, held snapshots not reported as due, start audit, plan_id includes status / rows |
 | DB copy | DONE | p4/integ126b.py copyB: schema 4 -> 6, all 23 existing tables identical, schedule JSON unchanged (eod/close OFF), synthetic expired snapshot 119,889 rows deleted in ~2 s (+ ~60 s verified backup), other tables identical |
-| Commit / release / rehearsal / report | IN PROGRESS | see reports/demandforecast_v126_blocker_resolution_release_rehearsal.md |
+| Commit | DONE (local) | 6a65fa2 code + tests, d05ff97 docs; not pushed |
+| Release | DONE | `scriptselease.ps1` on d05ff97: backend 472 passed / 7 skipped (real BigQuery only), vitest 111/111, typecheck + build OK; `dist\DemandForecast-1.2.6-win64-portable.zip` 92,241,672 bytes, SHA-256 BBD73386...09C3; prune plan dry run only |
+| Rehearsal | DONE | isolated copy (port 8879, local proxy 8878, no tunnel): run 2 43/43 PASS (run 1 38/40: status timeout in the measurement, fixed); upgrade downtime 116 s, schema 6, flows OFF, plans = 1.2.5; retention applied on a synthetic expired snapshot; rollback with 1.2.5 restore.ps1 -> every table = pre-deploy, pre-restore zip = schema 6 DB |
+| Production | NOT TOUCHED | 15:05 read-only: 1.2.5, db 4, FCR-...798B4D, flows unchanged, pids 22024 / 26416 / 31076, storage.json 8D79DBDD |
+| Report | DONE | reports/demandforecast_v126_blocker_resolution_release_rehearsal.md (not versioned): READY FOR OWNER APPROVAL |
