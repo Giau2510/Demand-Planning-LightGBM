@@ -53,12 +53,19 @@ def system_status() -> dict:
             out["scope_error"] = e.to_dict()
             scope = None
         if scope:
+            # 1.2.7: ONE sequential scan (NOT INDEXED) for the scope and its window. Through the key index
+            # SQLite fetched every row again for MAX(loaded_at), which the index does not hold: 1.5 M page reads per
+            # call (6.2 GB through the OS cache), 7.5 s on a warm copy, 45-66 s on the production PC. Now 55 k page
+            # reads (225 MB). Same values: the window figures are the old COUNT / MIN / MAX ... BETWEEN.
             r = db.one(c, "SELECT MAX(order_date) AS max_date, MIN(order_date) AS min_date, COUNT(*) AS n, "
-                          "MAX(loaded_at) AS loaded_at FROM demand_daily WHERE scope_key=?", (scope["scope_key"],))
+                          "MAX(loaded_at) AS loaded_at, "
+                          "COUNT(CASE WHEN order_date BETWEEN :s AND :e THEN 1 END) AS w_n, "
+                          "MIN(CASE WHEN order_date BETWEEN :s AND :e THEN order_date END) AS w_min, "
+                          "MAX(CASE WHEN order_date BETWEEN :s AND :e THEN order_date END) AS w_max "
+                          "FROM demand_daily NOT INDEXED WHERE scope_key=:k",
+                       {"k": scope["scope_key"], "s": win["start"], "e": win["end"]})
             fresh = {"max_date": r["max_date"], "min_date": r["min_date"], "rows": r["n"], "loaded_at": r["loaded_at"]}
-            w = c.execute("SELECT COUNT(*), MIN(order_date), MAX(order_date) FROM demand_daily WHERE scope_key=? AND "
-                          "order_date BETWEEN ? AND ?", (scope["scope_key"], win["start"], win["end"])).fetchone()
-            fresh["window_rows"], fresh["window_min_date"], fresh["window_max_date"] = w[0], w[1], w[2]
+            fresh["window_rows"], fresh["window_min_date"], fresh["window_max_date"] = r["w_n"], r["w_min"], r["w_max"]
             if r["max_date"]:
                 from datetime import date
                 lag = (today_vn() - date.fromisoformat(r["max_date"])).days

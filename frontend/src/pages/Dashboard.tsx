@@ -25,7 +25,18 @@ export default function Dashboard() {
   const [h, setH] = useState<number | null>(null);
   const enabled: number[] = settings.data?.horizons?.enabled ?? [7, 15, 30];
   const horizon = h ?? enabled[0];
-  const dash = useAsync(() => get(`/api/dashboard?horizon=${horizon}`), [horizon]);
+  // 1.2.7: the page renders at once and each part fills in as its data arrives. The system status is the shell's,
+  // asked again when the page opens (sharing the shell's request while it runs, never computed twice); the forecast
+  // card loads the run's summary on its own (same figures as /api/dashboard: horizon capped at the run's maximum).
+  const [statusReady, setStatusReady] = useState(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { sys.refresh().finally(() => setStatusReady(true)); }, []);
+  const s = statusReady && !sys.error ? sys.status : null;
+  const run = s?.latest_forecast_run;
+  const hRun = run ? Math.min(horizon, run.max_horizon) : null;
+  const fc = useAsync(() => (run && !settings.loading
+    ? get(`/api/forecast-runs/${encodeURIComponent(run.id)}/summary?horizon=${hRun}&limit=10`) : Promise.resolve(null)),
+    [run?.id, hRun, settings.loading, s]);
   const act = useAction();
   const [force, setForce] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -41,26 +52,24 @@ export default function Dashboard() {
   };
   const onJobDone = () => {
     setJobActive(false);
-    dash.reload();
     sys.reload();
   };
   const demo = async () => {
     await act.run(() => post("/api/demo/generate", {}), t("common.saved"));
-    dash.reload();
     sys.reload();
   };
   const ackAll = async () => {
     await act.run(() => post("/api/alerts/ack-all"));
-    dash.reload();
+    sys.reload();
   };
 
-  if (dash.loading && !dash.data) return <div className="stack"><PageHeader icon="dashboard" title={t("nav.dashboard")} desc={t("page.dashboard.desc")} /><Loading /></div>;
-  const s = dash.data?.system;
-  const f = dash.data?.forecast;
+  // a part that needs the status: loading while this visit's status (or a newer request) is on its way; "not available"
+  // only once loading stopped without a status (the shell shows the error)
+  const waiting = statusReady && !sys.loading ? <Empty text={t("common.not_available")} /> : <Loading />;
+  const f = fc.data && fc.data.run_id === run?.id ? fc.data : null;
   const fresh = s?.freshness;
   const latest = s?.latest_training_attempt;
   const accepted = s?.latest_accepted_training;
-  const run = s?.latest_forecast_run;
   const fs = s?.forecast_state;
   const rejectedLatest = latest && run && latest.status !== "ACCEPTED" && latest.id !== run.training_run_id;
 
@@ -72,21 +81,23 @@ export default function Dashboard() {
         <button className="primary" onClick={train} disabled={act.busy || jobActive || !s?.scope}>
           <Icon name={jobActive ? "running" : "model"} className={jobActive ? "spin" : undefined} />{jobActive ? t("common.running") : t("dash.train_now")}</button>
       </>} />
-      <ErrorBox error={act.error || dash.error} />
+      <ErrorBox error={act.error} />
       <OkBox text={act.ok} />
       {jobId && alreadyActive && jobActive && <div className="alert info small">{t("job.already_active")}</div>}
       {jobId && <JobProgress jobId={jobId} onDone={onJobDone} />}
 
-      <div className="grid4">
-        <Stat icon="bigquery" label={t("common.source")} value={<SourceBadge source={s?.active_source} />} sub={s?.scope?.label ?? t("source.no_dataset")} />
-        <Stat icon="calendar" label={<Term id="freshness">{t("dash.data_latest")}</Term>} value={fmtDate(fresh?.max_date)}
-          sub={fresh?.lag_days !== undefined ? `${t("dash.lag")}: ${fresh.lag_days} ${t("common.days")}` : undefined} />
-        <Stat icon="quality" label={t("dash.data_status")}
-          value={!s?.scope ? <Pill status="NEEDS_CONFIG" /> : fresh?.stale ? <Pill status="STALE" /> : <Pill status="FRESH" />}
-          sub={fresh?.stale && !fresh?.stale_enforced ? (t("common.source") + ": " + s?.active_source + " — " + (pick({ vi: "không chặn publish", en: "does not block publishing" }))) : undefined} tone={fresh?.stale ? "warn" : ""} />
-        <Stat icon="model" label={<Term id="model_version">{t("fc.model_version")}</Term>} value={<span className="mono small">{run?.model_version ?? "—"}</span>}
-          sub={run ? `${t("fc.run_at")}: ${fmtTime(run.created_at)}` : undefined} />
-      </div>
+      {!s ? waiting : (
+        <div className="grid4">
+          <Stat icon="bigquery" label={t("common.source")} value={<SourceBadge source={s.active_source} />} sub={s.scope?.label ?? t("source.no_dataset")} />
+          <Stat icon="calendar" label={<Term id="freshness">{t("dash.data_latest")}</Term>} value={fmtDate(fresh?.max_date)}
+            sub={fresh?.lag_days !== undefined ? `${t("dash.lag")}: ${fresh.lag_days} ${t("common.days")}` : undefined} />
+          <Stat icon="quality" label={t("dash.data_status")}
+            value={!s.scope ? <Pill status="NEEDS_CONFIG" /> : fresh?.stale ? <Pill status="STALE" /> : <Pill status="FRESH" />}
+            sub={fresh?.stale && !fresh?.stale_enforced ? (t("common.source") + ": " + s.active_source + " — " + (pick({ vi: "không chặn publish", en: "does not block publishing" }))) : undefined} tone={fresh?.stale ? "warn" : ""} />
+          <Stat icon="model" label={<Term id="model_version">{t("fc.model_version")}</Term>} value={<span className="mono small">{run?.model_version ?? "—"}</span>}
+            sub={run ? `${t("fc.run_at")}: ${fmtTime(run.created_at)}` : undefined} />
+        </div>
+      )}
 
       {s?.data_window && (
         <p className="small muted" data-testid="dash-window">
@@ -106,18 +117,20 @@ export default function Dashboard() {
       )}
 
       <Card icon="results" title={t("dash.latest_run")} actions={f && <HorizonPicker value={Math.min(horizon, run?.max_horizon ?? horizon)} onChange={setH} options={Array.from(new Set([...(run?.horizons ?? []), run?.max_horizon].filter(Boolean))).sort((a: any, b: any) => a - b) as number[]} />}>
-        {!f && fs?.status === "NO_FORECAST_FOR_ACTIVE_SOURCE" ? (
+        {!s ? waiting : !run && fs?.status === "NO_FORECAST_FOR_ACTIVE_SOURCE" ? (
           <div className="alert warn" data-testid="dash-no-forecast">
-            <b>{t("dash.no_fc_active").replace("{src}", s?.active_source ?? "—")}</b>
+            <b>{t("dash.no_fc_active").replace("{src}", s.active_source ?? "—")}</b>
             {fs.latest_attempt && (
               <p className="small">{t("dash.no_fc_last")}: <span className="mono">{fs.latest_attempt.id}</span> <Pill status={fs.latest_attempt.status} />{" "}
                 {fs.latest_attempt.reject_reason && <Code code={fs.latest_attempt.reject_reason} />}</p>
             )}
             {fs.latest_attempt?.promotable?.ok && <p className="small">{t("dash.no_fc_promotable")} <Link to="/performance">{t("nav.performance")} →</Link></p>}
-            <p className="small">{t("dash.no_fc_train").replace("{src}", s?.active_source ?? "—")}</p>
+            <p className="small">{t("dash.no_fc_train").replace("{src}", s.active_source ?? "—")}</p>
             {fs.other_source_runs > 0 && <p className="small muted">{t("dash.no_fc_other").replace("{n}", String(fs.other_source_runs))}</p>}
           </div>
-        ) : !f ? <Empty text={t("dash.no_run")} hint={t("dash.no_run_hint")} /> : (
+        ) : !run ? <Empty text={t("dash.no_run")} hint={t("dash.no_run_hint")} />
+          : fc.error ? <ErrorBox error={fc.error} />
+          : !f ? <Loading /> : (
           <>
             {fs?.model_in_use && <AssessmentBox a={fs.model_in_use} compact />}
             <div className="grid4">
@@ -161,7 +174,7 @@ export default function Dashboard() {
 
       <div className="grid2">
         <Card icon="performance" title={<Term id="quality_gate">{t("dash.model_quality")}</Term>}>
-          {!accepted ? <Empty text={t("common.not_available")} hint={t("dash.no_model_hint")} /> : (
+          {!s ? waiting : !accepted ? <Empty text={t("common.not_available")} hint={t("dash.no_model_hint")} /> : (
             <div className="grid3">
               <Stat label={<Term id="wape">WAPE</Term>} value={fmtPct(accepted.metrics?.wape)} />
               <Stat label={<Term id="mae">MAE</Term>} value={fmtNum(accepted.metrics?.mae, 2)} />
@@ -176,25 +189,29 @@ export default function Dashboard() {
           )}
         </Card>
         <Card icon="jobs" title={t("dash.jobs")}>
-          <table className="tbl">
-            <thead><tr><th>{t("job.type")}</th><th>{t("common.status")}</th><th>{t("job.finished")}</th><th>{t("job.reason")}</th></tr></thead>
-            <tbody>
-              {Object.entries(s?.latest_jobs ?? {}).map(([jt, j]: [string, any]) => (
-                <tr key={jt}>
-                  <td>{t(`job.${jt}`)}</td>
-                  <td>{j ? <Pill status={j.status} /> : "—"}</td>
-                  <td className="small">{j ? fmtTime(j.finished_at || j.created_at) : ""}</td>
-                  <td className="small"><Code code={j?.reason_code} showCode={false} /></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <p className="small muted">{s?.scheduler?.running ? t("job.sched_running") : t("job.sched_stopped")} · <Link to="/jobs">{t("nav.jobs")} →</Link></p>
+          {!s ? waiting : (
+            <>
+              <table className="tbl">
+                <thead><tr><th>{t("job.type")}</th><th>{t("common.status")}</th><th>{t("job.finished")}</th><th>{t("job.reason")}</th></tr></thead>
+                <tbody>
+                  {Object.entries(s.latest_jobs ?? {}).map(([jt, j]: [string, any]) => (
+                    <tr key={jt}>
+                      <td>{t(`job.${jt}`)}</td>
+                      <td>{j ? <Pill status={j.status} /> : "—"}</td>
+                      <td className="small">{j ? fmtTime(j.finished_at || j.created_at) : ""}</td>
+                      <td className="small"><Code code={j?.reason_code} showCode={false} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="small muted">{s.scheduler?.running ? t("job.sched_running") : t("job.sched_stopped")} · <Link to="/jobs">{t("nav.jobs")} →</Link></p>
+            </>
+          )}
         </Card>
       </div>
 
       <Card icon="alerts" title={t("dash.alerts")} actions={s?.alerts?.length ? <button onClick={ackAll}><Icon name="ack" />{t("dash.ack_all")}</button> : null}>
-        {!s?.alerts?.length ? <Empty icon="ok" text={t("dash.no_alerts")} /> : (
+        {!s ? waiting : !s.alerts?.length ? <Empty icon="ok" text={t("dash.no_alerts")} /> : (
           <ul className="alerts">
             {s.alerts.map((a: any) => (
               <li key={a.id} className={`lvl-${a.level}`}>

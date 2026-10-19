@@ -61,7 +61,8 @@ def test_every_read_of_the_viewing_pages_passes():
              "TrainingExplain", "Methodology", "ShapTrace", "ExplainPanel", "Config", "SqlSources", "Batches"]
     files = [src / "pages" / f"{p}.tsx" for p in pages] + [src / "App.tsx", src / "components" / "ui.tsx"]
     used = _paths_used_by(files)
-    assert "/api/dashboard" in used and "/api/system/status" in used
+    # 1.2.7: the dashboard reads the shell's status and /api/forecast-runs/{id}/summary (no longer /api/dashboard)
+    assert "/api/forecast-runs/X1/summary" in used and "/api/system/status" in used
     by_design = {"/api/settings/X1/history",                     # administration history: not remote
                  "/api/schedules/X1/preview"}                    # 1.2.6 operator dry run: local only (proxy unchanged)
     blocked = sorted(p for p in used - by_design if rp.classify("GET", p) is not None)

@@ -5,6 +5,27 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.2.7 - 2026-10-19 (dashboard load hotfix; no migration, schema 6 unchanged; not deployed, owner approval pending) [reports/demandforecast_v126_post_deployment_operations.md, reports/demandforecast_v127_readiness_review.md]
+
+No migration and no settings change: going back to 1.2.6 needs no restore.
+
+* **System status no longer reads `demand_daily` row by row.** The freshness aggregate of `system_status()` (every page
+  through `/api/system/status`, and `/api/dashboard`) used the primary-key index, which does not hold `loaded_at`, so
+  SQLite fetched every row of the scope again: 1.5 M page reads (6.2 GB through the OS cache) per call, 7.5 s on a warm
+  copy of the production database and 45-66 s on the production PC. It is now one sequential scan (`NOT INDEXED`) that
+  also gives the model-window figures: 55 k page reads (225 MB). Same values (old statements kept as the reference in
+  `test_v126_status_perf.py`); no schema, API or business-rule change.
+* **Dashboard page loads part by part and computes the status once.** The page no longer calls `/api/dashboard` (which
+  computed the status a second time, in parallel with the shell's `/api/system/status`): it uses the shell's status,
+  asked again when the page opens and shared with a request already running, and loads the forecast card from
+  `/api/forecast-runs/{id}/summary?horizon=min(h, run max)&limit=10` (same figures; already allowed by the read-only
+  proxy). Header at once; each card shows its own loading state or error; nothing shows 0 or "needs configuration"
+  in place of data. `/api/dashboard` is unchanged for other callers.
+* Measured on an isolated copy of the production database (same PC, before and after measured back to back): dashboard
+  content 60.6 s -> 3.5 s (median), page complete 60.6 s -> 5.3 s, server CPU per page open 83 s -> 5.3 s, read
+  operations per page open 3.1 M -> 0.11 M (12.1 GB -> 0.42 GB). The first open after a server start (cold cache) still
+  takes about 20 s.
+
 ## 1.2.6 - 2026-10-18 (end-of-day forecast backup + 23:59 actual close + 90-day backup retention; new flows OFF by default; not deployed, owner approval pending) [reports/demandforecast_v125_eod_backup_actual_finalization.md, reports/demandforecast_v126_blocker_resolution_release_rehearsal.md]
 
 Rules in [docs/LICH-SU-FORECAST.md](docs/LICH-SU-FORECAST.md) sections 10-14.

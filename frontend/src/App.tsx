@@ -1,8 +1,8 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { get, post, put } from "./api";
 import { useI18n } from "./i18n";
-import { ErrorBox, SourceBadge, useAction, useAsync } from "./components/ui";
+import { ErrorBox, SourceBadge, useAction } from "./components/ui";
 import { Icon, type IconName } from "./components/icons";
 import Dashboard from "./pages/Dashboard";
 import Results from "./pages/Results";
@@ -22,9 +22,32 @@ import Jobs from "./pages/Jobs";
 import Schedules from "./pages/Schedules";
 import System from "./pages/System";
 
-type StatusCtx = { status: any; reload: () => void };
-const SystemContext = createContext<StatusCtx>({ status: null, reload: () => {} });
+/** `reload` always asks again (after a change); `refresh` shares a request already running, so a page that opens while
+ *  the shell is loading the status does not compute it a second time. */
+type StatusCtx = { status: any; error: unknown; loading: boolean; reload: () => Promise<void>; refresh: () => Promise<void> };
+const SystemContext = createContext<StatusCtx>({ status: null, error: null, loading: false, reload: async () => {}, refresh: async () => {} });
 export const useSystem = () => useContext(SystemContext);
+
+function useSystemStatus(): StatusCtx {
+  const [st, setSt] = useState<{ status: any; error: unknown; loading: boolean }>({ status: null, error: null, loading: true });
+  const seq = useRef(0);
+  const running = useRef<Promise<void> | null>(null);
+  const load = useCallback((share: boolean) => {
+    if (share && running.current) return running.current;
+    const my = ++seq.current;
+    setSt((s) => ({ ...s, loading: true, error: null }));
+    const p = get("/api/system/status").then(
+      (status) => { if (my === seq.current) setSt({ status, error: null, loading: false }); },   // an older answer never wins
+      (error) => { if (my === seq.current) setSt((s) => ({ ...s, error, loading: false })); },
+    ).finally(() => { if (running.current === p) running.current = null; });
+    running.current = p;
+    return p;
+  }, []);
+  const reload = useCallback(() => load(false), [load]);
+  const refresh = useCallback(() => load(true), [load]);
+  useEffect(() => void refresh(), [refresh]);
+  return { ...st, reload, refresh };
+}
 
 /** Sidebar: [route, label key, icon]. The page header of each route uses the same icon. */
 const NAV: { group: string; items: [string, string, IconName][] }[] = [
@@ -180,9 +203,9 @@ function Shell({ children }: { children: ReactNode }) {
 }
 
 export default function App() {
-  const st = useAsync(() => get("/api/system/status"), []);
+  const st = useSystemStatus();
   return (
-    <SystemContext.Provider value={{ status: st.data, reload: st.reload }}>
+    <SystemContext.Provider value={st}>
       <Shell>
         {st.error ? <ErrorBox error={st.error} /> : null}
         <Routes>
