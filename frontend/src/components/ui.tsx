@@ -140,15 +140,20 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
   const [loading, setLoading] = useState(true);
   const fnRef = useRef(fn);
   fnRef.current = fn;
+  const seq = useRef(0);
   const reload = useCallback(async () => {
+    // 1.2.8: only the newest request sets the state - an older answer arriving later (horizon changed twice quickly,
+    // another day chosen) never replaces the newer one, and loading stays on until the newest one answered
+    const my = ++seq.current;
     setLoading(true);
     setError(null);
     try {
-      setData(await fnRef.current());
+      const d = await fnRef.current();
+      if (my === seq.current) setData(d);
     } catch (e) {
-      setError(e);
+      if (my === seq.current) setError(e);
     } finally {
-      setLoading(false);
+      if (my === seq.current) setLoading(false);
     }
   }, []);
   // eslint-disable-next-line react-hooks/exhaustive-deps

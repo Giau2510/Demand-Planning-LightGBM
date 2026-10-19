@@ -117,6 +117,15 @@ def load_demand(scope_key: str, conn=None, start: str | None = None, end: str | 
 
 
 def fingerprint(scope_key: str, conn) -> str:
-    r = conn.execute("SELECT COUNT(*), COALESCE(SUM(qty),0), MIN(order_date), MAX(order_date), MAX(loaded_at) "
-                     "FROM demand_daily WHERE scope_key=?", (scope_key,)).fetchone()
-    return hashlib.sha256(repr(tuple(r)).encode()).hexdigest()[:16]
+    # 1.2.8: ONE sequential scan (NOT INDEXED). Through the key index SQLite fetched every row again for qty / loaded_at
+    # (not in the index): 42 s for 1.35 M rows on a copy of production, paid by every "how is this calculated" request,
+    # training and promotion check. Same aggregates, same hash, so stored training fingerprints keep matching: a sum of
+    # whole numbers is exact in any order; a scope with fractional quantities is summed in the key order of the original
+    # statement (its float sum could differ in the last bit in another order).
+    r = conn.execute("SELECT COUNT(*), COALESCE(SUM(qty),0), MIN(order_date), MAX(order_date), MAX(loaded_at), "
+                     "SUM(qty <> CAST(qty AS INTEGER)) FROM demand_daily NOT INDEXED WHERE scope_key=?",
+                     (scope_key,)).fetchone()
+    if r[5]:
+        r = conn.execute("SELECT COUNT(*), COALESCE(SUM(qty),0), MIN(order_date), MAX(order_date), MAX(loaded_at) "
+                         "FROM demand_daily WHERE scope_key=?", (scope_key,)).fetchone()
+    return hashlib.sha256(repr(tuple(r)[:5]).encode()).hexdigest()[:16]

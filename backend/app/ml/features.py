@@ -109,6 +109,23 @@ def discount_on(cfg) -> bool:
     return cfg.feature_price if v is None else bool(v)
 
 
+WEEKDAY = ("dow", "is_weekend")
+
+
+def weekday_on(cfg) -> bool:
+    """1.2.8 day-of-week switch (dow, is_weekend of the TARGET day). Configurations saved before 1.2.8 have no
+    feature_weekday: the pair follows the calendar group, exactly as before."""
+    v = getattr(cfg, "feature_weekday", None)
+    return bool(cfg.feature_calendar) if v is None else bool(v)
+
+
+def calendar_names(cfg) -> list[str]:
+    """Calendar columns of the target day in model order: the weekday pair follows its own switch, the other calendar
+    columns the calendar group. Both on = the order of every model trained before 1.2.8."""
+    wk = weekday_on(cfg)
+    return [n for n in CALENDAR if (wk if n in WEEKDAY else cfg.feature_calendar)]
+
+
 def feature_names(cfg) -> list[str]:
     names = ["sku_code", "fc_code", "series_age"]
     if cfg.feature_lags:
@@ -116,8 +133,7 @@ def feature_names(cfg) -> list[str]:
     if cfg.feature_rolling:
         names += [f"roll_mean_{w}" for w in ROLL_WINDOWS] + ["roll_std_7", "roll_std_28", "zero_share_28",
                                                              "days_since_last_sale", "roll_max_28"]
-    if cfg.feature_calendar:
-        names += ["dow", "dom", "month", "weekofyear", "is_weekend", "days_to_month_end"]
+    names += calendar_names(cfg)
     if cfg.feature_price:
         names += ["price_last", "price_rel_28"]
     if discount_on(cfg):
@@ -127,7 +143,7 @@ def feature_names(cfg) -> list[str]:
     if is_direct(cfg):
         # features at the ORIGIN (calendar removed), then the calendar of the TARGET day and the horizon (1 = first
         # forecast day); same column order as the experiment harness (L7_direct)
-        names = [n for n in names if n not in CALENDAR] + (CALENDAR if cfg.feature_calendar else []) + ["horizon"]
+        names = [n for n in names if n not in CALENDAR] + calendar_names(cfg) + ["horizon"]
     return names
 
 
@@ -174,12 +190,11 @@ def features_at(p: Panel, Y: np.ndarray, price: np.ndarray, disc: np.ndarray, pr
             cols.append(np.where(np.isinf(filled), np.nan, filled))
         else:
             cols.append(np.full(S, np.nan))
-    if cfg.feature_calendar:
-        d = dates[t]
-        days_in_month = d.days_in_month
-        for v in (d.dayofweek, d.day, d.month, d.isocalendar()[1], 1.0 if d.dayofweek >= 5 else 0.0,
-                  days_in_month - d.day):
-            cols.append(np.full(S, float(v)))
+    cal = calendar_names(cfg)
+    if cal:
+        vals = dict(zip(CALENDAR, calendar_row(dates[t])))
+        for n in cal:
+            cols.append(np.full(S, vals[n]))
     if cfg.feature_price:
         pl = price[:, t - 1] if t > 0 else np.full(S, np.nan)
         with np.errstate(all="ignore"):
@@ -197,6 +212,7 @@ def features_at(p: Panel, Y: np.ndarray, price: np.ndarray, disc: np.ndarray, pr
 class _NoCalendar:
     """The same configuration with the calendar group off: DIRECT features at the origin (calendar is per target day)."""
     feature_calendar = False
+    feature_weekday = False
 
     def __init__(self, cfg):
         self._cfg = cfg
@@ -213,7 +229,8 @@ def calendar_row(d) -> list[float]:
 
 def direct_extra(cfg, target_day, h: int) -> list[float]:
     """Columns appended to the origin features of a DIRECT row: target-day calendar (if on) + horizon h (1-based)."""
-    return (calendar_row(target_day) if cfg.feature_calendar else []) + [float(h)]
+    cal = calendar_names(cfg)
+    return [v for n, v in zip(CALENDAR, calendar_row(target_day)) if n in cal] + [float(h)]
 
 
 def origin_features(p: Panel, Y, price, disc, promo, dates, t0: int, cfg, sc, fcc) -> np.ndarray:

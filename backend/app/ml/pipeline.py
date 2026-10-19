@@ -378,7 +378,7 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
                                "registry_version": registry.REGISTRY_VERSION,
                                "settings_switches": {k: getattr(mcfg_settings, k) for k in (
                                    "feature_lags", "feature_rolling", "feature_calendar", "feature_price",
-                                   "feature_discount", "feature_promotion")},
+                                   "feature_discount", "feature_promotion", "feature_weekday")},
                                "feature_decisions": decisions, "lineage": lineage, "data_window": window},
                               default=str),
                    json.dumps(model.lgb_params(mcfg)), job_id))

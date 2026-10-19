@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 
 from . import feature_catalog as cat
-from .features import discount_on, feature_names
+from .features import WEEKDAY, discount_on, feature_names, weekday_on
 
 REGISTRY_VERSION = "2026-10-15.1"
 # version of the feature COMPUTATION code (features_at). Bump only when the meaning of an existing feature changes.
@@ -129,7 +129,7 @@ def all_model_features() -> list[str]:
     """Every feature the computation code can produce, in model order (all switches on)."""
     class _All:
         feature_lags = feature_rolling = feature_calendar = feature_price = feature_promotion = True
-        feature_discount = True
+        feature_discount = feature_weekday = True
     return feature_names(_All)
 
 
@@ -199,6 +199,9 @@ def model_feature_entry(name: str, mcfg, decisions: dict | None, n_rows: int | N
             status, reason = "DISABLED", "TOGGLE_OFF"
         else:
             status, reason = "UNAVAILABLE", dec.get("reason") or "NO_DATA"
+    elif name in WEEKDAY:          # 1.2.8: day of week of the target day has its own switch
+        toggle = "feature_weekday"
+        status, reason = ("ACTIVE", "TOGGLE_ON") if weekday_on(mcfg) else ("DISABLED", "TOGGLE_OFF")
     else:
         toggle = _TOGGLE_OF_CATALOG.get(cgroup)
         on = bool(getattr(mcfg, toggle)) if toggle else True

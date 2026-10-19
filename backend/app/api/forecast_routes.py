@@ -9,7 +9,7 @@ from fastapi import APIRouter
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from .. import db
+from .. import db, qty
 from .. import settings_service as ss
 from ..data import intraday
 from ..data.demand import resolve_scope
@@ -21,6 +21,8 @@ from ..timeutil import today_vn
 from . import background
 
 router = APIRouter(prefix="/api")
+# 1.2.8: forecasts are shown / exported as whole numbers (app/qty.py); the stored yhat feeds every accuracy figure
+QTY, QTY_RULE = qty.SQL, qty.RULE
 _JSON_COLS = ("feature_config_json", "params_json", "metrics_json", "baseline_metrics_json", "quality_gate_json",
               "feature_importance_json", "horizons_json", "method_counts_json", "config_json", "folds_json",
               "notes_json", "result_json")
@@ -279,14 +281,16 @@ def forecast_values(run_id: str, horizon: int | None = None, sku_id: str | None 
         f, p = _filters(sku_id, fc_id, date_from, date_to, _search(c, run, q))
         base = f" FROM forecast_values WHERE run_id=? AND horizon_day<=?{f}"
         total = c.execute("SELECT COUNT(*)" + base, (run_id, h, *p)).fetchone()[0]
-        rows = db.rows(c, "SELECT sku_id, fc_id, target_date, horizon_day, yhat, method, fallback_reason" + base +
+        rows = db.rows(c, f"SELECT sku_id, fc_id, target_date, horizon_day, yhat, {QTY} AS forecast_qty, method, "
+                          "fallback_reason" + base +
                        " ORDER BY sku_id, fc_id, target_date LIMIT ? OFFSET ?", (run_id, h, *p, min(limit, 5000), offset))
         act = intraday.actual_today(run["scope_key"], run["data_source"], c)
         names = product_names.for_run(run, c)
     for r in rows:
         r["actual_today"] = intraday.value_for(act, r["sku_id"], r["fc_id"], r["target_date"])
         r["product_name"] = names.get(r["sku_id"])
-    return {"total": total, "rows": rows, "horizon": h, "actual": intraday.public(act), "q": q or None}
+    return {"total": total, "rows": rows, "horizon": h, "actual": intraday.public(act), "q": q or None,
+            "qty_rule": QTY_RULE}
 
 
 @router.get("/forecast-runs/{run_id}/summary")
@@ -300,15 +304,15 @@ def forecast_summary(run_id: str, horizon: int | None = None, sku_id: str | None
         names = product_names.for_run(run, c)
         start = run["forecast_origin"]
         end = str(date.fromisoformat(start) + timedelta(days=h - 1))
-        series = db.rows(c, "SELECT sku_id, fc_id, SUM(yhat) AS total, MIN(method) AS method, "
+        series = db.rows(c, f"SELECT sku_id, fc_id, SUM({QTY}) AS total, MIN(method) AS method, "
                             "MAX(fallback_reason) AS fallback_reason FROM forecast_values WHERE run_id=? AND horizon_day<=?"
-                            f"{f} GROUP BY sku_id, fc_id ORDER BY total DESC LIMIT ? OFFSET ?",
+                            f"{f} GROUP BY sku_id, fc_id ORDER BY total DESC, sku_id, fc_id LIMIT ? OFFSET ?",
                          (run_id, h, *p, min(limit, 5000), offset))
         n_series = c.execute(f"SELECT COUNT(*) FROM (SELECT 1 FROM forecast_values WHERE run_id=? AND horizon_day<=?{f} "
                              "GROUP BY sku_id, fc_id)", (run_id, h, *p)).fetchone()[0]
-        daily = db.rows(c, "SELECT target_date, SUM(yhat) AS total FROM forecast_values WHERE run_id=? AND horizon_day<=?"
+        daily = db.rows(c, f"SELECT target_date, SUM({QTY}) AS total FROM forecast_values WHERE run_id=? AND horizon_day<=?"
                            f"{f} GROUP BY target_date ORDER BY target_date", (run_id, h, *p))
-        methods = db.rows(c, "SELECT method, COUNT(DISTINCT sku_id || '|' || fc_id) AS n_series, SUM(yhat) AS total "
+        methods = db.rows(c, f"SELECT method, COUNT(DISTINCT sku_id || '|' || fc_id) AS n_series, SUM({QTY}) AS total "
                              f"FROM forecast_values WHERE run_id=? AND horizon_day<=?{f} GROUP BY method",
                           (run_id, h, *p))
         act = intraday.actual_today(run["scope_key"], run["data_source"], c)
@@ -330,12 +334,13 @@ def forecast_summary(run_id: str, horizon: int | None = None, sku_id: str | None
             "grand_total": sum(d["total"] for d in daily), "daily": daily, "series": series, "n_series": n_series,
             "methods": methods, "model_version": run["model_version"], "data_source": run["data_source"],
             "data_as_of": run["data_as_of"], "forecast_origin": run["forecast_origin"], "created_at": run["created_at"],
-            "scope_key": run["scope_key"], "q": q or None}
+            "scope_key": run["scope_key"], "q": q or None, "qty_rule": QTY_RULE}
 
 
 @router.get("/forecast-runs/{run_id}/export.xlsx")
 def forecast_export(run_id: str, horizon: int | None = None, lang: str = "vi"):
-    """Excel in the UI language (lang=vi|en). Codes/IDs stay untranslated; numbers unchanged (yhat as stored)."""
+    """Excel in the UI language (lang=vi|en). Codes/IDs stay untranslated. 1.2.8: the forecast is the whole number shown
+    on the page (QTY: round half up of the stored yhat); totals are sums of those daily whole numbers."""
     from ..bq import product_names
     from ..export_i18n import EXPORT_FORMAT_VERSION, fmt_date, fmt_vn_time, labels
     from ..ml.methods import label as method_label
@@ -343,7 +348,7 @@ def forecast_export(run_id: str, horizon: int | None = None, lang: str = "vi"):
     with db.read() as c:
         run = _run(c, run_id)
         h = _check_h(run, horizon)
-        daily = pd.read_sql_query("SELECT sku_id, fc_id, target_date, horizon_day, yhat AS forecast_qty, method "
+        daily = pd.read_sql_query(f"SELECT sku_id, fc_id, target_date, horizon_day, {QTY} AS forecast_qty, method "
                                   "FROM forecast_values WHERE run_id=? AND horizon_day<=? "
                                   "ORDER BY sku_id, fc_id, target_date", c, params=(run_id, h))
         act = intraday.actual_today(run["scope_key"], run["data_source"], c)
@@ -518,8 +523,11 @@ def forecast_accuracy(run_id: str):
     q = ss.get("quality")
     with db.read() as c:
         run = _run(c, run_id)
+        # 1.2.8: CROSS JOIN = the same inner join, with the run's own rows as the outer loop (one key lookup each).
+        # SQLite chose demand_daily as the outer loop and fetched every row of the scope before today: 13-26 s on a
+        # copy of production for the Results page, now under 1 s; identical rows for every run (test_v128_fixes.py).
         df = pd.read_sql_query(
-            "SELECT f.horizon_day, f.yhat, d.qty FROM forecast_values f JOIN demand_daily d ON d.scope_key=? "
+            "SELECT f.horizon_day, f.yhat, d.qty FROM forecast_values f CROSS JOIN demand_daily d ON d.scope_key=? "
             "AND d.order_date=f.target_date AND d.sku_id=f.sku_id AND d.fc_id=f.fc_id WHERE f.run_id=? AND "
             "f.target_date < ?", c, params=(run["scope_key"], run_id, str(today_vn())))
     if df.empty:

@@ -126,6 +126,14 @@ export function FeatureGroups({ v, set }: { v: any; set: Setter }) {
           <div className="alert warn small" data-testid="fg-price-nodata">{t("cfg.fg_price_nodata").replace("{c}", fmtPct(price.coverage ?? 0))}</div>
         )}
       </Field>
+      <Field label={t("cfg.fg_weekday")}>
+        <label className="row small">
+          {/* 1.2.8: own switch; not saved yet (null) = follows the calendar group, i.e. on - as every earlier model */}
+          <input type="checkbox" data-testid="fg-weekday" checked={v.feature_weekday ?? v.feature_calendar ?? true}
+            onChange={(e) => set({ feature_weekday: e.target.checked })} />{t("cfg.fg_weekday_desc")}
+        </label>
+        <div className="small muted">{t("cfg.fg_weekday_note")}</div>
+      </Field>
       <div className="full small muted">{t("cfg.fg_always")}</div>
       {none && <div className="full alert error small" data-testid="fg-empty">{t("cfg.fg_empty")}</div>}
       <Field label={t("cfg.strategy")}>

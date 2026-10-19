@@ -5,6 +5,41 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.2.8 - 2026-10-19 (explanation never loads endlessly, Results page accuracy, whole-number forecasts, day-of-week switch; includes 1.2.7; no migration, schema 6 unchanged) [reports/demandforecast_fix_and_deploy_20261019.md]
+
+No migration and no change to stored data: going back to 1.2.6 / 1.2.7 needs no restore. Contains every 1.2.7 change
+(1.2.7 was packaged but never deployed).
+
+* **"How is this calculated" never waits endlessly.** Root causes measured on a copy of the production database:
+  (1) every request first computed the data fingerprint through the key index (SQLite fetched every row again for
+  `qty` / `loaded_at`): about 30-42 s per request, even for a cached explanation; (2) requests arriving while the run's
+  input panel was being built (modal opened again, previous / next day) each built the same ~40 s panel and ran the
+  model again in parallel - with several of them the production PC ran out of memory (> 30 min). Now the fingerprint
+  is one sequential scan (`NOT INDEXED`, same hash: stored training fingerprints keep matching; a scope with
+  fractional quantities keeps the original key-order statement), and one reproduction runs at a time - the others
+  wait and reuse it. First explanation 125 s -> 70 s, three at once 77.6 s each -> 3.3 s, cached 30.7 s -> 2.5 s.
+  The modal stops waiting after 180 s with `REQUEST_TIMEOUT` and "Try again"; closing it or choosing another day
+  cancels the request and ignores its late answer. Nothing is recomputed or published by opening it.
+* **Results page: accuracy card in milliseconds.** `/api/forecast-runs/{id}/accuracy` joined `demand_daily` as the
+  outer loop (every row of the scope before today): 4.6-26 s; now the run's own rows are the outer loop (`CROSS JOIN`,
+  same rows for every run): about 50 ms. WAPE / bias still computed from the stored values.
+* **An older answer never replaces a newer one** (`useAsync`): changing the horizon or the day quickly always shows the
+  figures of the last choice; the page keeps loading until that answer arrives.
+* **Forecast quantities are whole numbers** (Results, Dashboard, explanation headline, `/values` `forecast_qty`,
+  `/summary`, Excel export of a run): round half up of the stored value, never below 0 (`backend/app/qty.py`); every
+  total is the sum of the rounded daily values. The stored `yhat` and every accuracy figure are unchanged. Not changed
+  yet: the "Forecast & actual history" page (its deviation and row WAPE are computed from the stored value; showing a
+  rounded forecast next to them needs an owner decision).
+* **Day-of-week feature switch** `model.feature_weekday` (Configuration > model): `dow` + `is_weekend` of the TARGET
+  day, separately from the other calendar features. Not saved (every configuration before 1.2.8) = as before, so the
+  model in use and older models keep their exact feature list; a change applies from the next training. Training,
+  backtest and forecast (RECURSIVE and DIRECT) share one definition (`calendar_names`).
+* Not done (blocked, see the report): `total_open_hours` as a required model feature (no approved aggregation /
+  future-value rule; `demand_daily` has no such column - needs a migration and a full D-1 reload) and free mapping
+  of every D-1 column with roles (needs a storage decision, a D-1 query change and a reload).
+* Tests: backend `test_v128_fixes.py` (29), frontend `v128.test.tsx` (10); `test_v111.py` export check now expects the
+  whole number shown on the page.
+
 ## 1.2.7 - 2026-10-19 (dashboard load hotfix; no migration, schema 6 unchanged; not deployed, owner approval pending) [reports/demandforecast_v126_post_deployment_operations.md, reports/demandforecast_v127_readiness_review.md]
 
 No migration and no settings change: going back to 1.2.6 needs no restore.

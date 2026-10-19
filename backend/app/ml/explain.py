@@ -19,7 +19,7 @@ from collections import OrderedDict
 
 import numpy as np
 
-from .. import db, paths
+from .. import db, paths, qty
 from .. import settings_service as ss
 from ..data import identity
 from ..data.demand import panel_for_run
@@ -31,6 +31,8 @@ from .features import LAGS, LAST_SALE_WINDOW, ROLL_WINDOWS, is_direct
 HISTORY_WINDOW_DAYS = 56
 _cache: "OrderedDict[tuple, dict]" = OrderedDict()
 _CACHE_MAX = 32
+_cache_lock = threading.Lock()
+_build_lock = threading.Lock()      # 1.2.8: one reproduction (panel build + model run) at a time, see _reproduce
 
 FEATURE_INFO = {
     "sku_code": ("Mã SKU dạng danh mục (categorical) để model phân biệt SKU.", "SKU as a categorical code."),
@@ -99,9 +101,29 @@ def _reproduce(run: dict, tr: dict, sku: str, fc_id: str, method: str | None = N
     check = {k: v for k, v in state.items() if k != "key"}
     # data change, or a new verdict on the same data (e.g. an attestation) -> different key -> no stale explanation
     key = (run["id"], sku, fc_id, state["key"], state["status"])
-    if key in _cache:
-        _cache.move_to_end(key)
-        return _cache[key]
+    hit = _cached(key)
+    if hit is not None:
+        return hit
+    # 1.2.8: ONE reproduction at a time. Requests that arrive while it runs (the modal opened again, prev / next day of
+    # the same series) wait for it and take the cached result instead of building the same ~40 s panel and running the
+    # model again in parallel - several parallel builds exhausted the memory of the production PC (> 30 min loading).
+    with _build_lock:
+        hit = _cached(key)
+        if hit is not None:
+            return hit
+        return _reproduce_now(run, tr, sku, fc_id, method, check, state, key)
+
+
+def _cached(key: tuple) -> dict | None:
+    with _cache_lock:
+        if key in _cache:
+            _cache.move_to_end(key)
+            return _cache[key]
+    return None
+
+
+def _reproduce_now(run: dict, tr: dict, sku: str, fc_id: str, method: str | None, check: dict, state: dict,
+                   key: tuple) -> dict:
     out: dict = {"status": "OK", "data_check": check}
     if not tr or state["status"] not in ("SAME_LOAD", "SAME_CONTENT"):
         out = {"status": "DATA_CHANGED", "data_check": check}
@@ -129,9 +151,10 @@ def _reproduce(run: dict, tr: dict, sku: str, fc_id: str, method: str | None = N
                         out.update(booster=booster, yhat=fc["yhat"][s], captured=fc["captured"])
                 else:   # fallback: model.forecast uses the constant rate, clipped at 0
                     out.update(yhat=np.repeat(details["rate"][s], run["max_horizon"]).clip(0, None))
-    _cache[key] = out
-    if len(_cache) > _CACHE_MAX:
-        _cache.popitem(last=False)
+    with _cache_lock:
+        _cache[key] = out
+        if len(_cache) > _CACHE_MAX:
+            _cache.popitem(last=False)
     return out
 
 
@@ -190,7 +213,9 @@ def explain(run_id: str, sku: str, fc_id: str, target_date: str) -> dict:
                      "model_version": run["model_version"], "data_source": run["data_source"],
                      "scope_key": run["scope_key"], "derived_from_run_id": run.get("derived_from_run_id"),
                      "run_created_at": run["created_at"], "training_run_id": run["training_run_id"]},
-        "result": {"yhat": val["yhat"], "unit": "order_qty", "method": method}, "notes": []}
+        # 1.2.8: forecast_qty = the whole number shown / exported (app/qty.py); yhat = the stored model value it explains
+        "result": {"yhat": val["yhat"], "forecast_qty": qty.business_qty(val["yhat"]), "qty_rule": qty.RULE,
+                   "unit": "order_qty", "method": method}, "notes": []}
     rep = _reproduce(run, tr, sku, fc_id, method)
     out["reproduction"] = {"status": rep["status"], "data_check": rep.get("data_check")}
 

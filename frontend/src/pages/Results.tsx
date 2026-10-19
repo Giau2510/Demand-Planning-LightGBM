@@ -223,7 +223,7 @@ export default function Results() {
                 <th className="num" title={t("actual.col_help")}>{t("actual.col_today")}{today ? ` (${today.slice(5)})` : ""}</th><th>{t("fc.method")}</th><th></th></tr></thead>
               <tbody>
                 {s.series.map((x: any) => (
-                  <tr key={x.sku_id + x.fc_id}><td className="sku">{x.sku_id}</td><td className="pname"><ProductName name={x.product_name} /></td><td className="nowrap">{x.fc_id}</td><td className="num">{fmtNum(x.total, 1)}</td>
+                  <tr key={x.sku_id + x.fc_id}><td className="sku">{x.sku_id}</td><td className="pname"><ProductName name={x.product_name} /></td><td className="nowrap">{x.fc_id}</td><td className="num">{fmtNum(x.total)}</td>
                     <td className="num"><ActualCell value={x.actual_today} actual={actual} /></td>
                     <td className="small method-c"><MethodLabel code={x.method} /></td>
                     <td className="nowrap"><button className="link" onClick={() => setExplain({ sku: x.sku_id, fc: x.fc_id, date: s.start_date })}>{t("ex.open")}</button></td></tr>
@@ -239,7 +239,7 @@ export default function Results() {
                 <th className="num" title={t("actual.col_help")}>{t("actual.col_so_far")}</th><th>{t("fc.method")}</th><th></th></tr></thead>
               <tbody>
                 {daily.data.rows.map((x: any) => (
-                  <tr key={x.sku_id + x.fc_id + x.target_date}><td className="sku">{x.sku_id}</td><td className="pname"><ProductName name={x.product_name} /></td><td className="nowrap">{x.fc_id}</td><td className="nowrap">{fmtDate(x.target_date)}</td><td className="num">{x.horizon_day}</td><td className="num">{fmtNum(x.yhat, 2)}</td>
+                  <tr key={x.sku_id + x.fc_id + x.target_date}><td className="sku">{x.sku_id}</td><td className="pname"><ProductName name={x.product_name} /></td><td className="nowrap">{x.fc_id}</td><td className="nowrap">{fmtDate(x.target_date)}</td><td className="num">{x.horizon_day}</td><td className="num">{fmtNum(x.forecast_qty)}</td>
                     <td className="num"><ActualCell value={x.actual_today} actual={daily.data.actual} /></td>
                     <td className="small method-c"><MethodLabel code={x.method} /></td>
                     <td className="nowrap"><button className="link" onClick={() => setExplain({ sku: x.sku_id, fc: x.fc_id, date: x.target_date })}>{t("ex.open")}</button></td></tr>

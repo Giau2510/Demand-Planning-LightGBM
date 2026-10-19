@@ -13,6 +13,7 @@ from app import settings_service as ss
 from app import timeutil
 from app.jobs import runner
 from app.ml import model, pipeline
+from app.qty import business_qty
 from app.timeutil import VN_TZ
 
 
@@ -378,7 +379,8 @@ def test_excel_follows_ui_language_and_keeps_numbers(client, demo_run):
             assert pname == ("Chưa có tên sản phẩm" if lab.startswith("Dự") else "No product name yet")
             assert isinstance(d, datetime)                                          # a real Excel date
             d = d.date().isoformat()
-            assert q == stored[(sku, fc, d)]                                       # numbers unchanged
+            # 1.2.8: the exported forecast is the whole number shown on the page (round half up of the stored value)
+            assert isinstance(q, int) and q == business_qty(stored[(sku, fc, d)])
             assert (act is not None) == (d == today)                               # actual only today
             if mcode == "FALLBACK_NEW_SERIES":
                 assert mlabel == lab

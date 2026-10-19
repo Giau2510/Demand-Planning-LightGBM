@@ -20,6 +20,7 @@ Số lượng đặt hàng **theo ngày Việt Nam** cho mỗi tổ hợp **SKU 
 | Lag | nhu cầu 1–7, 14, 21, 28 ngày trước |
 | Rolling | trung bình 7/14/28/56 ngày, độ lệch chuẩn 7/28, tỷ lệ ngày = 0 trong 28 ngày, số ngày từ lần bán gần nhất, max 28 ngày |
 | Lịch | thứ, ngày trong tháng, tháng, tuần trong năm, cuối tuần, số ngày đến cuối tháng |
+| Thứ trong tuần (1.2.8, công tắc riêng `feature_weekday`) | `dow` (0 = Thứ Hai … 6 = Chủ Nhật) và `is_weekend` của **ngày dự báo**. Lịch sử dùng ngày của dòng nhu cầu (`order_date`, ngày Việt Nam, lấy từ cột ngày / `created_at` đã ánh xạ), không dùng thời điểm tạo bản ghi. Chưa lưu (`null`, mọi cấu hình trước 1.2.8) = đi cùng nhóm Lịch như trước, nên model cũ giữ đúng danh sách feature. Đổi công tắc chỉ áp dụng từ lần huấn luyện kế tiếp; huấn luyện, backtest và dự báo (RECURSIVE và DIRECT) dùng cùng một hàm `calendar_names` |
 | Giá | giá gần nhất đã biết, giá so với trung bình 28 ngày, tỷ lệ giảm giá gần nhất |
 | Khuyến mãi | tỷ lệ khuyến mãi hôm trước, trung bình 7 ngày |
 
@@ -238,6 +239,14 @@ bằng backtest walk-forward. Thông tin thực tế của từng lần huấn l
 
 ## Định dạng hiển thị
 
+**Số lượng dự báo là số nguyên (1.2.8).** Trang Kết quả, Tổng quan, tiêu đề "Xem cách tính", API `/values`
+(`forecast_qty`), `/summary` và file Excel của run hiển thị số đơn vị nguyên theo một quy tắc duy nhất
+(`backend/app/qty.py`): **làm tròn nửa lên của giá trị đã lưu, không nhỏ hơn 0** (2,5 → 3; 2,49 → 2; 0,4 → 0; giá trị 0
+vẫn là 0, không ép lên 1). Mọi tổng (theo ngày, theo chuỗi, theo phương pháp, tổng kỳ) là tổng của các số nguyên theo
+ngày, nên bảng, biểu đồ, tổng và Excel luôn khớp nhau. Giá trị `yhat` trong database **không đổi**; WAPE, bias, MAE,
+quality gate và mọi chỉ số chất lượng vẫn tính trên `yhat`. Trang Lịch sử forecast & thực tế chưa đổi (xem CHANGELOG
+1.2.8: chờ quyết định nghiệp vụ về độ lệch và WAPE theo dòng).
+
 Chỉ lớp hiển thị và file Excel thay đổi; API, database và mọi phép tính giữ nguyên độ chính xác.
 - Số trong phần giải thích, bảng feature, kết quả & chất lượng: **tối đa 2 chữ số thập phân**, không có số 0 thừa
   (số khác 0 nhỏ hơn 0,01 hiện `<0,01` kèm dấu). Các nơi khác: số chữ số thập phân cần thiết, **không có số 0 thừa** (`7,2000` → `7,2`; `10,0000` → `10`); dấu thập phân
@@ -270,6 +279,12 @@ tính* ở trang Kết quả dự báo. Chỉ trả về dữ kiện kiểm ch�
 6. **Kết quả & chất lượng**: giá trị, quality gate và backtest của chính phương pháp đó.
 
 Dữ liệu đổi sau khi huấn luyện hoặc thiếu file mô hình → `DATA_CHANGED` / `MODEL_MISSING`, không hiển thị số ước đoán.
+
+**Thời gian chờ (1.2.8).** Lần giải thích đầu tiên của một run dựng lại toàn bộ dữ liệu đầu vào của run (khoảng 40–70 s
+trên dữ liệu thật); các lần sau dùng bộ nhớ đệm (khoảng 2–3 s). Mỗi lúc chỉ dựng **một** lần: yêu cầu đến trong lúc đang
+dựng (mở lại modal, bấm ngày trước/sau) chờ và dùng kết quả đó, không dựng song song. Giao diện dừng chờ sau **180 s**
+(`EXPLAIN_TIMEOUT_MS`) với lỗi `REQUEST_TIMEOUT` và nút *Thử lại*; đóng modal hoặc chọn ngày khác thì hủy yêu cầu cũ và
+bỏ qua câu trả lời đến muộn. Link xem từ xa tự cắt mọi yêu cầu ở 100 s.
 
 ## Khoảng dự báo của một run so với cấu hình
 

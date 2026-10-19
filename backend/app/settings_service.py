@@ -88,6 +88,9 @@ class ModelSettings(BaseModel):
     feature_promotion: bool = True
     # None = legacy behaviour (disc_last follows feature_price); training stores the resolved True/False
     feature_discount: bool | None = None
+    # 1.2.8: day of week of the TARGET day (dow, is_weekend) as its own switch. None = legacy behaviour (part of the
+    # calendar group, as for every model trained before 1.2.8)
+    feature_weekday: bool | None = None
     # a price/discount/promotion group is used only when at least this share of the scope's demand rows has the value
     feature_min_coverage: float = Field(0.5, gt=0, le=1)
     min_total_history_days: int = Field(56, ge=14)

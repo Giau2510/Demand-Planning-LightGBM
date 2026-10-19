@@ -3,7 +3,7 @@ import { get, qs } from "../api";
 import { useI18n } from "../i18n";
 import ShapTrace from "./ShapTrace";
 import { Icon } from "../components/icons";
-import { DateInput, ErrorBox, Loading, MethodLabel, fmtDate, fmtNum, fmtPctX, fmtTime, fmtX, useAsync, useMethods, weekdayName } from "../components/ui";
+import { DateInput, ErrorBox, Loading, MethodLabel, fmtDate, fmtNum, fmtPctX, fmtTime, fmtX, useMethods, weekdayName } from "../components/ui";
 
 function addDays(iso: string, n: number) {
   const d = new Date(iso + "T00:00:00Z");
@@ -12,6 +12,9 @@ function addDays(iso: string, n: number) {
 }
 
 const TOP_N = 8;
+/** 1.2.8: longest wait for an explanation. The first one of a run builds its whole input panel (about 40 s on the real
+ *  data, more while the PC is busy); the remote link cuts any request at 100 s on its own. */
+export const EXPLAIN_TIMEOUT_MS = 180_000;
 
 /** 1.2.4: how the backend checked that the data this run used is still the data in the database. A reload with the
  *  same values (SAME_CONTENT) is said explicitly; a change names the days; without a recorded identity nothing is guessed. */
@@ -60,7 +63,18 @@ export default function ExplainPanel({ runId, sku, fc, date, maxHorizon, origin,
   const [sortBy, setSortBy] = useState<"impact" | "name">("impact");
   const [traceFeature, setTraceFeature] = useState<string | null>(null);
   useEffect(() => setD(date), [date, sku, fc]);
-  const ex = useAsync(() => get(`/api/forecast-runs/${runId}/explain${qs({ sku_id: sku, fc_id: fc, target_date: d })}`), [runId, sku, fc, d]);
+  // 1.2.8: never an endless spinner. The request stops after EXPLAIN_TIMEOUT_MS with a clear error and "Try again";
+  // closing the modal or choosing another day cancels it and its late answer is ignored.
+  const [attempt, setAttempt] = useState(0);
+  const [ex, setEx] = useState<{ data: any; error: unknown; loading: boolean }>({ data: null, error: null, loading: true });
+  useEffect(() => {
+    const ctl = new AbortController();
+    setEx({ data: null, error: null, loading: true });
+    get(`/api/forecast-runs/${runId}/explain${qs({ sku_id: sku, fc_id: fc, target_date: d })}`, { timeoutMs: EXPLAIN_TIMEOUT_MS, signal: ctl.signal })
+      .then((data) => { if (!ctl.signal.aborted) setEx({ data, error: null, loading: false }); },
+            (error) => { if (!ctl.signal.aborted) setEx({ data: null, error, loading: false }); });
+    return () => ctl.abort();
+  }, [runId, sku, fc, d, attempt]);
   useEffect(() => {
     const k = (e: KeyboardEvent) => { if (e.key === "Escape" && !traceFeature) onClose(); };
     window.addEventListener("keydown", k);
@@ -120,13 +134,14 @@ export default function ExplainPanel({ runId, sku, fc, date, maxHorizon, origin,
           <DateInput value={d} min={origin} max={last} onChange={(v) => v && setD(v)} ariaLabel={t("fc.date")} />
           <button disabled={d >= last} onClick={() => setD(addDays(d, 1))}>{t("ex.next_day")} →</button>
         </div>
-        {ex.loading && <Loading />}
+        {ex.loading && <><Loading /><p className="small muted" data-testid="ex-wait">{L("Lần mở đầu tiên của một lần chạy có thể mất 1–2 phút (dựng lại dữ liệu mô hình đã dùng).", "The first explanation of a run can take 1–2 minutes (the model's input data is rebuilt).")}</p></>}
         <ErrorBox error={ex.error} />
+        {ex.error ? <button data-testid="ex-retry" onClick={() => setAttempt((a) => a + 1)}>{L("Thử lại", "Try again")}</button> : null}
         {e && !ex.loading && (
           <div className="stack ex">
             {/* ---------------------------------------------------------------- level 1: summary */}
             <section className="exsummary" data-testid="ex-summary">
-              <p className="big"><b>{fmtX(e.result.yhat)}</b> {t("ex.unit")} · {fmtDate(e.identity.target_date)} ({weekdayName(e.identity.target_date, lang)}) · <MethodLabel code={e.result.method} /></p>
+              <p className="big"><b data-testid="ex-qty">{fmtNum(e.result.forecast_qty)}</b> {t("ex.unit")} ·{fmtDate(e.identity.target_date)} ({weekdayName(e.identity.target_date, lang)}) · <MethodLabel code={e.result.method} /></p>
               {lg && (
                 <p className="small">{L("Ảnh hưởng mạnh nhất", "Strongest drivers")}: {top.slice(0, 3).map((f, i) => (
                   <span key={f.name}>{i > 0 && " · "}{featName(f)} <b className={f.contribution > 0 ? "ok-t" : "bad-t"}>{fmtX(f.contribution, true)}</b></span>
@@ -324,6 +339,7 @@ export default function ExplainPanel({ runId, sku, fc, date, maxHorizon, origin,
                   <tr><td>max(0, output)</td><td>{lg.clipped}</td></tr>
                   <tr><td>{L("làm tròn 4 chữ số (tái lập)", "rounded to 4 decimals (reproduced)")}</td><td>{lg.reproduced_yhat}</td></tr>
                   <tr><td>{L("giá trị đã publish (DB)", "published value (DB)")}</td><td>{lg.published_yhat}</td></tr>
+                  <tr><td>{L("số lượng hiển thị (làm tròn nửa lên, ≥ 0)", "quantity shown (rounded half up, ≥ 0)")}</td><td>{e.result.forecast_qty}</td></tr>
                 </tbody></table>
               ) : e.fallback && (
                 <table className="tbl small mono"><tbody>
@@ -331,6 +347,7 @@ export default function ExplainPanel({ runId, sku, fc, date, maxHorizon, origin,
                   <tr><td>rate</td><td>{e.fallback.rate}</td></tr>
                   <tr><td>{L("làm tròn 4 chữ số", "rounded to 4 decimals")}</td><td>{e.fallback.value_rounded}</td></tr>
                   <tr><td>{L("giá trị đã publish (DB)", "published value (DB)")}</td><td>{e.result.yhat}</td></tr>
+                  <tr><td>{L("số lượng hiển thị (làm tròn nửa lên, ≥ 0)", "quantity shown (rounded half up, ≥ 0)")}</td><td>{e.result.forecast_qty}</td></tr>
                 </tbody></table>
               )}
               {lg?.global_importance?.length > 0 && (

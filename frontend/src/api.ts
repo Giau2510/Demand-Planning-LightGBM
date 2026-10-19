@@ -30,8 +30,29 @@ async function handle<T>(res: Response): Promise<T> {
   return undefined as T;
 }
 
-export async function get<T = any>(path: string): Promise<T> {
-  return handle<T>(await fetch(path, { headers: { Accept: "application/json" } }));
+/** 1.2.8: `timeoutMs` aborts a request that takes longer and fails it with REQUEST_TIMEOUT (never an endless wait);
+ *  `signal` lets the caller cancel it (a closed modal). Without options the request is exactly as before. */
+export async function get<T = any>(path: string, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<T> {
+  if (!opts.timeoutMs && !opts.signal) return handle<T>(await fetch(path, { headers: { Accept: "application/json" } }));
+  const ctl = new AbortController();
+  const cancel = () => ctl.abort();
+  if (opts.signal?.aborted) ctl.abort();
+  opts.signal?.addEventListener("abort", cancel);
+  let timedOut = false;
+  const timer = opts.timeoutMs ? setTimeout(() => { timedOut = true; ctl.abort(); }, opts.timeoutMs) : undefined;
+  try {
+    return await handle<T>(await fetch(path, { headers: { Accept: "application/json" }, signal: ctl.signal }));
+  } catch (e) {
+    if (timedOut) {
+      const s = Math.round((opts.timeoutMs ?? 0) / 1000);
+      throw new ApiError(0, { code: "REQUEST_TIMEOUT", vi: `Máy chủ chưa trả lời sau ${s} giây — đã dừng chờ. Bấm "Thử lại".`,
+        en: `No answer from the server after ${s} s — stopped waiting. Press "Try again".` });
+    }
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
+    opts.signal?.removeEventListener("abort", cancel);
+  }
 }
 
 async function send<T>(method: string, path: string, body?: unknown): Promise<T> {
