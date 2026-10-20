@@ -612,3 +612,21 @@ separate step. No commit, push, release.ps1, package, deploy, production write /
 | Production | NOT TOUCHED | GET only: 1.2.8, storage.json 8D79DBDD..., no running job, newest job D-0 19:14 |
 | Report | DONE | reports/demandforecast_upgrade_backfill_rehearsal_20261020.md (not versioned): rehearsal PASS; release not ready (commit authorization, MULTI_ITEM, how to keep the backfill-first order in production) |
 | Checkpoint (final) | DONE | `checkpoints/checkpoint-20261020-v129h-worktree.zip` (86 files + patch, 2 reports, 37 scratchpad p23 scripts / results / screenshots; DB copies and backups excluded), SHA-256 99445579...3210, 2,197,530 bytes, 127 entries, 22:35 (verified: CRC, listing = manifest, per-file hashes, extraction compared byte for byte, PowerShell hash); changed since v129h-before: docs/CHECKPOINT.md, docs/LICH-SU-FORECAST.md |
+
+# 1.2.9 release night (2026-10-20 22:55 - 2026-10-21): commit + package + package rehearsal; production NOT upgraded (source blocked)
+
+Owner prompt "RELEASE TOI NAY, BACKFILL CO KIEM SOAT" (plan A: upgrade -> preview -> backfill -> finalize the same
+evening). Commit authorized for the release scope only; no push. Price ON, customer_id OFF, D-0 schedule unchanged.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Schedules (GET) | VERIFIED | D-1 06:00 / fallback 06:30 / poll 30 min (owner change ~23:05, was 03:00 / 05:00); D-0 08-18 unchanged; train 09:00 SKIP; eod 23:55 / close 23:59 |
+| Source check | BLOCKER | D-1 table rebuilt 20/10 22:18:39 VN (+customer_id, 8,961,545 rows): read-only preview 01/01-19/10 BLOCKED BQ_DATA_DUPLICATES (18 groups / 67 rows / 49 extra, 16/10 + 19/10): 307 WAIT_TO_CONFIRM lines without so_code, each group = different customer_id; also blocks D-1 21/10 06:00 (window 16-20/10) on any version |
+| Checkpoint | DONE | `checkpoints/checkpoint-20261020-v129i-prerelease.zip` SHA-256 0A37954C...6C97 (90 entries, extraction compared byte for byte) |
+| Commit | DONE (local) | 15d4f4b "Release 1.2.9 ..." = 86 source files of batches 1-8 + version 1.2.9 (3 files); secret / EOL / PS1 scan clean; not pushed |
+| Package | DONE | release.ps1: QA backend 647 passed / 10 skipped, vitest 152; dist\DemandForecast-1.2.9-win64-portable.zip SHA-256 B705F3DF...62BB (92,343,940 bytes); prune dry run only |
+| Package rehearsal | PASS 33/34 (+1 explained) | scratchpad r9: official 1.2.8 isolated on a live DB copy -> deploy-upgrade 1.2.9 (601 s, 284 s unavailable) schema 9, tables identical on schema-6 columns, flows unchanged, 0 finalized; rollback-version refuses schema 9 (exit 3); 1.2.8 restore.ps1 140 s -> identical tables; the 1 FAIL = new status field data_window.start_rule (WINDOW_START), all values equal |
+| Production precheck | OK | deploy-upgrade -CheckOnly exit 0 (nothing changed); newest backup backup-20261019-200655-cli.zip readable, schema 6 |
+| Deploy / backfill / finalize | NOT DONE (held at Gate 3) | without a backfill plan A cannot hold (first successful D-1 would freeze old loads; KPI empty; training blocked) -> production stays 1.2.8 |
+| Secondary (read only) | DONE | 6 MULTI_ITEM keys re-verified (156 units, values per item); 931 combo keys: 98% of units via combo (combo table to 09/07 + calibrated signal after), CSV in reports/; customer_id profile (0 NULL, 35,055 customers, 1 customer per order) - offline experiments NOT RUN (reload blocked by the same duplicates) |
+| Report | DONE | reports/demandforecast_release_20261020_final_report.md (not versioned): PARTIAL / BLOCKED_DATA_SAFETY |
