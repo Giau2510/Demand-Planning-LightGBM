@@ -45,7 +45,7 @@ def system_status() -> dict:
     with db.read() as c:
         out["db_version"] = c.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
         win = data_window(c)
-        out["data_window"] = {"start": win["start"], "end": win["end"]}
+        out["data_window"] = {"start": win["start"], "end": win["end"], "start_rule": win["start_rule"]}
         try:
             scope = resolve_scope(c)
             out["scope"] = scope
@@ -325,6 +325,10 @@ def bq_status():
     v = connector.validation_state()
     start, end = connector.read_range(bq)
     return {"settings": bq.model_dump(), "checks": connector.status(), "activation": connector.activation_check(),
+            # 1.2.9: role of every mapping field and of every column of the saved source schema (no BigQuery call)
+            "roles": list(ss.ROLES), "field_roles": ss.FIELD_ROLES,
+            "mandatory_reference_fields": list(ss.MANDATORY_REFERENCE_FIELDS),
+            "column_roles": connector.column_roles(bq.schema_snapshot, bq),
             "mapping_hash": connector.mapping_hash(bq), "read_range": {"start": str(start), "end": str(end)},
             "validation": v, "validation_current": bool(v and v.get("mapping_hash") == connector.mapping_hash(bq)),
             "identity": oauth.runtime_identity(), "oauth": oauth.status(),
@@ -356,6 +360,7 @@ def bq_test():
 def bq_schema():
     res = connector.read_schema()
     res["mapping_check"] = connector.validate_mapping(res["columns"])
+    res["column_roles"] = connector.column_roles(res["columns"])
     return res
 
 
@@ -431,13 +436,23 @@ class MappingBody(BaseModel):
     reference_mapping: dict[str, ss.FieldMapping] | None = None
     created_at_is_utc: bool | None = None
     partition_column: str | None = None
+    # 1.2.9: source columns classified REFERENCE without a field (None = keep the saved list)
+    extra_reference_columns: list[str] | None = None
+    # 1.2.9b: optional customer identifier column ("" = none; None = keep the saved value) - data/customers.py
+    customer_id_column: str | None = None
 
 
 @router.post("/bigquery/mapping")
 def bq_mapping(body: MappingBody):
     """Validate the mapping against the live schema, then save mapping + schema snapshot (for drift checks)."""
     res = connector.read_schema()
-    check = connector.validate_mapping(res["columns"], body.field_mapping, body.reference_mapping)
+    check = connector.validate_mapping(res["columns"], body.field_mapping, body.reference_mapping,
+                                       body.extra_reference_columns)
+    if body.customer_id_column:
+        from ..data import customers
+        cerr = customers.check_column(res["columns"], body.customer_id_column.strip())
+        if cerr:
+            check = {**check, "ok": False, "errors": check["errors"] + cerr}
     if not check["ok"]:
         raise AppError("BQ_MAPPING_INVALID", 422, detail=json.dumps(check["errors"]))
     cur = ss.get("bigquery")
@@ -445,6 +460,10 @@ def bq_mapping(body: MappingBody):
              "schema_snapshot": res["columns"], "production_enabled": False}
     if body.reference_mapping is not None:
         patch["reference_mapping"] = {k: v.model_dump() for k, v in body.reference_mapping.items()}
+    if body.extra_reference_columns is not None:
+        patch["extra_reference_columns"] = body.extra_reference_columns
+    if body.customer_id_column is not None:
+        patch["customer_id_column"] = body.customer_id_column.strip()
     if body.created_at_is_utc is not None:
         patch["created_at_is_utc"] = body.created_at_is_utc
     if body.partition_column is not None:

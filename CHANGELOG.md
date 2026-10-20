@@ -5,6 +5,177 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.2.9 - 2026-10-20 (day of week 1-7, SKU open hours as a mandatory BigQuery input, roles of every D-1 column, weekday names, controlled backfill, finalized actual on the history page; migrations 0007-0009, schema 9) [reports/weekday_total_open_hours_mapping_fix.md ... reports/demandforecast_upgrade_backfill_rehearsal_20261020.md, release: reports/demandforecast_release_20261020_final_report.md]
+
+Released 2026-10-20 from the eight source batches below (first batch text kept as written). Upgrade from 1.2.8 runs
+migrations 0007, 0008 and 0009 (schema 6 -> 9, additive); rollback to 1.2.8 = restore the pre-upgrade backup (1.2.8
+refuses schema 9; rehearsed). **Migration 0007** (schema 7, additive: two nullable columns of `demand_daily`); going back to
+1.2.8 needs the pre-upgrade backup (1.2.8 refuses a schema newer than 6), as for 0004-0006.
+
+* **Day of week: one convention** (`backend/app/weekday.py`): Monday = 1 ... Sunday = 7, from the calendar date itself.
+  Models trained from 1.2.9 store `weekday_encoding = "ISO"` (`dow` 1-7); older models keep the 0-6 code they were trained
+  with (same function, ISO - 1), so no model changes behaviour. The explanation's history days carry the ISO weekday.
+  The switch `model.feature_weekday` (1.2.8) is now also on the **Field mapping** page (card "Day of week", label
+  "Sử dụng thứ trong tuần khi dự báo", says "not saved" until saved; same setting as the Model configuration page).
+  Root cause of "not saved": production ran 1.2.6 until 19/10 20:08 - that version has no such key and Pydantic ignored it;
+  after the 1.2.8 deploy it was never saved (settings history of `model`: one save, 17/10).
+* **SKU open hours (`total_open_hours`) - mandatory model input of the BigQuery D-1 source** (`backend/app/data/open_hours.py`):
+  D-1 reads, per day x SKU x FC, lines without a value + MIN / MAX; stored value only when every line has one, they agree
+  and lie within 0-24 (status OK); otherwise no value and status MISSING / OUT_OF_RANGE / CONFLICT - never 0, never a carried
+  or averaged value; the demand itself is written as before. Features `open_hours_last` (day before the target / origin) and
+  `open_hours_mean_7` (known days of the 7 before); the target day's own hours are never used. Training of the BIGQUERY source
+  stops with `OPEN_HOURS_INVALID` (rows and day range per status) while any demand row of the data window is not OK; DEMO /
+  Excel: not applicable. Not a user switch (`PUT /api/settings/model` refuses `feature_open_hours`: `OPEN_HOURS_MANDATORY`);
+  the resolved value is stored with each training run, older models keep their list. Data identity of a run that used open
+  hours also hashes them; identities recorded before keep their own column list (a D-1 reload that adds open hours does not
+  make older runs "data changed"). Full-period validation reports `OPEN_HOURS_MISSING` / `OPEN_HOURS_OUT_OF_RANGE` as warnings.
+* **Roles of every D-1 field and column**: key / target / mandatory input / optional input / reference (`FIELD_ROLES`); the
+  mapping page lists every source column with its role, "not classified" until marked reference
+  (`bigquery.extra_reference_columns`, never read, never an input, not part of the mapping hash); `REQUIRED_NOT_MAPPED` for
+  open hours, `COLUMN_ROLE_CONFLICT` when one column feeds two of key / target / input. `open_hours` stays in
+  `reference_mapping`, so the saved production mapping and its hash are unchanged (no re-validation caused by the upgrade).
+* **Daily forecast table: weekday names** ("Thứ 2" ... "Chủ nhật") of each target date in place of the number. That number was
+  `horizon_day` (position in the forecast period, 1 = first forecast day - not a weekday); it stays as the cell's tooltip.
+  `/values` rows carry `weekday` (1-7). Excel export **format 6**: column "Thứ trong tuần" / "Weekday" after the date; the
+  numeric "Ngày thứ" / "Day #" column is unchanged.
+* Real-data facts (read-only BigQuery profile 01/01-18/10/2026): `total_open_hours` NULL for every line before 2026-03-19
+  and none after; min 0, max 24; 2 day x SKU x FC keys in August with differing values. After deploying this version the
+  BigQuery training stays blocked until a D-1 full reload AND an owner decision on the missing period / the 2 conflicting
+  keys (or a later `window_start_date`).
+* Tests: backend `test_v129_weekday_open_hours.py`, real BigQuery (opt-in) `test_v129_real_bq_open_hours.py`, frontend
+  `v129.test.tsx`; earlier fixtures that simulate D-1 data now carry the open hours a 1.2.9 D-1 writes.
+
+Second batch (19/10/2026 evening) [reports/demandforecast_comprehensive_upgrade_review.md]:
+
+* **Controlled history backfill: preview, preview id, backup.** `POST /api/sync/backfill/preview` (button "Preview (no
+  write)") runs the checks and the BigQuery read of the load. The read is read-only, dry run first, capped, with the
+  exact-duplicate gate. It reports new / changed / unchanged / removed day x SKU x FC rows, the quantity before and after,
+  the open-hours status each row would get and the 23:59-closed days whose actual would change. It writes no demand; the
+  result is kept in `sync_state bq_backfill_preview` and audited `D1_BACKFILL_PREVIEW`.
+  `POST /api/sync/backfill` now needs the `preview_id` of a READY preview of the same window, mapping and SQL. The preview
+  must be at most 6 h old and is used once; otherwise `BACKFILL_PREVIEW_REQUIRED` (checked by the API and again by the
+  job). The job makes a verified online backup (`backup-...-pre-backfill.zip`) right before it replaces the window; a
+  failed backup gives `BACKFILL_BACKUP_FAILED` and nothing is written. The job result names the preview and the backup.
+  The page enables "Re-read this window" only for the previewed dates and asks for confirmation with the counts.
+  Inside the write transaction, before the DELETE, the job checks again that the preview is still READY, that no D-1
+  load ran since and that the new / updated / removed counts are the previewed ones. An empty read is BLOCKED already in
+  the preview. A window ending yesterday without a completion signal gets the warning `YESTERDAY_NOT_CONFIRMED`.
+* **Backups are written atomically**: zip under a temporary name, `testzip`, then renamed. A failed write leaves no
+  `backup-*.zip`. Backtest groups are stored as small integer codes; an error in them never stops a training.
+* **Forecast & actual history: whole numbers.** The page shows, sums, sorts and exports the forecast quantity of
+  `app/qty.py` (round half up, never below 0, zero allowed) - the number of the Results page. Its deviation and WAPE
+  compare that number with the actual. The stored `yhat` is unchanged and still returned; the hover shows it. Model accuracy
+  (backtest, quality gate, Results accuracy card) still uses `yhat`. History Excel **format H3** (same columns).
+  This closes A5 of 1.2.8 (owner instruction of 19/10: integers consistently across details, totals, exports and history).
+* **Backtest accuracy per group** (`ml/demand_patterns.py`, `backtest_runs.metrics_json.segments`, training explanation
+  `backtest.segments`). The same walk-forward points are split by demand pattern (Syntetos-Boylan: smooth / erratic /
+  intermittent / lumpy / inactive / short history, from the 91 days before each fold origin), volume tier, spike day
+  (relative to the series' own history before the origin) and horizon days 1-7 / 8-15 / 16-30. Each group has model and
+  baseline metrics, and the 7 / 15 / 30-day per-series total WAPE is reported. Evaluation only: no value is removed,
+  clipped or re-weighted, nothing is a model input, and pooled metrics / quality gate are unchanged.
+
+Third batch (20/10/2026) [reports/demandforecast_dq_spike_customer_20261020.md]. **Migration 0008** (schema 8, additive:
+three nullable columns of `demand_daily`); same rollback rule as 0007. Every new behaviour is OFF by default.
+
+* **Open hours are measured per item** (read-only check of the real source, 20/10): the same item has the same hours in
+  every FC on a day; an item (`<sku_code>.<n>`) belongs to one SKU. (Corrected in the fifth batch: the suffix `<n>` is
+  the order in which the SKU was opened for sale in the regions, not a region code; nothing is inferred from it.)
+  New status **`MULTI_ITEM`**: the values of a day x SKU x FC differ only BETWEEN items (each item one value,
+  item_code mapped) - still no value at the SKU x FC grain (no aggregation rule approved), so it still
+  stops the BigQuery training like the other non-OK statuses. `CONFLICT` now means a disagreement not explained by the items
+  (the same item with two values, or lines without item code). D-1 reads three counts more (items, item / value pairs,
+  lines without item code); without the item_code mapping it behaves as before.
+* **Open hours a reload would lose**: the source keeps open hours for about its last 7 months (first day with a value moved
+  from 19/03 to 20/03 between the refreshes of 19/10 and 20/10). The backfill preview warns `OPEN_HOURS_WOULD_BE_LOST`
+  (rows, first / last day, now missing / removed) and every D-1 / backfill result counts `open_hours_lost`.
+* **Model-input start rule** `data_policy.training_start_rule` (Configuration > Data policy, default `WINDOW_START` = as
+  before). `OPEN_HOURS_COVERAGE` (BigQuery source only): training, backtest, forecast panel, open-hours check, data-quality
+  report and data-check start at the first STORED day with open hours, recomputed at each use (no date in the code); the
+  earlier days stay stored and are still read by D-1 / backfill (read floor = `window_start_date`, mapping hash unchanged).
+  Each training stores `data_window.excluded_summary` (days, rows, series, series only in the excluded days, quantity and
+  its share). Status pages show the rule without scanning.
+* **customer_id (OFF by default)**: optional source column `bigquery.customer_id_column` (mapping page, "" = none; part of
+  the mapping hash only when set, so an unmapped installation keeps its validated state). D-1 reduces it INSIDE BigQuery to
+  `customer_count`, `repeat_customer_count` (ordered the same SKU x FC in the 90 days before) and
+  `repeat_interval_days_sum` per day x SKU x FC; no identifier is fetched, stored, logged or exported; NULL = unknown.
+  Model switch `model.feature_customer` (default false) adds `cust_mean_28`, `cust_repeat_share_28`,
+  `cust_repeat_interval_28` (known days of the 28 before the target / origin) only when the stored rows carry the counts
+  (coverage rule of the optional groups). Output grain stays SKU x FC. data-check `customer_counts_consistent`.
+* **Spike-aware training weights - experiment code only** (`ml/spike_weights.py`, `model.train(weights=...)`,
+  `training_matrix(..., with_index=True)`): the owner's one-day / two-day / third-day hypothesis as loss weights computed
+  from the days before the cutoff only; targets, features and stored data unchanged. The application's training never
+  passes weights (test). Results of the bounded experiments in the report.
+* Tests: backend `test_v129c_window_spike_customer.py`, real BigQuery (opt-in, inline rows, 0 bytes)
+  `test_v129c_real_bq_items_customers.py`, frontend `v129c.test.tsx`; expectations of `test_v129_weekday_open_hours.py`
+  (D-1 query width 17 -> 20, status counts with `MULTI_ITEM`, migration to 8) and `test_v129_backfill_history_patterns.py`
+  updated.
+
+Fourth batch (20/10/2026) [reports/demandforecast_multi_item_overforecast_20261020.md]. No migration, no change of
+settings or stored demand data; one fix of the backfill preview re-check (below), otherwise evaluation code only.
+
+* **MULTI_ITEM review workbook** (report output, not versioned): `reports/demandforecast_multi_item_review_20261020.xlsx`,
+  built from read-only BigQuery rows - the two keys of 26/08 at FC BD are one FC, two item codes (`.1` with lines only
+  at FC BD, `.2` with almost all lines at FC HN) and different orders; both `.2` lines are one order. The aggregation
+  rule stays an owner decision. (The workbook's hypothesis "`.2` = a listing of the HN region" is withdrawn in the fifth
+  batch; the original file is kept unchanged.)
+* **Over / under-forecast metrics - evaluation and experiment code only** (`ml/overforecast.py`): bias, over-only,
+  under-only, WAPE and forecast / actual ratio on one set of observations (undefined when the actual total is 0), the
+  published whole-number rule, the normal-day label (not a spike day of `demand_patterns`; needs the day's actual, never
+  a model input) and walk-forward calibration factors from earlier evaluation windows only, with a shrunk segment factor
+  and a fallback to the global factor. Not used by training, forecast or publication (test).
+* **Fix (backfill preview re-check, second batch code):** a regular D-1 load after the preview was recognised only by its
+  one-second `synced_at`; two loads in the same second let a stale preview through (seen once in a fast full-suite run of
+  `test_the_preview_is_checked_again_under_the_write_lock`). Each D-1 load now stores a unique `load_id`, the preview
+  keeps it and the re-check compares both (loads stored before the change have none: same result as before).
+* Tests: backend `test_v129d_overforecast.py`; deterministic same-second case in `test_v129_backfill_history_patterns.py`.
+
+Fifth batch (20/10/2026) [reports/demandforecast_data_recovery_learning_readiness_20261020.md]. No migration, no change of
+settings, behaviour or stored data; text corrections and tests only.
+
+* **Owner rule on item codes:** the suffix of `<sku_code>.<n>` is the order in which the SKU was opened for sale in the
+  regions, not a region code. The earlier wording "an item is a listing of one sales region" (open_hours.py docstring,
+  the open-hours text of the feature catalog, docs, CHANGELOG of the third / fourth batch) is corrected; the code never
+  parsed the suffix (now covered by tests). The 20/10 MULTI_ITEM workbook is kept unchanged; a corrected
+  `reports/demandforecast_multi_item_review_20261020_v2.xlsx` (not versioned) withdraws the region hypothesis.
+* **Open hours after the owner's fix** (read-only, source refresh 20/10 15:05): a value on every line 01/01-19/10/2026;
+  6 day x SKU x FC keys `MULTI_ITEM` (rule pending), 0 missing / conflicting / out of range. The open_hours.py note on
+  the source keeping only its last ~7 months is updated accordingly.
+* Tests: backend `test_v129e_item_suffix.py` (the D-1 query only counts item codes; status independent of the item
+  names; feature text), real BigQuery opt-in `test_v129e_real_bq_item_suffix.py` (inline rows, 0 bytes).
+
+Sixth batch (20/10/2026) [reports/demandforecast_zero_hours_followup_audit_20261020.md]. No migration, no change of code,
+settings, behaviour or stored data; one test file.
+
+* **Zero open hours with orders** (931 day x SKU x FC keys of the 15:05 refresh, 25,542 units): exported for the owner's
+  review (`reports/demandforecast_zero_open_hours_with_orders_20261020.xlsx`, not versioned). They stay a value: stored
+  `0` / `OK`, no training stop, `0` in `open_hours_last` / `open_hours_mean_7`, never carried to a day without a value -
+  now covered by `test_v129f_zero_open_hours.py`.
+* Read-only facts (docs/BIGQUERY.md §11e): the 71,834-unit line of 28/08 has 19.25 open hours (not 0); `open_date` /
+  `total_open_days` say nothing about days without orders; candidate availability tables of the same dataset are listed
+  (meaning not confirmed, not used).
+
+Seventh batch (20/10/2026) [reports/demandforecast_actual_finalization_20261020.md]. **Migration 0009** (schema 9,
+additive: two tables + protection triggers, nothing written by the migration).
+
+* **Finalized (frozen) actual - owner rule 20/10/2026** (`backend/app/actual_final.py`): after each successful D-1 load
+  (after its commit, never failing it) every completed Vietnam business day whose stored rows trace to ONE verified D-1
+  load (same loaded_at = the load's synced_at in audit `D1_SYNC`; mode SIGNAL / FALLBACK_TIME_VERIFIED / BACKFILL; the
+  load's window covers the day; the load ran after the day ended) is copied SKU x FC into `actual_finals` /
+  `actual_final_values` with the load's provenance, row count, total and sha256, one immediate transaction per day,
+  checked then sealed. A sealed day never changes (triggers): a later reload, correction, cancellation or missing key
+  leaves it as it is, and it never goes back to provisional. Days that cannot be finalized are BLOCKED with a reason and
+  keep their live figure. Idempotent; a failed day rolls back alone (alert `ACTUAL_FINALIZE_FAILED`) and is retried by
+  the next run. `python -m app.cli actual-finalize` = read-only dry run (also on a database before 0009); `--apply`
+  finalizes. BIGQUERY only.
+* **Forecast history page** (root cause: "complete" required a completion-signal D-1 that production never has, and
+  the figure was always re-read from the mutable demand_daily): COMPLETE now means finalized and its figure comes from
+  the frozen copy; actual total, deviation, WAPE and bias of the main cards use the finalized rows only (formulas
+  unchanged); provisional and end-of-day closed rows are reported apart (`kpi.provisional` / `kpi.closed`, card "Actual
+  not finalized", not model quality); `kpi.coverage` and `n_zero_absent` show the evaluation base; "No finalized actual
+  yet" when there is none. Excel format **H4** (Info sheet rows appended). The 23:59 close keeps its own rule.
+* `data-check`: `actual_final_sealed`, `actual_final_protection_triggers`. Tests: backend `test_v129g_actual_final.py`,
+  frontend `v129g-final.test.tsx`; earlier history / migration tests updated to the new rule and schema 9.
+
 ## 1.2.8 - 2026-10-19 (explanation never loads endlessly, Results page accuracy, whole-number forecasts, day-of-week switch; includes 1.2.7; no migration, schema 6 unchanged) [reports/demandforecast_fix_and_deploy_20261019.md]
 
 No migration and no change to stored data: going back to 1.2.6 / 1.2.7 needs no restore. Contains every 1.2.7 change

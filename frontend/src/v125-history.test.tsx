@@ -32,7 +32,8 @@ const DAYS = [
     published_at: "2026-10-17T12:34:19+00:00", model_version: "MV-A", n_rows: 3, capture_mode: "RECOVERED", sessions_count: 1 },
 ];
 const OVERVIEW = { scope_key: BQ, data_source: "BIGQUERY", active_scope_key: BQ, today: "2026-10-18", today_session: DAYS[0],
-  scopes: [{ scope_key: BQ, data_source: "BIGQUERY", n_days: 2, active: true }], days: DAYS, fcs: ["BD", "HN"], completion_signal_configured: false };
+  scopes: [{ scope_key: BQ, data_source: "BIGQUERY", n_days: 2, active: true }], days: DAYS, fcs: ["BD", "HN"], completion_signal_configured: false,
+  finalization: { finalized_days: 0, blocked_days: 1, last_finalized_date: null, applicable: true } };
 const DAILY = [
   { run_date: "2026-10-16", target_date: "2026-10-17", has_history: false, n_rows: 0, forecast: null, actual: null, deviation: null, actual_status: null },
   { run_date: "2026-10-17", target_date: "2026-10-18", has_history: true, n_rows: 3, forecast: 120, actual: 80, deviation: 40,
@@ -41,15 +42,20 @@ const DAILY = [
     actual_status: "NO_ACTUAL", actual_reason: "FUTURE_DATE" },
 ];
 const SUMMARY = { scope_key: BQ, data_source: "BIGQUERY", today: "2026-10-18", matching_skus: null, daily: DAILY,
-  kpi: { n_rows: 6, n_rows_compared: 3, days_with_history: 2, days_compared: 1, forecast_total: 250, actual_total: 80, forecast_compared: 120,
-    deviation: 40, abs_error: 44, wape: 0.55, bias: 0.5, status: "PROVISIONAL", notes: [] },
+  // 1.2.9 (seventh batch): no finalized actual - the provisional rows are a group of their own
+  kpi: { n_rows: 6, n_rows_compared: 0, days_with_history: 2, days_compared: 0, forecast_total: 250, actual_total: null, forecast_compared: null,
+    deviation: null, abs_error: null, wape: null, bias: null, status: "NO_ACTUAL", notes: ["NO_FINAL_ACTUAL"], basis: "FINALIZED_ONLY", n_zero_absent: 0,
+    provisional: { n_rows: 3, days: 1, n_zero_absent: 0, actual_total: 80, forecast_compared: 120, deviation: 40, abs_error: 44, wape: 0.55, bias: 0.5 },
+    closed: { n_rows: 0, days: 0, n_zero_absent: 0, actual_total: null, forecast_compared: null, deviation: null, abs_error: null, wape: null, bias: null },
+    coverage: { rows_total: 6, rows_final: 0, rows_provisional: 3, rows_closed: 0, rows_no_actual: 3, days_final: 0, days_provisional: 1,
+      days_closed: 0, days_no_actual: 1 } },
   sessions: [{ ...DAYS[0], official: 1, decision: "SELECTED" }, { ...DAYS[0], forecast_run_id: "FCR-OLD", official: 0, decision: "OLDER_THAN_SELECTED",
     session_started_at: "2026-10-18T01:00:00+00:00" }, { ...DAYS[1], official: 1, decision: "SELECTED" }] };
 const ROWS = [
-  { run_date: "2026-10-17", target_date: "2026-10-18", sku_id: "SKU-1", fc_id: "HN", yhat: 50, actual: 30, deviation: 20, row_wape: 0.6667,
+  { run_date: "2026-10-17", target_date: "2026-10-18", sku_id: "SKU-1", fc_id: "HN", yhat: 50, forecast_qty: 50, actual: 30, deviation: 20, row_wape: 0.6667,
     actual_status: "PROVISIONAL", actual_reason: "D0_INTRADAY", product_name: "Thuốc hạ sốt", forecast_run_id: "FCR-A", model_version: "MV-A",
     session_started_at: "2026-10-17T12:34:19+00:00", actual_as_of: "2026-10-18T01:00:00+00:00" },
-  { run_date: "2026-10-18", target_date: "2026-10-19", sku_id: "SKU-2", fc_id: "BD", yhat: 40, actual: null, deviation: null, row_wape: null,
+  { run_date: "2026-10-18", target_date: "2026-10-19", sku_id: "SKU-2", fc_id: "BD", yhat: 40, forecast_qty: 40, actual: null, deviation: null, row_wape: null,
     actual_status: "NO_ACTUAL", actual_reason: "FUTURE_DATE", product_name: null, forecast_run_id: "FCR-B", model_version: "MV-B",
     session_started_at: "2026-10-18T02:00:00+00:00", actual_as_of: null },
 ];
@@ -75,7 +81,7 @@ describe("v1.2.5 Forecast & actual history page", () => {
     expect(r.container.querySelector(".side a[aria-current=page]")?.textContent).toBe("Lịch sử Forecast & Thực tế");
   });
 
-  it("shows run date and forecast date apart, KPI with 'Tạm tính', gaps instead of invented points, missing actual as '—'", async () => {
+  it("shows run date and forecast date apart, provisional figures apart from the finalized KPI, gaps instead of invented points, missing actual as '—'", async () => {
     const calls = backend();
     const r = await act(async () => render(wrap(<ForecastHistory />)));
     await waitFor(() => expect(screen.getByTestId("fh-kpi")).toBeTruthy());
@@ -85,9 +91,17 @@ describe("v1.2.5 Forecast & actual history page", () => {
     expect(range).toContain("Ngày được dự báo: 20/09/2026 → 19/10/2026");
     const kpi = within(screen.getByTestId("fh-kpi"));
     expect(kpi.getByText("250")).toBeTruthy();
-    expect(kpi.getAllByText("Tạm tính")).toHaveLength(3);                       // actual, deviation and WAPE marked
-    expect(kpi.getByText("55%")).toBeTruthy();
-    expect(kpi.getAllByText("trên 3 dòng đã có thực tế").length).toBeGreaterThan(0);
+    // 1.2.9 (seventh batch): the main cards are finalized rows only - here none, said plainly; the provisional figures apart
+    expect(kpi.queryByText("Tạm tính")).toBeNull();
+    expect(kpi.queryByText("55%")).toBeNull();
+    expect(screen.getByTestId("fh-no-final").textContent).toBe("Chưa có actual đã chốt");
+    const prov = within(screen.getByTestId("fh-prov"));
+    expect(prov.getByText("Tạm tính")).toBeTruthy();
+    expect(prov.getByText("80")).toBeTruthy();
+    expect(prov.getByText("55%")).toBeTruthy();
+    expect(prov.getByText("3 dòng · 1 ngày")).toBeTruthy();
+    expect(screen.getByTestId("fh-coverage").textContent).toBe("Cơ sở so sánh: 0 dòng đã hoàn tất (0 ngày) · 3 dòng tạm tính · 0 dòng đã "
+      + "chốt cuối ngày – cần xác minh · 3 dòng chưa có thực tế (không tính 0)");
     // chart: x = forecast date, one forecast dot per stored day, the actual only where it exists (provisional = hollow)
     expect(r.container.querySelectorAll("[data-testid=cmp-forecast-pt]")).toHaveLength(2);
     const act_ = r.container.querySelectorAll("[data-testid=cmp-actual-pt]");
@@ -106,7 +120,7 @@ describe("v1.2.5 Forecast & actual history page", () => {
     const ses = screen.getByTestId("fh-sessions").textContent!;
     expect(ses).toContain("FCR-B");
     expect(ses).toContain("2 phiên · cũ hơn phiên đã chọn");
-    expect(screen.getByTestId("fh-rules").textContent).toContain("chưa cấu hình tín hiệu hoàn tất");
+    expect(screen.getByTestId("fh-final-state").textContent).toBe("Đã chốt 0 ngày thực tế (mới nhất: —); 1 ngày chưa chốt được — xem lý do ở trạng thái từng ngày.");
     expect(calls.every((c) => c.method === "GET")).toBe(true);                 // the page only reads
     expect(calls.some((c) => /\/api\/(training|jobs|forecast-runs)/.test(c.url))).toBe(false);
   });

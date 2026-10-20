@@ -209,13 +209,56 @@ function Feed({ kind, data, reload }: { kind: "history" | "d0"; data: any; reloa
   );
 }
 
+/** 1.2.9: what a backfill of the window would change, from the read-only preview (nothing written). */
+export function BackfillPreview({ p }: { p: any }) {
+  const { t } = useI18n();
+  const c = p.compare ?? {};
+  const r = p.read ?? {};
+  const oh = p.open_hours ?? {};
+  const ef = p.effects ?? {};
+  const st = (x: Record<string, number> | undefined) =>
+    x ? Object.entries(x).filter(([, n]) => n).map(([k, n]) => `${k} ${fmtNum(n)}`).join(" · ") || "—" : "—";
+  return (
+    <div className="stack small" data-testid="bf-preview">
+      <div className="row wrap">
+        <Pill status={p.status === "READY" ? "OK" : p.status === "USED" ? "INFO" : "FAILED"} label={t(`sync.bf_status.${p.status}`)} />
+        <span className="mono">{p.preview_id}</span>
+        {p.window && <span>{p.window.start} → {p.window.end} ({fmtNum(p.window.days)} {t("sync.bf_days")})</span>}
+        <span className="muted">{fmtTime(p.checked_at)}</span>
+      </div>
+      {p.error && <div className="bad-t">{p.error.code}{p.error.detail ? ` — ${String(p.error.detail).slice(0, 200)}` : ""}</div>}
+      {(p.warnings ?? []).map((w: any) => <div key={w.code} className="warn-t" data-testid="bf-warning">{t(`sync.bf_warn.${w.code}`)}{w.day ? ` (${w.day})` : ""}{w.rows ? ` (${fmtNum(w.rows)} ${t("common.rows")}: ${w.first_day} → ${w.last_day})` : ""}</div>)}
+      {p.status !== "FAILED" && p.status !== "BLOCKED" && p.compare && (
+        <table className="tbl small" data-testid="bf-preview-table">
+          <tbody>
+            <tr><th>{t("sync.rows")}</th><td>{fmtNum(r.rows_read)} / {fmtNum(r.rows_valid)} / {fmtNum(r.rows_error)}</td></tr>
+            <tr><th>{t("sync.bf_new_upd")}</th><td data-testid="bf-changes">{fmtNum(c.series_days_new)} / {fmtNum(c.series_days_updated)} / {fmtNum(c.series_days_unchanged)} / {fmtNum(c.series_days_removed)}</td></tr>
+            <tr><th>{t("sync.bf_qty")}</th><td>{fmtNum(c.qty_stored_in_window)} → {fmtNum(r.qty_valid)}</td></tr>
+            <tr><th>{t("sync.bf_days_changed")}</th><td>{fmtNum(c.days_with_changes)}{c.first_changed_day ? ` (${c.first_changed_day} → ${c.last_changed_day})` : ""}</td></tr>
+            <tr><th>{t("sync.bf_oh_write")}</th><td data-testid="bf-oh">{st(oh.would_write)}</td></tr>
+            <tr><th>{t("sync.bf_oh_now")}</th><td>{st(oh.stored_now)}</td></tr>
+            <tr><th>{t("sync.bf_closed")}</th><td>{fmtNum(ef.closed_days_with_changes)} / {fmtNum(ef.closed_days_in_window)}</td></tr>
+          </tbody>
+        </table>
+      )}
+      <p className="muted">{t("sync.bf_effects")}</p>
+    </div>
+  );
+}
+
 function SyncStatus() {
   const { t, pick } = useI18n();
   const st = useAsync(() => get("/api/sync/status"), []);
+  const last = useAsync(() => get("/api/sync/backfill/preview"), []);
   const act = useAction();
   const [bf, setBf] = useState({ start: "", end: "" });
+  const [fresh, setFresh] = useState<any>(null);
   if (!st.data) return st.error ? <ErrorBox error={st.error} /> : <Loading />;
   const d = st.data;
+  const pv = fresh ?? (last.data?.status && last.data.status !== "NONE" ? last.data : null);
+  // the backfill needs the READY preview of exactly the dates entered (the backend checks it again: id, window, mapping,
+  // SQL, age, used once)
+  const ready = !!pv && pv.status === "READY" && pv.window?.start === bf.start && pv.window?.end === bf.end;
   return (
     <Card icon="refresh" title={t("sync.title")}>
       <p className="small muted">{pick(d.notes)} · {d.timezone}</p>
@@ -246,8 +289,21 @@ function SyncStatus() {
         <b>{t("sync.backfill")}</b>
         <DateInput value={bf.start} onChange={(v) => setBf({ ...bf, start: v })} ariaLabel={t("common.from")} />
         <DateInput value={bf.end} onChange={(v) => setBf({ ...bf, end: v })} ariaLabel={t("common.to")} />
-        <button className="prod" title={t("common.prod_action")} disabled={act.busy || !bf.start || !bf.end || !d.bigquery_production_enabled} onClick={async () => { await act.run(() => post("/api/sync/backfill", bf)); st.reload(); }}><Icon name="prod" />{t("sync.backfill")}</button>
+        <button data-testid="bf-preview-btn" disabled={act.busy || !bf.start || !bf.end || !d.bigquery_production_enabled}
+          onClick={async () => { const r = await act.run(() => post("/api/sync/backfill/preview", bf)); if (r) setFresh(r); }}>
+          <Icon name="search" />{t("sync.bf_preview")}</button>
+        <button className="prod" data-testid="bf-run" title={ready ? t("common.prod_action") : t("sync.bf_need_preview")}
+          disabled={act.busy || !ready || !d.bigquery_production_enabled}
+          onClick={async () => {
+            const c = pv.compare ?? {};
+            if (!window.confirm(t("sync.bf_confirm").replace("{start}", bf.start).replace("{end}", bf.end)
+              .replace("{new}", fmtNum(c.series_days_new)).replace("{upd}", fmtNum(c.series_days_updated))
+              .replace("{del}", fmtNum(c.series_days_removed)))) return;
+            await act.run(() => post("/api/sync/backfill", { ...bf, preview_id: pv.preview_id }), t("sync.bf_started"));
+            setFresh(null); st.reload(); last.reload();
+          }}><Icon name="prod" />{t("sync.backfill_run")}</button>
       </div>
+      {pv && <BackfillPreview p={pv} />}
     </Card>
   );
 }

@@ -232,7 +232,7 @@ def test_excel_has_the_name_after_the_sku_same_rows_same_totals(client, fast_mod
     t = {(r[0], r[2]): r[4] for r in tot.iter_rows(min_row=2, values_only=True)}
     assert sum(t.values()) == pytest.approx(_summary(client, fr)["grand_total"])
     info = {r[0]: r[1] for r in wb.worksheets[0].iter_rows(min_row=2, values_only=True)}
-    assert info["Phiên bản định dạng file"] == "5" and info["Nguồn tên sản phẩm"].endswith(".dim_sku")
+    assert info["Phiên bản định dạng file"] == "6" and info["Nguồn tên sản phẩm"].endswith(".dim_sku")   # 1.2.9: format 6
 
 
 def test_a_d1_refreshes_the_names_and_a_name_failure_never_fails_it(client):

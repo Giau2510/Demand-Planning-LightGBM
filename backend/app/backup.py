@@ -35,12 +35,25 @@ def backup_database(reason: str = "manual", dest_dir: Path | None = None) -> Pat
         tmp_db.unlink(missing_ok=True)
         raise RuntimeError(f"backup verification failed (integrity={ok}, tables={n_tables}); no backup written")
     out = dest_dir / f"backup-{stamp}-{safe_reason}.zip"
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-        z.write(tmp_db, "db/app.db")
-        for f in paths.models_dir().glob("*"):
-            if f.is_file():
-                z.write(f, f"models/{f.name}")
-    tmp_db.unlink(missing_ok=True)
+    # 1.2.9: written under a temporary name and verified before it gets the backup name, so a failed or cut write never
+    # leaves a file that looks like a backup (list_backups only lists backup-*.zip)
+    part = out.with_name(out.name + ".part")
+    try:
+        with zipfile.ZipFile(part, "w", zipfile.ZIP_DEFLATED) as z:
+            z.write(tmp_db, "db/app.db")
+            for f in paths.models_dir().glob("*"):
+                if f.is_file():
+                    z.write(f, f"models/{f.name}")
+        with zipfile.ZipFile(part) as z:
+            bad = z.testzip()
+        if bad is not None:
+            raise RuntimeError(f"backup zip verification failed ({bad}); no backup written")
+        part.replace(out)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+    finally:
+        tmp_db.unlink(missing_ok=True)
     log.info("backup created", extra={"ctx": {"file": str(out), "reason": reason}})
     return out
 

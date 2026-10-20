@@ -2,7 +2,9 @@
 translated; numbers are written unchanged. EXPORT_FORMAT_VERSION is stamped into the Info sheet."""
 from __future__ import annotations
 
-EXPORT_FORMAT_VERSION = "5"   # 5: product name column after the SKU (1.2.4); 4: DD/MM/YYYY, VN local times, method label before the code
+# 6: weekday name of the target date after the date (1.2.9; the numeric horizon_day column is unchanged)
+# 5: product name column after the SKU (1.2.4); 4: DD/MM/YYYY, VN local times, method label before the code
+EXPORT_FORMAT_VERSION = "6"
 
 LABELS = {
     "vi": {
@@ -25,7 +27,8 @@ LABELS = {
                           "NOT_APPLICABLE": "Không áp dụng cho nguồn này"},
         "cols_totals": {"sku_id": "SKU", "product_name": "Tên sản phẩm", "fc_id": "FC/kho", "method_label": "Phương pháp", "forecast_qty": "Tổng dự báo trong khoảng",
                         "actual_today": "Thực tế hôm nay đến hiện tại", "method": "Mã kỹ thuật phương pháp (không dịch)"},
-        "cols_daily": {"sku_id": "SKU", "product_name": "Tên sản phẩm", "fc_id": "FC/kho", "target_date": "Ngày", "horizon_day": "Ngày thứ",
+        "cols_daily": {"sku_id": "SKU", "product_name": "Tên sản phẩm", "fc_id": "FC/kho", "target_date": "Ngày",
+                       "weekday": "Thứ trong tuần", "horizon_day": "Ngày thứ",
                        "forecast_qty": "Số lượng dự báo", "actual_today": "Thực tế đến hiện tại",
                        "method_label": "Phương pháp", "method": "Mã kỹ thuật phương pháp (không dịch)"},
         "yes": "Có", "no": "Không", "language_name": "Tiếng Việt", "no_product_name": "Chưa có tên sản phẩm",
@@ -49,7 +52,8 @@ LABELS = {
                           "NOT_APPLICABLE": "Not applicable for this source"},
         "cols_totals": {"sku_id": "SKU", "product_name": "Product name", "fc_id": "FC/warehouse", "method_label": "Method", "forecast_qty": "Period total forecast",
                         "actual_today": "Actual today so far", "method": "Technical method code (not translated)"},
-        "cols_daily": {"sku_id": "SKU", "product_name": "Product name", "fc_id": "FC/warehouse", "target_date": "Date", "horizon_day": "Day #",
+        "cols_daily": {"sku_id": "SKU", "product_name": "Product name", "fc_id": "FC/warehouse", "target_date": "Date",
+                       "weekday": "Weekday", "horizon_day": "Day #",
                        "forecast_qty": "Forecast qty", "actual_today": "Actual so far",
                        "method_label": "Method", "method": "Technical method code (not translated)"},
         "yes": "Yes", "no": "No", "language_name": "English", "no_product_name": "No product name yet",
@@ -150,13 +154,23 @@ HISTORY = {
                  "data_source": "Nguồn dữ liệu", "run_from": "Ngày chạy forecast từ", "run_to": "Ngày chạy forecast đến",
                  "fc_filter": "Lọc FC/kho", "search_filter": "Lọc SKU / tên sản phẩm", "status_filter": "Lọc trạng thái thực tế",
                  "rows": "Số dòng SKU x FC", "days_with_history": "Số ngày chạy có lịch sử",
-                 "forecast_total": "Tổng forecast đã lưu", "actual_total": "Tổng thực tế hiện có (các dòng có thực tế)",
-                 "forecast_compared": "Tổng forecast trên các dòng có thực tế",
-                 "deviation": "Sai lệch Forecast - Thực tế (các dòng có thực tế)", "wape": "WAPE (các dòng có thực tế)",
+                 "forecast_total": "Tổng forecast đã lưu", "actual_total": "Tổng thực tế đã hoàn tất (chỉ dòng đã chốt)",
+                 "forecast_compared": "Tổng forecast trên các dòng đã chốt",
+                 "deviation": "Sai lệch Forecast - Thực tế (dòng đã chốt)", "wape": "WAPE (dòng đã chốt)",
                  "kpi_status": "Trạng thái số liệu thực tế", "rule_d1": "Quy tắc lưu forecast",
                  "rule_actual": "Quy tắc thực tế", "rule_wape": "Cách tính", "source_filter": "Lọc nguồn forecast",
                  "days_primary": "Số ngày dùng forecast chính", "days_backup": "Số ngày dùng snapshot dự phòng",
-                 "rule_backup": "Quy tắc snapshot dự phòng", "rule_close": "Quy tắc chốt thực tế cuối ngày"},
+                 "rule_backup": "Quy tắc snapshot dự phòng", "rule_close": "Quy tắc chốt thực tế cuối ngày",
+                 "basis": "Cơ sở tính KPI thực tế", "rows_final": "Số dòng có thực tế đã hoàn tất",
+                 "rows_provisional": "Số dòng thực tế tạm tính", "rows_closed": "Số dòng đã chốt cuối ngày - cần xác minh",
+                 "rows_no_actual": "Số dòng chưa có thực tế (không tính 0)",
+                 "provisional_actual_total": "Tổng thực tế tạm tính (riêng, không phải kết quả mô hình)",
+                 "provisional_wape": "WAPE tạm tính (riêng)", "closed_actual_total": "Tổng thực tế đã chốt cuối ngày - cần xác minh (riêng)",
+                 "closed_wape": "WAPE của dòng đã chốt cuối ngày - cần xác minh (riêng)",
+                 "zero_absent": "Dòng đã chốt có thực tế 0 vì SKU x FC không có đơn trong ngày",
+                 "rule_final": "Quy tắc thực tế đã hoàn tất"},
+        "basis_final": "Chỉ các dòng có thực tế đã hoàn tất (đã chốt từ D-1); dòng tạm tính / đã chốt cuối ngày tính riêng",
+        "rule_final": ("Thực tế của một ngày đã qua được chốt (đóng băng) từ lần D-1 thành công đã ghi ngày đó: D-1 đã kiểm tra nguồn đủ dữ liệu, phạm vi của lần nạp bao trùm ngày, và lần nạp chạy sau khi ngày kết thúc (giờ Việt Nam). Từ đó số không bao giờ đổi, kể cả khi nguồn sửa lịch sử, đơn bị hủy hay một SKU x FC vắng ở lần nạp sau. Hôm nay và ngày chưa chốt được thì là tạm tính; ngày không chốt được ghi lý do."),
         "rule_backup": ("Ngày chạy không có phiên forecast hợp lệ dùng snapshot cuối ngày (7 ngày kế tiếp) hoàn chỉnh mới nhất "
                         "còn bao phủ ngày được dự báo; luôn ưu tiên forecast chính. Không có snapshot bao phủ = thiếu dữ "
                         "liệu forecast (không điền 0, không tạo số mới)."),
@@ -167,14 +181,17 @@ HISTORY = {
         "rule_d1": ("Mỗi ngày chạy chỉ lưu forecast của ngày hôm sau (D+1) từ phiên forecast hợp lệ mới nhất của ngày đó "
                     "(phiên = một lần forecast đã publish thành công). Forecast đã lưu không bao giờ bị sửa."),
         "rule_actual": ("Thực tế đọc từ dữ liệu D-1 đã nạp (SKU x FC không có dòng trong ngày đã nạp = 0); trước khi D-1 nạp "
-                        "ngày đó: số lũy kế của snapshot D0 mới nhất. 'Đã hoàn tất' chỉ khi D-1 nạp ngày đó theo tín hiệu "
-                        "hoàn tất của nguồn; ngày đã chốt cuối ngày mà nguồn chưa xác nhận là 'Đã chốt - cần xác minh'; "
-                        "còn lại là 'Tạm tính'. Ô trống = chưa có dữ liệu thực tế (không phải 0)."),
-        "rule_wape": ("Sai lệch = Forecast - Thực tế; WAPE = tổng |Forecast - Thực tế| / tổng Thực tế, chỉ trên các dòng đã "
-                      "có thực tế; không tính khi tổng thực tế = 0. WAPE theo dòng = |F - T| / T khi T > 0."),
+                        "ngày đó: số lũy kế của snapshot D0 mới nhất. 'Đã hoàn tất' chỉ khi ngày đã được chốt từ D-1 (bản đóng "
+                        "băng, xem quy tắc thực tế đã hoàn tất); ngày đã chốt cuối ngày nhưng chưa chốt từ D-1 là 'Đã chốt - "
+                        "cần xác minh'; còn lại là 'Tạm tính'. Ô trống = chưa có dữ liệu thực tế (không phải 0)."),
+        "rule_wape": ("Forecast = số lượng dự báo số nguyên (làm tròn nửa lên giá trị đã lưu, không âm; đúng số trên màn "
+                      "hình). Sai lệch = Forecast - Thực tế; WAPE = tổng |Forecast - Thực tế| / tổng Thực tế, chỉ trên các dòng có thực tế "
+                      "đã hoàn tất (dòng tạm tính / đã chốt cuối ngày tính riêng); không tính khi tổng thực tế = 0. WAPE theo dòng = |F - T| / T khi T > 0."),
         "status": {"COMPLETE": "Đã hoàn tất", "CLOSED": "Đã chốt - cần xác minh", "PROVISIONAL": "Tạm tính",
                    "NO_ACTUAL": "Chưa có dữ liệu thực tế"},
         "reason": {"COMPLETION_SIGNAL": "D-1 đã nạp theo tín hiệu hoàn tất của nguồn",
+                   "FINALIZED_D1": "Đã chốt từ lần D-1 thành công (bản đóng băng, không đổi nữa)",
+                   "D1_NOT_FINALIZED": "D-1 đã nạp nhưng ngày chưa được chốt - số có thể còn thay đổi",
                    "CLOSED_D0": "Đã chốt cuối ngày theo snapshot D0 cuối ngày; nguồn chưa xác nhận đầy đủ",
                    "CLOSED_D1": "Đã chốt; D-1 đã nạp nhưng nguồn chưa có tín hiệu hoàn tất",
                    "D1_NO_COMPLETION_SIGNAL": "D-1 đã nạp, nguồn chưa có tín hiệu hoàn tất",
@@ -212,13 +229,23 @@ HISTORY = {
                  "run_from": "Forecast run date from", "run_to": "Forecast run date to", "fc_filter": "FC/warehouse filter",
                  "search_filter": "SKU / product name filter", "status_filter": "Actual status filter",
                  "rows": "SKU x FC rows", "days_with_history": "Run dates with history",
-                 "forecast_total": "Stored forecast total", "actual_total": "Actual available (rows with an actual)",
-                 "forecast_compared": "Forecast on the rows with an actual",
-                 "deviation": "Deviation forecast - actual (rows with an actual)", "wape": "WAPE (rows with an actual)",
+                 "forecast_total": "Stored forecast total", "actual_total": "Complete actual total (finalized rows only)",
+                 "forecast_compared": "Forecast on the finalized rows",
+                 "deviation": "Deviation forecast - actual (finalized rows)", "wape": "WAPE (finalized rows)",
                  "kpi_status": "Actual figures status", "rule_d1": "Forecast storage rule", "rule_actual": "Actual rule",
                  "rule_wape": "Formulas", "source_filter": "Forecast source filter",
                  "days_primary": "Run dates using the official forecast", "days_backup": "Run dates using the backup snapshot",
-                 "rule_backup": "Backup snapshot rule", "rule_close": "End-of-day actual close rule"},
+                 "rule_backup": "Backup snapshot rule", "rule_close": "End-of-day actual close rule",
+                 "basis": "Basis of the actual KPI", "rows_final": "Rows with a complete (finalized) actual",
+                 "rows_provisional": "Rows with a provisional actual", "rows_closed": "Rows closed at the end of the day - needs verification",
+                 "rows_no_actual": "Rows without an actual (not counted as 0)",
+                 "provisional_actual_total": "Provisional actual total (separate, not a model result)",
+                 "provisional_wape": "Provisional WAPE (separate)", "closed_actual_total": "Actual closed at the end of the day - needs verification (separate)",
+                 "closed_wape": "WAPE of the rows closed at the end of the day (separate)",
+                 "zero_absent": "Finalized rows whose actual is 0 because the SKU x FC had no order that day",
+                 "rule_final": "Complete actual rule"},
+        "basis_final": "Only rows with a complete actual (finalized from D-1); provisional / end-of-day closed rows are counted apart",
+        "rule_final": ("The actual of a past day is finalized (frozen) from the successful D-1 load that wrote that day: D-1 checked that the source was complete, the load window covers the day and the load ran after the day ended (Vietnam time). The number never changes afterwards, not even when the source corrects history, an order is cancelled or a SKU x FC is missing from a later load. Today and days that cannot be finalized yet are provisional; a day that cannot be finalized records why."),
         "rule_backup": ("A run date without a valid forecast session uses the newest complete end-of-day snapshot (next 7 "
                         "days) that still covers its forecast date; the official forecast always wins. No covering snapshot "
                         "= forecast data missing (never 0, no new number is made)."),
@@ -229,14 +256,17 @@ HISTORY = {
         "rule_d1": ("For each run date only the forecast of the next day (D+1) of the newest valid forecast session of that "
                     "day is kept (session = one successfully published forecast). A stored forecast is never changed."),
         "rule_actual": ("Actual comes from the loaded D-1 data (a SKU x FC without a row on a loaded day = 0); before D-1 has "
-                        "loaded the day: the cumulative quantity of the latest D0 snapshot. 'Complete' only when D-1 loaded "
-                        "that day on the source's completion signal; a day closed at the end of the day without that confirmation is "
-                        "'Closed - needs verification'; otherwise 'Provisional'. Empty = no actual yet (not 0)."),
-        "rule_wape": ("Deviation = forecast - actual; WAPE = sum |forecast - actual| / sum actual, only over the rows that "
-                      "have an actual; not computed when that sum is 0. Row WAPE = |F - A| / A when A > 0."),
+                        "loaded the day: the cumulative quantity of the latest D0 snapshot. 'Complete' only when the day was "
+                        "finalized from D-1 (frozen copy, see the complete actual rule); a day closed at the end of the day but "
+                        "not finalized is 'Closed - needs verification'; otherwise 'Provisional'. Empty = no actual yet (not 0)."),
+        "rule_wape": ("Forecast = whole-number forecast quantity (stored value rounded half up, never below 0; the number "
+                      "shown on screen). Deviation = forecast - actual; WAPE = sum |forecast - actual| / sum actual, only over the rows with a "
+                      "complete actual (provisional / end-of-day closed rows apart); not computed when that sum is 0. Row WAPE = |F - A| / A when A > 0."),
         "status": {"COMPLETE": "Complete", "CLOSED": "Closed - needs verification", "PROVISIONAL": "Provisional",
                    "NO_ACTUAL": "No actual data yet"},
         "reason": {"COMPLETION_SIGNAL": "D-1 loaded on the source's completion signal",
+                   "FINALIZED_D1": "Finalized from a successful D-1 load (frozen copy, never changes again)",
+                   "D1_NOT_FINALIZED": "D-1 loaded but the day is not finalized yet - the number may still change",
                    "CLOSED_D0": "Closed at the end of the day from the last D0 snapshot; not confirmed complete by the source",
                    "CLOSED_D1": "Closed; D-1 loaded without a completion signal from the source",
                    "D1_NO_COMPLETION_SIGNAL": "D-1 loaded, no completion signal from the source",

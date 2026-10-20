@@ -47,8 +47,12 @@ def _static(name):
                         mvi="Cho model học khác biệt theo độ xa của ngày dự báo.", men="Lets the model learn how demand differs with the distance from the origin.",
                         uvi="ngày", uen="days"),
         "dow": dict(vi="Thứ trong tuần của ngày dự báo", en="Day of week of the target day",
-                    fvi="0 = Thứ Hai, 1 = Thứ Ba, …, 5 = Thứ Bảy, 6 = Chủ Nhật (của chính ngày dự báo).",
-                    fen="0 = Monday, 1 = Tuesday, …, 5 = Saturday, 6 = Sunday (of the target day itself).",
+                    fvi="Thứ của chính ngày dự báo: 1 = Thứ 2, 2 = Thứ 3, …, 6 = Thứ 7, 7 = Chủ nhật (model huấn luyện từ 1.2.9). "
+                        "Model huấn luyện trước 1.2.9 giữ mã cũ 0 = Thứ 2 … 6 = Chủ nhật. Lịch sử dùng ngày của dòng nhu cầu "
+                        "(order_date = cột created_date của D-1).",
+                    fen="Weekday of the target day itself: 1 = Monday, 2 = Tuesday, …, 6 = Saturday, 7 = Sunday (models trained "
+                        "from 1.2.9). Models trained before 1.2.9 keep their code 0 = Monday … 6 = Sunday. History uses the day of "
+                        "the demand row (order_date = the D-1 created_date column).",
                     mvi="Mùa vụ trong tuần (vd. cuối tuần đặt ít hơn).", men="Weekly seasonality.", uvi="mã thứ", uen="day code"),
         "dom": dict(vi="Ngày trong tháng", en="Day of month", fvi="Ngày 1–31 của ngày dự báo.", fen="Day 1–31 of the target day.",
                     mvi="Hiệu ứng đầu/cuối tháng.", men="Start/end of month effects.", uvi="ngày", uen="day"),
@@ -156,6 +160,34 @@ def describe(name: str, target_date: str | None = None) -> dict:
                          "Trung bình tỷ lệ khuyến mãi của 7 ngày lịch trước ngày dự báo (chia 7, vì ngày không rõ = 0).",
                          "Mean promotion share of the 7 calendar days before the target day (divided by 7, unknown days = 0).",
                          "Khuyến mãi kéo dài gần đây.", "Recent sustained promotion.", "tỷ lệ 0–1", "share 0–1", "Không rõ → 0 (theo thiết kế).", "Unknown → 0 (by design)."),
+        # 1.2.9: SKU open hours of the day (BigQuery D-1 total_open_hours), mandatory for the BIGQUERY source
+        "open_hours_last": ("AVAILABILITY", 1, "Giờ mở bán hôm trước", "Open hours previous day",
+                            "Số giờ SKU mở bán (total_open_hours, 0–24) của ngày trước ngày dự báo / mốc dự báo, tại SKU × FC. Giờ mở bán của chính ngày dự báo chưa biết nên không dùng.",
+                            "Hours the SKU was open for sale (total_open_hours, 0–24) on the day before the target day / forecast origin, per SKU × FC. The target day's own hours are not known yet and are not used.",
+                            "SKU đóng bán / mở ít giờ thì đặt hàng ít hơn.", "A SKU closed or open for few hours sells less.", "giờ", "hours",
+                            "Ngày đó không có dòng nhu cầu hoặc giá trị thiếu / khác nhau / ngoài 0–24 → thiếu (NaN), không thay bằng 0.",
+                            "No demand row that day, or a missing / conflicting / out-of-range value → missing (NaN), never 0."),
+        "open_hours_mean_7": ("AVAILABILITY", 7, "Giờ mở bán trung bình 7 ngày", "Open hours 7-day mean",
+                              "Trung bình giờ mở bán của các ngày ĐÃ BIẾT trong 7 ngày lịch trước ngày dự báo / mốc dự báo (mẫu số = số ngày có giá trị).",
+                              "Mean open hours of the KNOWN days among the 7 calendar days before the target day / origin (denominator = days with a value).",
+                              "Tình trạng mở bán kéo dài gần đây.", "Recent sustained availability.", "giờ", "hours",
+                              "Không có ngày nào có giá trị → thiếu (NaN).", "No day with a value → missing (NaN)."),
+        # 1.2.9b: aggregate customer features (data/customers.py) - OFF by default, the identifier never leaves BigQuery
+        "cust_mean_28": ("CUSTOMER", 28, "Số khách đặt bình quân 28 ngày", "Customers per day, 28-day mean",
+                         "Trung bình số khách khác nhau đặt SKU × FC mỗi ngày, trên các ngày ĐÃ BIẾT trong 28 ngày lịch trước ngày dự báo / mốc dự báo.",
+                         "Mean number of distinct customers ordering the SKU × FC per day, over the KNOWN days among the 28 calendar days before the target day / origin.",
+                         "Độ rộng tập khách mua SKU tại kho.", "Breadth of the customer base of the SKU at the FC.", "khách/ngày", "customers/day",
+                         "Không có ngày nào có mã khách → thiếu (NaN), không thay bằng 0.", "No day with a customer identifier → missing (NaN), never 0."),
+        "cust_repeat_share_28": ("CUSTOMER", 28, "Tỷ lệ khách quay lại 28 ngày", "Repeat-customer share, 28 days",
+                                 "Σ khách đã đặt cùng SKU × FC trong 90 ngày trước lần đặt ÷ Σ khách đặt, trên các ngày đã biết trong 28 ngày lịch trước ngày dự báo / mốc dự báo.",
+                                 "Σ customers who had ordered the same SKU × FC in the 90 days before ÷ Σ customers, over the known days among the 28 calendar days before the target day / origin.",
+                                 "Nhu cầu đến từ khách mua lại hay khách mới.", "Whether demand comes from returning or new customers.", "tỷ lệ 0–1", "share 0–1",
+                                 "Không có ngày đã biết hoặc Σ khách = 0 → thiếu (NaN).", "No known day or Σ customers = 0 → missing (NaN)."),
+        "cust_repeat_interval_28": ("CUSTOMER", 28, "Chu kỳ mua lại bình quân 28 ngày", "Mean repeat interval, 28 days",
+                                    "Σ số ngày từ lần đặt trước ÷ Σ khách quay lại, trên các ngày đã biết trong 28 ngày lịch trước ngày dự báo / mốc dự báo.",
+                                    "Σ days since the previous order ÷ Σ repeat customers, over the known days among the 28 calendar days before the target day / origin.",
+                                    "Khách quay lại sau bao lâu (chu kỳ đặt hàng).", "How soon customers come back (order cycle).", "ngày", "days",
+                                    "Không có khách quay lại trong các ngày đã biết → thiếu (NaN).", "No repeat customer in the known days → missing (NaN)."),
     }
     if name in other:
         g, w, vi, en, fvi, fen, mvi, men, uvi, uen, missvi, missen = other[name]
@@ -174,6 +206,9 @@ ROLES = {   # expected role of each feature group (business wording)
     "CALENDAR": ("Mùa vụ theo ngày/tuần/tháng của ngày dự báo.", "Day/week/month seasonality of the target day."),
     "PRICE": ("Ảnh hưởng của giá và giảm giá đã biết.", "Effect of known price and discount."),
     "PROMOTION": ("Ảnh hưởng của khuyến mãi đã biết.", "Effect of known promotions."),
+    "AVAILABILITY": ("Ảnh hưởng của số giờ SKU mở bán đã biết.", "Effect of the known hours the SKU was open for sale."),
+    "CUSTOMER": ("Hành vi mua lại đã biết của tập khách (chỉ số tổng hợp, không theo từng khách).",
+                 "Known repeat behaviour of the customer base (aggregates, never per customer)."),
     "OTHER": ("", ""),
 }
 

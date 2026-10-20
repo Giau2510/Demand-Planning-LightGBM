@@ -64,7 +64,8 @@ def test_excel_method_names_follow_the_language_and_export_changes_nothing(clien
     assert "LIGHTGBM" in used and len(used) >= 2
     for wb, lang in ((vi, "vi"), (en, "en")):
         # 1.2.4 (export format 5): 'product name' was inserted after the SKU column -> every later column moved by one
-        for ws, name_col, code_col in ((wb.worksheets[1], 3, 6), (wb.worksheets[2], 7, 8)):
+        # 1.2.9 (format 6): the daily sheet has the weekday name after the date -> its later columns moved by one more
+        for ws, name_col, code_col in ((wb.worksheets[1], 3, 6), (wb.worksheets[2], 8, 9)):
             head = [c.value for c in ws[1]]
             rows = list(ws.iter_rows(min_row=2, values_only=True))
             assert {r[code_col] for r in rows} == used                    # code column: original codes, unchanged

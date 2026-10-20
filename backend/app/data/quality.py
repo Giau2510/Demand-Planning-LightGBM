@@ -18,14 +18,15 @@ def build_report(scope: dict, conn=None, persist: bool = True) -> dict:
     try:
         mcfg = ss.get("model", c)
         pol = ss.get("data_policy", c)
-        win = data_window(c)
+        win = data_window(c, scope=scope)      # 1.2.9b: same start rule as the training
         # the report judges the MODEL INPUT (the data window); stored rows outside it are counted, never used
         outside = c.execute("SELECT COALESCE(SUM(order_date < ?), 0), COALESCE(SUM(order_date > ?), 0) FROM demand_daily "
                             "WHERE scope_key=?", (win["start"], win["end"], scope["scope_key"])).fetchone()
         d = load_demand(scope["scope_key"], c, start=win["start"], end=win["end"])
         checks: list[dict] = []
         stats: dict = {"rows_read": 0, "rows_valid": 0, "rows_rejected": 0, "duplicate_rows": 0,
-                       "data_window": {"start": win["start"], "end": win["end"]},
+                       "data_window": {"start": win["start"], "end": win["end"], "start_rule": win["start_rule"],
+                                       "configured_start": win["configured_start"], "excluded": win.get("excluded")},
                        "demand_rows_before_window": int(outside[0]), "demand_rows_after_window_end": int(outside[1])}
         batch = None
         if scope["data_source"] in ("DEMO", "MANUAL_IMPORT"):

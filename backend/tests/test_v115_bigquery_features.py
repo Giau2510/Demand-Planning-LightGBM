@@ -343,7 +343,8 @@ def test_bigquery_rows_never_mix_with_demo(client):
 # ------------------------------------------------------------------ feature registry
 def test_registry_metadata_and_planned_features_are_never_model_inputs():
     names = reg.all_model_features()
-    assert names == OLD_33
+    assert names == OLD_33 + ["open_hours_last", "open_hours_mean_7",      # 1.2.9: open hours are a model input
+                              "cust_mean_28", "cust_repeat_share_28", "cust_repeat_interval_28"]   # 1.2.9b, OFF by default
     keys = [p["key"] for p in reg.PLANNED]
     assert len(set(keys)) == len(keys) and not set(keys) & set(names)
     with db.read() as c:
@@ -379,9 +380,14 @@ def test_registry_statuses_for_bigquery_without_price_or_promotion(client):
     for f in ("price_last", "price_rel_28", "disc_last", "promo_last", "promo_mean_7"):
         assert st[f]["availability_status"] == "UNAVAILABLE" and st[f]["reason"] == "NO_DATA", f
         assert f not in v["next_training"]["features"]
-    assert v["next_training"]["n_features"] == 28
-    # source columns that exist in BigQuery but have no approved rule: "available, not activated"
-    assert st["open_hours"]["availability_status"] == "DISABLED" and st["open_hours"]["source_column"] == "total_open_hours"
+    # 1.2.9: the SKU open hours are a MANDATORY input of the BIGQUERY source (28 + 2); these rows were synced without
+    # them, so the next training is blocked until a D-1 reload brings them (nothing is filled in)
+    assert v["next_training"]["n_features"] == 30 and v["next_training"]["blocked_by"] == "OPEN_HOURS_INVALID"
+    assert {"open_hours_last", "open_hours_mean_7"} <= set(v["next_training"]["features"])
+    assert st["open_hours_last"]["availability_status"] == "UNAVAILABLE" and st["open_hours_last"]["required"] is True
+    assert st["open_hours_last"]["reason"] == "MANDATORY_NOT_READY" and "open_hours" not in st      # no longer PLANNED
+    # other source columns that exist in BigQuery but have no approved rule: "available, not activated"
+    assert st["days_since_open"]["source_column"] == "open_date"
     assert st["deal_flag"]["availability_status"] == "PLANNED"
 
 
@@ -434,7 +440,8 @@ def test_low_coverage_is_not_used_and_demo_keeps_its_33_features(small_demo):
         cov = reg.coverage(c, small_demo["batch_id"])
     assert cov["promo_share"] == 1.0 and cov["avg_unit_price"] == 1.0
     resolved, dec = reg.resolve(ss.get("model"), cov)
-    assert feature_names(resolved) == OLD_33 and all(d["used"] for d in dec.values())
+    assert feature_names(resolved) == OLD_33 and all(d["used"] for g, d in dec.items() if g != "customer")
+    assert dec["customer"]["used"] is False and dec["customer"]["reason"] == "TOGGLE_OFF"    # 1.2.9b: OFF by default
     resolved, dec = reg.resolve(ss.get("model"), {**cov, "promo_share": 0.3})
     assert dec["promotion"]["reason"] == "LOW_COVERAGE" and "promo_last" not in feature_names(resolved)
     off = ss.get("model").model_copy(update={"feature_price": False})

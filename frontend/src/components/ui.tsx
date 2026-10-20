@@ -36,6 +36,24 @@ export function weekdayName(iso: string, lang: "vi" | "en"): string {
   return WEEKDAYS[lang][(d.getUTCDay() + 6) % 7];
 }
 
+/** 1.2.9: the application's one weekday convention (backend app/weekday.py): 1 = Monday ... 7 = Sunday, from the
+ * calendar date itself. YYYY-MM-DD is read as a UTC calendar day, so the browser's time zone can never move the day;
+ * an impossible date (2026-02-30) gives null. */
+export function isoWeekday(iso: string | null | undefined): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso ?? "");
+  if (!m) return null;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  if (d.getUTCFullYear() !== +m[1] || d.getUTCMonth() !== +m[2] - 1 || d.getUTCDate() !== +m[3]) return null;
+  return ((d.getUTCDay() + 6) % 7) + 1;
+}
+const WEEKDAY_LABELS = { vi: ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"],
+  en: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] };
+/** "Thứ 2" ... "Chủ nhật" (en: Monday ... Sunday) for 1..7; "—" for a missing or invalid value (never guessed). */
+export function weekdayLabel(n: number | null | undefined, lang: "vi" | "en"): string {
+  if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 7) return "—";
+  return WEEKDAY_LABELS[lang][n - 1];
+}
+
 export const fmtSignedPct = (v: number | null | undefined) => (v === null || v === undefined ? "—" : `${v > 0 ? "+" : ""}${fmtPct(v)}`);
 
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;

@@ -7,7 +7,7 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from . import metrics
+from . import demand_patterns, metrics
 from .features import (Panel, direct_extra, direct_training_matrix, feature_names, features_at, is_direct,
                        origin_features, static_codes, training_matrix)
 
@@ -44,17 +44,32 @@ def direct_max_horizon(cfg) -> int:
     return int(cfg.backtest_horizon_days)
 
 
-def train(p: Panel, cfg, cancel=None) -> tuple[lgb.Booster | None, dict]:
-    X, y = direct_training_matrix(p, cfg, direct_max_horizon(cfg)) if is_direct(cfg) else training_matrix(p, cfg)
+def train(p: Panel, cfg, cancel=None, weights: np.ndarray | None = None) -> tuple[lgb.Booster | None, dict]:
+    """weights (1.2.9b, experiments only - the application's training never passes it): optional S x T matrix of the
+    panel; each training row gets the weight of its (series, target day). The targets and features stay the real
+    values. None = every row weight 1 (exactly the training as before)."""
+    if weights is None:
+        X, y = direct_training_matrix(p, cfg, direct_max_horizon(cfg)) if is_direct(cfg) else training_matrix(p, cfg)
+        w = None
+    else:
+        if weights.shape != p.Y.shape:
+            raise ValueError(f"weights {weights.shape} != panel {p.Y.shape}")
+        X, y, ix = (direct_training_matrix(p, cfg, direct_max_horizon(cfg), with_index=True) if is_direct(cfg)
+                    else training_matrix(p, cfg, with_index=True))
+        w = weights[ix[:, 0], ix[:, 1]].astype(float)
+        if not np.all(np.isfinite(w)) or np.any(w < 0):
+            raise ValueError("training weights must be finite and >= 0")
     info = {"n_rows": int(len(y)), "n_series": p.n_series,
             "forecast_strategy": "DIRECT" if is_direct(cfg) else "RECURSIVE"}
+    if w is not None:
+        info["weights"] = {"rows_below_1": int(np.sum(w < 1)), "sum": float(w.sum()), "rows": int(len(w))}
     if len(y) < 100 or np.nansum(y) <= 0:
         info["error"] = "too few training rows"
         return None, info
     if cancel and cancel():
         raise Cancelled()
     names = feature_names(cfg)
-    ds = lgb.Dataset(X, y, feature_name=names, categorical_feature=["sku_code", "fc_code"], free_raw_data=True)
+    ds = lgb.Dataset(X, y, weight=w, feature_name=names, categorical_feature=["sku_code", "fc_code"], free_raw_data=True)
     booster = lgb.train(lgb_params(cfg), ds, num_boost_round=cfg.num_boost_round)
     imp = booster.feature_importance(importance_type="gain")
     info["feature_importance"] = sorted(({"feature": n, "gain": float(g)} for n, g in zip(names, imp)),
@@ -238,6 +253,65 @@ def baseline_series_meta(p: Panel, fc: dict, s: int) -> dict:
             "rate_used": rate, "rule": {"baseline_window_days": BASELINE_WINDOW_DAYS}}
 
 
+# 1.2.9: backtest accuracy is also reported per group (evaluation only - nothing is excluded, clipped or re-weighted)
+PERIOD_TOTAL_DAYS = (7, 15, 30)
+HORIZON_WINDOWS = ((1, 7), (8, 15), (16, 30), (31, 90))
+
+
+def _codes(labels, names) -> np.ndarray:
+    idx = {n: i for i, n in enumerate(names)}
+    return np.array([idx[x] for x in labels], dtype=np.int8)
+
+
+def _collect_segments(seg: dict, totals: dict, train_p: Panel, actual, yhat, base, valid) -> None:
+    S, H = actual.shape
+    cut = train_p.T
+    group = _codes(demand_patterns.classify(train_p.Y, cut)["group"], demand_patterns.GROUPS)
+    tier = _codes(demand_patterns.volume_tier(train_p.Y, cut), demand_patterns.TIERS)
+    spike = demand_patterns.spike_flags(actual, demand_patterns.spike_thresholds(train_p.Y, cut))
+    seg["group"].append(np.repeat(group[:, None], H, axis=1)[valid])
+    seg["tier"].append(np.repeat(tier[:, None], H, axis=1)[valid])
+    seg["spike"].append(spike[valid])
+    seg["day"].append(np.tile(np.arange(1, H + 1), (S, 1))[valid])
+    for n, acc in totals.items():
+        v = valid[:, :n]
+        has = v.any(axis=1)      # series with at least one known day among the first n days of the fold
+        acc.append(np.stack([np.where(v, x[:, :n], 0.0).sum(axis=1)[has] for x in (actual, yhat, base)]))
+
+
+def _segment_metrics(seg: dict, totals: dict, A, Fc, B, mape_min_actual: float) -> dict:
+    G, V, K, D = (np.concatenate(seg[k]) for k in ("group", "tier", "spike", "day"))
+
+    def pair(mask):
+        return {"model": metrics.compute(A[mask], Fc[mask], mape_min_actual),
+                "baseline": metrics.compute(A[mask], B[mask], mape_min_actual)}
+    out = {"by_pattern": {g: pair(G == i) for i, g in enumerate(demand_patterns.GROUPS) if (G == i).any()},
+           "by_volume": {t: pair(V == i) for i, t in enumerate(demand_patterns.TIERS) if (V == i).any()},
+           "by_spike_day": {"SPIKE_DAY": pair(K), "OTHER_DAY": pair(~K)},
+           "by_horizon_days": {f"{lo}-{hi}": pair((D >= lo) & (D <= hi)) for lo, hi in HORIZON_WINDOWS
+                               if ((D >= lo) & (D <= hi)).any()},
+           # WAPE of each series' TOTAL over the first n days of a fold (known days only): the error of a 7 / 15 / 30-day
+           # order quantity, where day-to-day errors can cancel out
+           "period_totals": {},
+           "rules": {**demand_patterns.DEFAULTS, "adi_cut": demand_patterns.ADI_CUT, "cv2_cut": demand_patterns.CV2_CUT}}
+    for n, acc in totals.items():
+        if acc:
+            X = np.concatenate(acc, axis=1)
+            out["period_totals"][str(n)] = {"model": metrics.compute(X[0], X[1], mape_min_actual),
+                                            "baseline": metrics.compute(X[0], X[2], mape_min_actual)}
+    return out
+
+
+def _segments_or_note(seg, totals, A, Fc, B, mape_min_actual) -> dict:
+    if seg is None:
+        return {"error": "SEGMENTS_NOT_COMPUTED"}
+    try:
+        return _segment_metrics(seg, totals, A, Fc, B, mape_min_actual)
+    except Exception:  # noqa: BLE001
+        log.warning("backtest segments not computed", exc_info=True)
+        return {"error": "SEGMENTS_NOT_COMPUTED"}
+
+
 def backtest(p: Panel, cfg, mape_min_actual: float = 1.0, cancel=None, collect: bool = False) -> dict:
     """Walk-forward: for each fold, train on days < origin only, forecast H days, score vs actuals.
 
@@ -246,6 +320,8 @@ def backtest(p: Panel, cfg, mape_min_actual: float = 1.0, cancel=None, collect: 
     H, F, step = cfg.backtest_horizon_days, cfg.backtest_folds, cfg.backtest_step_days
     T = p.T
     folds, all_a, all_f, all_b, all_m = [], [], [], [], []
+    seg: dict[str, list] = {"group": [], "tier": [], "spike": [], "day": []}
+    totals: dict[int, list] = {n: [] for n in PERIOD_TOTAL_DAYS if n <= H}
     notes = []
     points: list[dict] = []
     for k in range(F):
@@ -276,6 +352,15 @@ def backtest(p: Panel, cfg, mape_min_actual: float = 1.0, cancel=None, collect: 
                       "end": str(p.dates[min(origin + H, T) - 1].date()), "train_days": int(origin),
                       "metrics": m, "baseline_metrics": mb})
         all_a.append(a); all_f.append(f); all_b.append(b); all_m.append(meth)
+        # 1.2.9: the same points per demand-pattern group / volume tier / spike day / horizon day (groups from the
+        # history before the origin only), and per-series totals of the first 7 / 15 / 30 days. Evaluation only: a
+        # failure here is logged and never stops the backtest or the training
+        if seg is not None:
+            try:
+                _collect_segments(seg, totals, train_p, actual, fc["yhat"], base, valid)
+            except Exception:  # noqa: BLE001
+                log.warning("backtest segments not computed", exc_info=True)
+                seg = None
     if not folds:
         return {"folds": [], "metrics": metrics.compute([], []), "baseline_metrics": metrics.compute([], []),
                 "by_method": {}, "reliable": False, "notes": notes + [{"code": "NO_VALID_FOLD"}]}
@@ -294,6 +379,7 @@ def backtest(p: Panel, cfg, mape_min_actual: float = 1.0, cancel=None, collect: 
                       "history_days": int(T), "min_train_days": int(cfg.min_total_history_days)})
     out = {"folds": folds, "metrics": pooled, "baseline_metrics": metrics.compute(A, B, mape_min_actual),
            "by_method": by_method, "reliable": bool(reliable), "notes": notes,
+           "segments": _segments_or_note(seg, totals, A, Fc, B, mape_min_actual),
            "config": {"horizon_days": H, "folds": F, "step_days": step, "folds_evaluated": len(folds),
                       "span_days": span, "first_day": str(first_day.date()), "last_day": str(last_day.date()),
                       "history_days": int(T), "min_train_days": int(cfg.min_total_history_days)}}

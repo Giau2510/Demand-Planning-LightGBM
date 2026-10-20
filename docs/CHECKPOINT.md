@@ -468,3 +468,147 @@ The earlier package BBD73386...09C3 (d05ff97) is superseded by the new build (ne
 | Deploy task | REGISTERED | Windows task DemandForecast-Deploy-1.2.6, once 2026-10-18 19:05 (VN), user LOG-PC/Giau Vo interactive, 4 h limit, IgnoreNew, no wake; script scratchpad/p6/deploytask126.ps1 SHA 350F754B...B70E (= rehearsal run 3): waits for D-0 18:00 SUCCEEDED, gates, backup, deploy-upgrade -ConfirmToken, post-checks, then eod + close ON only if all pass; result appended to the report (section K) |
 | Production | NOT TOUCHED (17:47) | 1.2.5, db 4, FCR-...798B4D, flows unchanged, pids 22024 / 26416 / 31076, storage.json 8D79DBDD; deploy runs from 19:05 by the task |
 | Report | READY_TO_WAIT | reports/demandforecast_v126_final_release_and_deploy.md (not versioned) |
+
+# 1.2.9 source: weekday 1-7, SKU open hours mandatory, roles of every D-1 column, weekday names (2026-10-19 21:13 - )
+
+Owner prompt "Fix Weekday Feature, Mandatory total_open_hours, and Vietnamese Weekday Display". No deploy, no push, no
+production training, no D-1 reload, no schedule change. Production stays 1.2.8 (deployed 20:08 the same day).
+
+| Step | Status | Evidence |
+|---|---|---|
+| Checkpoint | DONE | `checkpoints/checkpoint-20261019-v129-before.zip` (git archive of HEAD 0da73b6: backend/app, frontend/src, docs/MO-HINH-VA-CHI-SO.md, docs/data, CHANGELOG), SHA-256 0809B18F...8ACA |
+| Survey | DONE | weekday never saved on production (1.2.6 until 20:08; settings history 1 save of 17/10); open_hours a reference-only field; the "Ngay thu" column was horizon_day; read-only BigQuery profile: total_open_hours NULL before 2026-03-19, 0..24, 2 conflicting keys in August |
+| Source | DONE (uncommitted) | app/weekday.py, app/data/open_hours.py, migration 0007 (additive), features / connector / sync / identity / pipeline / registry / catalog / explain / routes; Mapping, Results, Config pages |
+| Review | DONE | data-reviewer: SAFE WITH CONDITIONS; fixed: re-check after load_demand, no all-NaN panel, backfill route in the message, dry-run status counts, 4 data-check checks, DATA-MODEL / DATA-DICTIONARY, reverse-statement warning; open: owner decision on missing period / 2 conflicting keys |
+| DB copy | DONE | migration 0007 on a copy of the production DB: only schema_migrations +1, demand_daily values / keys identical, new columns NULL, reverse statements restore schema 6 with identical values; 1,355,000 window rows NOT_LOADED |
+| Tests | DONE | backend 574 passed / 8 skipped (real BigQuery only), 0 failed; real BigQuery opt-in 3 + 22 passed (inline rows, 0 bytes for the open-hours SQL); vitest 142/142 (21 files), typecheck + build OK; lint not configured |
+| Production | NOT TOUCHED (22:16) | 1.2.8, pids 10884 / 16144 / 35236, storage.json 8D79DBDD, FCR-...9DE420, newest job D-0 18:00 |
+| Report | DONE | reports/weekday_total_open_hours_mapping_fix.md (not versioned): A PASS, B PARTIAL, C PASS |
+
+# 1.2.9 source, second batch: backfill preview + backup, whole-number history, backtest groups, data review (2026-10-19 22:35 - )
+
+Owner prompt "Comprehensive Data, Model Intelligence, Backtesting & Safety Upgrade". No commit, no push, no package, no
+deploy, no production training / D-0 / D-1 / EOD / backfill, no schedule or configuration change. Production stays 1.2.8.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Checkpoint | DONE (late) | `checkpoints/checkpoint-20261019-v129b-worktree.zip` (63 working-tree files at 23:22, after the first edits of this batch), SHA-256 8207F8D6...8DFC; the state between batch 1 and batch 2 has no separate copy |
+| Deploy report | DONE | `reports/demandforecast_fix_and_deploy_20261019.md`: header with the four states + section F (DEPLOYED_AND_VERIFIED 20:08; log FAIL = 6 ERROR lines older than the deploy) |
+| Real data (read-only BigQuery, ~6.7 GB) | DONE | 2 CONFLICT keys = two item_code of one SKU at FC BD on 26/08 (open hours per item); sku_system_status = current state (35 / 17,128 SKU x FC vary); no customer column; no cancelled status |
+| DB copy | DONE | `scratchpad/p17/e`: migration 6 -> 7 (pre-migration backup, idempotent, values / settings identical), backfill rehearsal 01/01-18/10 with real BigQuery (735 s, 100 updated / 27 removed rows, OK 954,889 / MISSING 400,082 / CONFLICT 2, other tables unchanged); rollback rehearsal with the 1.2.8 code (schema 7 refused, pre-migration backup restored = same values, app starts) |
+| Source | DONE (uncommitted) | sync.py backfill preview / preview id / re-check under the write lock / pre-backfill backup; backup.py atomic zip; forecast_history.py whole numbers (H3); ml/demand_patterns.py + backtest segments; SqlSources / ForecastHistory pages |
+| Review | DONE | data-reviewer: SAFE WITH CONDITIONS; fixed findings 1-8 (re-check under the write lock, data changed since the preview, empty read BLOCKED, future preview time, yesterday warning, atomic backup zip, int group codes, segments never fatal) |
+| Experiments | DONE (copy only) | `scratchpad/p17/exp`: 66/70 fold trainings, 23:03-01:12, peak ~1.9 GB; screening folds 22/05-20/08, holdout 19/09-18/10. E00 (production config) 0.7972 / holdout 0.7983; best = E14 spike-capped training + 63 leaves 0.7650 / 0.7603 but 30-day bias -16.4% vs -9.6% (owner decision, not adopted); poisson failed; RECURSIVE 0.9701; weekday off worse; open hours inconclusive. Quiet-window bug (midnight) let experiments run during EOD / close: both SUCCEEDED (7 s / 1 s); fixed |
+| Tests | DONE | backend 588 passed / 8 skipped (real BigQuery only) / 0 failed (01:02); real BigQuery opt-in 8 passed; vitest 145/145 (22 files); typecheck + build OK; lint not configured; EOL 0 problems on 65 files; secret scan 0 |
+| Production | NOT TOUCHED (01:16) | 1.2.8, FCR-...9DE420, storage.json 8D79DBDD; only scheduled EOD 23:55 / close 23:59 ran (SUCCEEDED) |
+| Report | DONE | reports/demandforecast_comprehensive_upgrade_review.md (not versioned) |
+
+# 1.2.9 source, third batch: open hours by item, training start rule, spike weights (experiment), customer_id OFF (2026-10-20 09:40 - )
+
+Owner prompt "DATA QUALITY, SPIKE EXPERIMENTS & CUSTOMER_ID", then the owner decision after S0-S5: skip S6, no more
+training, rerun the backend tests, report, checkpoint. No commit, no push, no package, no deploy, no production training /
+D-0 / D-1 / EOD / backfill, no schedule, Price or configuration change, customer_id not enabled. Production stays 1.2.8.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Checkpoint | DONE (late) | `checkpoints/checkpoint-20261020-v129c-worktree.zip` (75 working-tree files vs HEAD 0da73b6 + patch, the report, experiment plan / scripts / results / logs, 30 fold npz; taken after the edits and tests of this batch, no earlier copy of batch 3), SHA-256 in the `.sha256` file next to it: EB7800C2...3416, 106,047,154 bytes, 142 entries, 12:30 (verified: CRC, listing = manifest, per-file hashes) |
+| Open hours grain | DONE | read-only BigQuery (~3.4 GB): hours are per item_code x day (batch 5 correction: the suffix is the opening order across regions, not a region); the 2 keys of 26/08 = 2 items with different hours -> new status MULTI_ITEM (training gate still blocks them until a rule is approved); 0 within-item conflicts, no JOIN error; source keeps open hours ~7 months (rolling) and rewrites history at each refresh |
+| Training start rule | DONE (default unchanged) | data_policy.training_start_rule WINDOW_START (default) / OPEN_HOURS_COVERAGE (first stored day with hours, computed at use); excluded_summary per run; on the copy: 19/03-18/10, 77 days / 32.2 % of demand excluded incl. Tet; accuracy not lower (O1 vs E00) |
+| Zero-hours Excel | DONE | reports/zero_open_hours_orders_20261020.xlsx (not versioned), 2,592 rows re-read and verified, 718 keys match, no export error |
+| Spike experiments | DONE (copy only) | `scratchpad/p18/exp`: 30/30 fold trainings 10:17-11:27 on copy e8; S0 = O1 bit-for-bit; S1-S5 all TRADE_OFF under the pre-registered rule (lower WAPE, more 30-day underforecast, worse spike days); S6 NOT RUN (owner decision); nothing adopted or promoted; app training never passes weights |
+| customer_id | DONE (OFF by default) / BLOCKED real data | bigquery.customer_id_column empty, model.feature_customer false, migration 0008 (3 nullable columns; rehearsal on copy 12/12 PASS, mapping hash unchanged); source has no customer column |
+| Tests | DONE | backend 618 passed / 9 skipped (real BigQuery opt-in only) / 0 failed, exit 0 (12:15-12:28, after a 10:25 run with 12 expectation failures caused by this batch, fixed); real BigQuery opt-in test of this batch 1 passed (inline rows, 0 bytes); vitest 149/149 (23 files); typecheck + build OK; lint not configured; EOL 0 problems on 75 files; secret scan 0 |
+| Production | NOT TOUCHED (12:16) | 1.2.8, pid 10884, storage.json 8D79DBDD...E047; only scheduled jobs ran (D-0 08/10/12 SUCCEEDED, D-1 03:00 FAILED SOURCE_INCOMPLETE - source had no 19/10) |
+| Report | DONE | reports/demandforecast_dq_spike_customer_20261020.md (not versioned): BLOCKED_DATA_SAFETY |
+
+# 1.2.9 source, fourth batch: MULTI_ITEM review workbook, normal-day overforecast (2026-10-20 12:44 - )
+
+Owner prompt "MULTI_ITEM DATA REVIEW & NORMAL-DAY OVERFORECAST OPTIMIZATION" (P0 workbook, P1 normal-day overforecast
+1-5 %, P2 spikes later). No commit, push, package, deploy, production training / backfill / job, schedule or
+configuration change, promotion, Price off or customer_id on; no S0-S6 rerun.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Checkpoint | DONE (before edits) | `checkpoints/checkpoint-20261020-v129d-before.zip` (75 working-tree files + patch), SHA-256 F9B72DDD...DA5E, 12:45 |
+| P0 MULTI_ITEM workbook | DONE | reports/demandforecast_multi_item_review_20261020.xlsx (not versioned), SHA-256 0C4C7ADA...DEADA, 7 sheets, re-read and verified; read-only BigQuery 2.32 GB (source refreshed 12:29); both keys = FC BD, item codes .1 / .2 (batch 5: no region inferred from the suffix), different orders; both .2 lines = order SOBD38271068; rule = owner decision |
+| P1 metrics / cause | DONE | S0 reproduced (+19.4 % = signed bias; over-only formula 48.6 % / holdout 41.7 %); bias = forecast on actual-0 days (71.6 % of normal points); demand fall 161k -> 86k / day (66 % of the excess); no grain / rounding error; production config E00 the same |
+| P1 experiments | DONE (copy only) | plan scratchpad/p19/plan_od.json (before results); K1-K3, K6 post-processing, K4 recency weights / K5 L1 trained 13:19-13:36 (10 folds, 0.33 h; first start stopped by STOP file while a production training of the user ran and free RAM was < 0.6 GB); all 6 FAIL the 1-5 % target; nothing adopted or promoted |
+| Code | DONE (uncommitted) | ml/overforecast.py (evaluation / experiment only, not used by the app); sync.py fix: unique `load_id` of a D-1 load for the backfill preview re-check (same-second loads, found by a failing full-suite run) |
+| Tests | DONE | backend 629 passed / 9 skipped (real BigQuery opt-in only) / 0 failed, exit 0 (13:47-13:53; the 13:37 run had 1 failure = the same-second defect, fixed + deterministic test); frontend unchanged (149/149 at 10:52); lint not configured; EOL 0 problems on 77 files; secret scan 0 |
+| Production | NOT TOUCHED (13:54) | 1.2.8, storage.json 8D79DBDD...; jobs after 12:16 started by the user from the app (manual D-1 12:29 SUCCEEDED, manual training 12:43 -> candidate TRN-20261020054540-D7EEF6 PROMOTION_REVIEW_REQUIRED) or the scheduler |
+| Report | DONE | reports/demandforecast_multi_item_overforecast_20261020.md (not versioned): BLOCKED_DATA_SAFETY |
+| Checkpoint (final) | DONE | `checkpoints/checkpoint-20261020-v129d-worktree.zip` (77 files + patch, report, scratchpad p19 incl. 10 fold npz), SHA-256 3E2DFAB7...BFAF7, 31,797,325 bytes, 122 entries, 13:55 (verified: CRC, listing = manifest, per-file hashes); this table row is not in the copy inside the ZIP |
+
+# 1.2.9 source, fifth batch: data recovery, open-hours re-audit, MULTI_ITEM correction, offline learning (2026-10-20 15:15 - )
+
+Owner prompt "FULL DATA RECOVERY, OPEN-HOURS VALIDATION & MODEL LEARNING BATCH". Owner rule: the item_code suffix is the
+opening order across regions, not a region. No commit, push, package, deploy, production training / backfill / job,
+schedule or configuration change, promotion, Price off or customer_id on.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Checkpoint | DONE (before edits) | `checkpoints/checkpoint-20261020-v129e-before.zip` (77 files + patch), SHA-256 A488F502...E781, 15:17 |
+| Suffix correction | DONE | open_hours.py docstring, feature_registry.py text, DATA-MODEL, BIGQUERY (§6, §11c), CHANGELOG; old reports / workbook kept; v2 workbook reports/demandforecast_multi_item_review_20261020_v2.xlsx (5B8AB036...65C4, re-read, keys reconciled) |
+| Source audit | DONE | read-only BigQuery ~12 GB: refresh 15:05:19 (table recreated 08:05 UTC), 8,961,566 lines 01/01-19/10, hours on every line, 1,357,883 OK / 6 MULTI_ITEM keys, 0 exact duplicates, no cancelled status |
+| Verified dataset | DONE (copy only) | scratchpad p20/e9: live DB copy 15:25 + migrate 6->8 + 1.2.9 backfill 01/01-19/10 (preview BFP-20261020082746-E6B4D7); = source 292/292 days; identity 2e11fa4d...0e80 (with hours f86669c2...f4b1) |
+| Old results | DONE | e8 vs e9: hours identical where both OK, demand -0.03 %; S0-S5 / K1-K6 still valid for window 19/03 (S0 reproduced by C2) |
+| Offline experiments | DONE (copy only) | plan scratchpad/p20/plan_lh.json (before results); B0 + C1-C6, 25 trainings 16:13-16:57; none IMPROVES (C2 / C4 not confirmed on holdout, C1 / C6 trade-off, C3 / C5 no improvement); nothing promoted |
+| Code / tests | DONE (uncommitted) | text only + tests test_v129e_item_suffix.py, test_v129e_real_bq_item_suffix.py; backend 632 passed / 10 skipped / 0 failed (15:49-16:02); real BigQuery opt-in 2 passed |
+| Production | NOT TOUCHED by Claude | 1.2.8, storage.json 8D79DBDD...; the USER promoted TRN-20261020054540-D7EEF6 at 15:24 (FCR-20261020082402-A42C91); D-0 16:00 by the scheduler |
+| Report | DONE | reports/demandforecast_data_recovery_learning_readiness_20261020.md (not versioned): BLOCKED_BUSINESS_RULE (6 MULTI_ITEM keys) |
+| Checkpoint (final) | DONE | `checkpoints/checkpoint-20261020-v129e-worktree.zip` (79 files + patch, report, scratchpad p20 incl. 25 fold npz; DB copy e9 excluded), SHA-256 FBD72FFD...5C05, 122,118,060 bytes, 159 entries, 17:15 (verified: CRC, listing = manifest, per-file hashes); this table row and the report's SHA line are not in the copies inside the ZIP |
+
+# 1.2.9 source, sixth batch: 931 zero-open-hours keys export + independent audit items (2026-10-20 17:38 - )
+
+Owner prompt "EXPORT 931 ZERO-OPEN-HOURS KEYS + CONTINUE OTHER AUDIT WORK". No commit, push, package, deploy, production
+training / backfill / job, schedule or configuration change, promotion, Price off or customer_id on; the 931 keys and the 6
+MULTI_ITEM keys are NOT decided or changed.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Checkpoint | DONE (before edits) | `checkpoints/checkpoint-20261020-v129f-before.zip` (79 files + patch), SHA-256 C9329CCB...AD9D, 17:42 |
+| A. 931 keys workbook | DONE | reports/demandforecast_zero_open_hours_with_orders_20261020.xlsx (not versioned), SHA-256 A9640616...1025: 931 keys / 3,017 lines / 25,542 units = batch-5 audit; e9 931 MATCH; live copy 930 + 1 lag; verified (openpyxl + pandas, all_pass) |
+| B1-B3 / B4 / B5 / B6 | DONE (read only) | 71,834 line has 19.25 h (premise corrected); 6 MULTI_ITEM rule values + impact; demand decline evidence + candidate availability tables (meaning not confirmed); production GET verified; release plan + blockers; next experiments PREPARED_NOT_RUN (scratchpad p21/plan_next.json) |
+| Code / tests | DONE (uncommitted) | no code change; new backend/tests/test_v129f_zero_open_hours.py; backend 634 passed / 10 skipped / 0 failed (19:26-19:31) |
+| Production | NOT TOUCHED by Claude | 1.2.8, storage.json 8D79DBDD..., active TRN-20261020054540-D7EEF6 (GET only) |
+| Report | DONE | reports/demandforecast_zero_hours_followup_audit_20261020.md (not versioned): BLOCKED_BUSINESS_RULE + BLOCKED_USER_REVIEW |
+| Checkpoint (final) | DONE | `checkpoints/checkpoint-20261020-v129f-worktree.zip` (80 files + patch, report, workbook, scratchpad p21; live DB copy excluded), SHA-256 8CD38C10...FDF02, 1,577,137 bytes, 116 entries, 19:33 (verified: CRC, listing = manifest, per-file hashes, PowerShell hash); changed since v129f-before: CHANGELOG, BIGQUERY, CHECKPOINT, test_v129f |
+
+# 1.2.9 source, seventh batch: finalized (frozen) actual on the forecast history page (2026-10-20 19:51 - )
+
+Owner prompt "FIX IMMUTABLE ACTUAL SNAPSHOTS IN FORECAST HISTORY DASHBOARD + CONTINUE INDEPENDENT ...". Owner rule: the
+actual of a completed day is finalized from the successful D-1 load and never changes. No commit, push, package, deploy,
+production training / backfill / job, schedule or configuration change; MULTI_ITEM and the 931 keys untouched.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Checkpoint | DONE (before edits) | `checkpoints/checkpoint-20261020-v129g-before.zip` (80 files + patch), SHA-256 02BC4A77...46BC, 19:51 |
+| Root cause | FOUND | forecast_history: COMPLETE only with a SIGNAL-mode D-1 (production runs FALLBACK_TIME_VERIFIED) + figure always re-read from mutable demand_daily + KPI mixing statuses |
+| Code | DONE (uncommitted) | migration 0009 (additive, schema 9), app/actual_final.py, sync hook after D-1, forecast_history (FINAL source, KPI finalized only, provisional / closed apart, Excel H4), history overview, data-check x2, CLI actual-finalize, UI + i18n |
+| DB copy | DONE (copy only) | live DB copy 20:19 (scratchpad p22/f2): migrate 6 -> 9 28.6 s; dry run 292/292 days traceable; finalize 292 days 1,358,317 rows ~38 s, +81 MB; rerun writes nothing (0.3 s); data-check new checks OK; 18/10, 19/10 CLOSED -> COMPLETE |
+| Secondary | DONE (read only) | fact_product_sku_status grain verified (1 row / item x FC x day, 202/202 days); decline classes vs OUT_OF_STOCK share (descriptive); next source refresh NOT_VERIFIED (not refreshed yet) |
+| Production | NOT TOUCHED | GET only 19:32 / 20:30: 1.2.8, schema 6, storage.json 8D79DBDD..., no job, no new audit |
+| Report | DONE | reports/demandforecast_actual_finalization_20261020.md (not versioned): release BLOCKED_BUSINESS_RULE |
+| Tests | DONE | backend 647 passed / 10 skipped / 0 failed (20:31-20:36); vitest 152 passed; typecheck / build exit 0 |
+| Checkpoint (final) | DONE | `checkpoints/checkpoint-20261020-v129g-worktree.zip` (86 files + patch, report, scratchpad p22; DB copies f1 / f2 excluded), SHA-256 753FC2C2...D48D, 1,301,625 bytes, 107 entries, 20:36 (verified: CRC, listing = manifest, per-file hashes, PowerShell hash); changed since v129g-before: exactly the 24 source files of the report |
+
+# 1.2.9 source, eighth batch: isolated upgrade 6 -> 9 + controlled backfill + first finalization rehearsal (2026-10-20 21:11 - )
+
+Owner prompt "DEMAND FORECASTING 1.2.9 - ISOLATED UPGRADE & BACKFILL REHEARSAL". Owner decisions: backfill first, then the
+first finalization; check data impact and provenance before finalizing; rehearse 6 -> 9 in isolation; report, commit is a
+separate step. No commit, push, release.ps1, package, deploy, production write / job / schedule / configuration change.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Checkpoint | DONE (before any write) | `checkpoints/checkpoint-20261020-v129h-before.zip` (86 files + patch + batch-7 report), SHA-256 2FCDB393...301B, 804,134 bytes, 89 entries, 21:16; extracted into a new folder and compared byte for byte with the working tree (0 differences) |
+| Live DB copy | DONE (read only) | 21:22 SQLite backup API, source mode=ro -> scratchpad p23/a (726,626,304 bytes, integrity ok, 12 model files); all app paths asserted inside p23, scheduler disabled |
+| Migration 6 -> 9 | PASS (copy) | 89.8 s (pre-migration-v6 backup 05FBF72C...5AC2; 0007-0009 < 0.1 s); +2 tables, +10 triggers; every old table identical on its old columns; rerun applies nothing; integrity / FK ok; data-check no FAIL |
+| Backfill 01/01-19/10 | PASS (copy, BigQuery read only) | preview BFP-20261020143352-B2F6F7 READY 483 s; backfill D1L-20261020145411-F00BD1 804 s = preview (new 344 / updated 213 / removed 772, -12,109 = -0.029%); pre-backfill backup 72762EC3...8107; finalize hook recorded, not run (harness) |
+| Dry run before first finalization | PASS | CLI default dry run wrote nothing (file hashes equal): 292/292 days FINALIZE from the backfill load, 0 blocked, 0 keys without / ambiguous provenance; per-day CSV in reports/ |
+| First finalization | PASS (copy) | `actual-finalize --apply`: 292 days sealed, 1,357,889 rows, 42,011,108 units, +80,982,016 bytes; second apply writes nothing; production hook path (copy b) identical per day; 14/14 forbidden changes blocked; simulated later D-1 / failed D-1 / mixed loads / crash + retry all as designed; forecast, history, model tables unchanged |
+| Dashboard / KPI | PASS (copy) | finalized KPI 148,240, WAPE 73.0 %, bias +14.82 % on 34,252 rows / 2 days = independent recomputation (also FC BD / HN); provisional 20/10 apart; API, Excel H4 vi / en; screenshots in reports/ |
+| Restore | PASS (copy r, 1.2.8 code from HEAD) | 1.2.8 migrate refuses schema 9; 1.2.8 restore of pre-migration-v6 (67 s) -> schema 6, every table identical to before; data-check WARN (old forecast_series_meta only); backup file unchanged |
+| Tests | DONE | backend 647 passed / 10 skipped / 0 failed (22:28-22:33); focused 165 passed; vitest 152 passed; typecheck / build exit 0 |
+| Production | NOT TOUCHED | GET only: 1.2.8, storage.json 8D79DBDD..., no running job, newest job D-0 19:14 |
+| Report | DONE | reports/demandforecast_upgrade_backfill_rehearsal_20261020.md (not versioned): rehearsal PASS; release not ready (commit authorization, MULTI_ITEM, how to keep the backfill-first order in production) |
+| Checkpoint (final) | DONE | `checkpoints/checkpoint-20261020-v129h-worktree.zip` (86 files + patch, 2 reports, 37 scratchpad p23 scripts / results / screenshots; DB copies and backups excluded), SHA-256 99445579...3210, 2,197,530 bytes, 127 entries, 22:35 (verified: CRC, listing = manifest, per-file hashes, extraction compared byte for byte, PowerShell hash); changed since v129h-before: docs/CHECKPOINT.md, docs/LICH-SU-FORECAST.md |

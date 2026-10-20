@@ -40,8 +40,10 @@ def _daily(rows):
 
 
 def _row(day, sku, qty, price):
+    # 1.2.9: the D-1 aggregation also returns the SKU open hours of the day (mandatory BIGQUERY input): open all day
     return {"_kind": "VALID", "order_date": day, "sku_id": sku, "fc_id": "F1", "qty": float(qty), "n_orders": 1,
-            "n_rows": 1, "avg_unit_price": price}
+            "n_rows": 1, "avg_unit_price": price, "open_hours_null_rows": 0, "open_hours_min": 24.0,
+            "open_hours_max": 24.0}
 
 
 def _price_production():

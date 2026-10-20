@@ -42,15 +42,21 @@ const SUMMARY = { scope_key: BQ, data_source: "BIGQUERY", today: "2026-10-18", m
     { run_date: "2026-10-18", target_date: "2026-10-19", has_history: true, forecast_source: "SNAPSHOT", forecast_run_id: "FCR-A",
       snapshot: { snapshot_id: "FES-1", snapshot_business_date: "2026-10-17" }, n_rows: 2, forecast: 110, actual: null, deviation: null,
       actual_status: "NO_ACTUAL", actual_reason: "FUTURE_DATE", actual_close: null }],
-  kpi: { n_rows: 4, n_rows_compared: 2, days_with_history: 2, days_primary: 1, days_backup: 1, days_compared: 1, forecast_total: 210,
-    actual_total: 30, forecast_compared: 100, deviation: 70, abs_error: 70, wape: 2.3333, bias: 2.3333, status: "CLOSED", notes: [] },
+  // 1.2.9 (seventh batch): a day closed at 23:59 but not finalized is the `closed` group, never the finalized KPI
+  kpi: { n_rows: 4, n_rows_compared: 0, days_with_history: 2, days_primary: 1, days_backup: 1, days_compared: 0, forecast_total: 210,
+    actual_total: null, forecast_compared: null, deviation: null, abs_error: null, wape: null, bias: null, status: "NO_ACTUAL",
+    notes: ["NO_FINAL_ACTUAL"], basis: "FINALIZED_ONLY", n_zero_absent: 0,
+    provisional: { n_rows: 0, days: 0, n_zero_absent: 0, actual_total: null, forecast_compared: null, deviation: null, abs_error: null, wape: null, bias: null },
+    closed: { n_rows: 2, days: 1, n_zero_absent: 0, actual_total: 30, forecast_compared: 100, deviation: 70, abs_error: 70, wape: 2.3333, bias: 2.3333 },
+    coverage: { rows_total: 4, rows_final: 0, rows_provisional: 0, rows_closed: 2, rows_no_actual: 2, days_final: 0, days_provisional: 0,
+      days_closed: 1, days_no_actual: 1 } },
   sessions: [{ ...DAY, official: 1, decision: "SELECTED" }] };
 const ROWS = [
-  { run_date: "2026-10-18", target_date: "2026-10-19", sku_id: "SKU-1", fc_id: "HN", yhat: 55, actual: null, deviation: null, row_wape: null,
+  { run_date: "2026-10-18", target_date: "2026-10-19", sku_id: "SKU-1", fc_id: "HN", yhat: 55, forecast_qty: 55, actual: null, deviation: null, row_wape: null,
     actual_status: "NO_ACTUAL", actual_reason: "FUTURE_DATE", product_name: "Thuốc hạ sốt", forecast_run_id: "FCR-A", model_version: "MV-A",
     session_started_at: "2026-10-17T12:34:19+00:00", actual_as_of: null, forecast_source: "SNAPSHOT", snapshot_id: "FES-1",
     snapshot_business_date: "2026-10-17", snapshot_created_at: "2026-10-17T16:55:04+00:00" },
-  { run_date: "2026-10-17", target_date: "2026-10-18", sku_id: "SKU-1", fc_id: "HN", yhat: 50, actual: 30, deviation: 20, row_wape: 0.6667,
+  { run_date: "2026-10-17", target_date: "2026-10-18", sku_id: "SKU-1", fc_id: "HN", yhat: 50, forecast_qty: 50, actual: 30, deviation: 20, row_wape: 0.6667,
     actual_status: "CLOSED", actual_reason: "CLOSED_D0", product_name: "Thuốc hạ sốt", forecast_run_id: "FCR-A", model_version: "MV-A",
     session_started_at: "2026-10-17T12:34:19+00:00", actual_as_of: "2026-10-18T11:00:00+00:00", forecast_source: "PRIMARY", snapshot_id: null,
     snapshot_business_date: null, snapshot_created_at: null },
@@ -70,8 +76,12 @@ describe("v1.2.6 forecast history: backup snapshot and 23:59 close", () => {
     expect(screen.getByTestId("fh-today-backup").textContent).toContain("Đang dùng snapshot dự phòng cuối ngày 17/10/2026 (tạo lúc 17/10/2026 23:55, run nguồn FCR-A) cho ngày 19/10/2026");
     expect([...screen.getByTestId("fh-run-date").querySelectorAll("option")].map((o) => o.textContent)).toContain("18/10/2026 → 19/10/2026 (Dự phòng)");
     const kpi = within(screen.getByTestId("fh-kpi"));
-    expect(kpi.getAllByText("Đã chốt – cần xác minh")).toHaveLength(3);          // actual, deviation, WAPE: not final
+    expect(kpi.queryByText("Đã chốt – cần xác minh")).toBeNull();               // 1.2.9: not in the finalized cards
     expect(kpi.queryByText("Đã hoàn tất")).toBeNull();
+    expect(screen.getByTestId("fh-no-final")).toBeTruthy();
+    const closedRow = within(screen.getByTestId("fh-prov"));
+    expect(closedRow.getByText("Đã chốt – cần xác minh")).toBeTruthy();
+    expect(closedRow.getByText("233,3%")).toBeTruthy();
     expect(screen.getByTestId("fh-kpi-backup").textContent).toContain("1 ngày dùng snapshot dự phòng");
     // chart: the backup forecast point is marked and the legend says so
     expect([...r.container.querySelectorAll("[data-testid=cmp-forecast-pt]")].map((e) => e.getAttribute("data-source"))).toEqual(["primary", "backup"]);

@@ -24,10 +24,25 @@ RETENTION_TRIGGERS = ("trg_fes_delete_retention_only", "trg_fes_values_delete_re
                       "trg_fesr_keys_fixed", "trg_fesr_finish_only", "trg_fesr_no_delete", "trg_fesr_no_replace",
                       "trg_fes_no_replace", "trg_fes_values_no_replace", "trg_actual_closes_no_replace",
                       "trg_actual_close_values_no_replace")
+# 1.2.9 (seventh batch, migration 0009): triggers that keep a finalized actual frozen
+FINAL_TRIGGERS = ("trg_afn_no_delete", "trg_afn_keys_fixed", "trg_afn_born_unsealed", "trg_afn_no_replace",
+                  "trg_afn_final_fixed", "trg_afn_seal_checked", "trg_afv_no_update", "trg_afv_no_delete",
+                  "trg_afv_open_only", "trg_afv_no_replace")
 
 
 def _q(c, sql, params=()):
     return [tuple(r) for r in c.execute(sql, params).fetchall()]
+
+
+def _final_sha(c, days: int = 14) -> list[tuple]:
+    """(id, day, stored sha256, recomputed sha256) of the finalized days of the last `days` days (actual_final._sha)."""
+    from .actual_final import _sha
+    out = []
+    for fid, day, sha in _q(c, "SELECT id, business_date, values_sha256 FROM actual_finals WHERE status = 'FINALIZED' "
+                               "AND business_date >= date('now', '+7 hours', ?)", (f"-{days} days",)):
+        rows = _q(c, "SELECT sku_id, fc_id, qty, n_orders FROM actual_final_values WHERE final_id=?", (fid,))
+        out.append((fid, day, sha, _sha(rows)))
+    return out
 
 
 def _baseline_only(c, training_run_id: str) -> bool:
@@ -40,6 +55,75 @@ def _check(name, rule, bad, fail=True, examples=None):
     n = len(bad) if isinstance(bad, list) else int(bad)
     return {"check": name, "status": "OK" if n == 0 else ("FAIL" if fail else "WARN"), "count": n, "rule": rule,
             "examples": [list(x) if isinstance(x, tuple) else x for x in (examples or (bad if isinstance(bad, list) else []))[:5]]}
+
+
+def _open_hours_checks(c) -> list[dict]:
+    """1.2.9: SKU open hours of the day (BigQuery D-1 total_open_hours, app/data/open_hours.py). Skipped on a database
+    before migration 0007 (no such columns)."""
+    cols = {r[1] for r in c.execute("PRAGMA table_info(demand_daily)")}
+    if not {"open_hours", "open_hours_status"} <= cols:
+        return []
+    out = [
+        _check("open_hours_status_values", "open_hours_status is NULL or one of OK, MISSING, OUT_OF_RANGE, CONFLICT, MULTI_ITEM",
+               _q(c, "SELECT scope_key, open_hours_status, COUNT(*) FROM demand_daily WHERE open_hours_status IS NOT NULL "
+                     "AND open_hours_status NOT IN ('OK', 'MISSING', 'OUT_OF_RANGE', 'CONFLICT', 'MULTI_ITEM') GROUP BY 1, 2")),
+        _check("open_hours_value_matches_status",
+               "open_hours is a number between 0 and 24 exactly when open_hours_status = 'OK', and NULL otherwise "
+               "(never an invented value)",
+               _q(c, "SELECT scope_key, order_date, sku_id, fc_id, open_hours, open_hours_status FROM demand_daily NOT INDEXED "
+                     "WHERE (open_hours_status = 'OK' AND (open_hours IS NULL OR typeof(open_hours) NOT IN ('real', 'integer') "
+                     "OR open_hours < 0 OR open_hours > 24)) OR (IFNULL(open_hours_status, '') != 'OK' AND open_hours IS NOT NULL) "
+                     "LIMIT 50")),
+        _check("open_hours_source_scope", "only BIGQUERY rows carry open hours or a status (DEMO / Excel sources have no such column)",
+               _q(c, "SELECT scope_key, data_source, COUNT(*) FROM demand_daily NOT INDEXED WHERE data_source != 'BIGQUERY' "
+                     "AND (open_hours IS NOT NULL OR open_hours_status IS NOT NULL) GROUP BY 1, 2")),
+    ]
+    from .settings_service import DataPolicySettings
+    p = c.execute("SELECT value_json FROM app_settings WHERE section='data_policy'").fetchone()
+    pol = DataPolicySettings.model_validate(json.loads(p[0])) if p else DataPolicySettings()
+    start = pol.window_start_date
+    end = str((datetime.now(timezone.utc) + timedelta(hours=7)).date() - timedelta(days=1))      # yesterday, Vietnam
+    if pol.training_start_rule == "OPEN_HOURS_COVERAGE":
+        # 1.2.9b: the model input of each BIGQUERY scope starts at its first stored day with open hours
+        rows = _q(c, "SELECT d.scope_key, COALESCE(d.open_hours_status, 'NOT_LOADED'), COUNT(*), MIN(d.order_date), "
+                     "MAX(d.order_date) FROM demand_daily AS d NOT INDEXED JOIN (SELECT scope_key, MIN(order_date) AS cs "
+                     "FROM demand_daily NOT INDEXED WHERE data_source='BIGQUERY' AND order_date BETWEEN ? AND ? AND "
+                     "open_hours_status IS NOT NULL AND open_hours_status <> 'MISSING' GROUP BY 1) AS s USING (scope_key) "
+                     "WHERE d.data_source='BIGQUERY' AND d.order_date BETWEEN s.cs AND ? "
+                     "AND IFNULL(d.open_hours_status, '') != 'OK' GROUP BY 1, 2", (start, end, end))
+        rule = (f"every BIGQUERY demand row from the first stored day with open hours (training_start_rule "
+                f"OPEN_HOURS_COVERAGE, not before {start}) to {end} has open hours (status OK)")
+    else:
+        rows = _q(c, "SELECT scope_key, COALESCE(open_hours_status, 'NOT_LOADED'), COUNT(*), MIN(order_date), MAX(order_date) "
+                     "FROM demand_daily NOT INDEXED WHERE data_source='BIGQUERY' AND order_date BETWEEN ? AND ? "
+                     "AND IFNULL(open_hours_status, '') != 'OK' GROUP BY 1, 2", (start, end))
+        rule = f"every BIGQUERY demand row of the data window {start}..{end} has open hours (status OK)"
+    out.append(_check("open_hours_window_ready",
+                      rule + "; otherwise the BigQuery training stops with OPEN_HOURS_INVALID (NOT_LOADED = loaded "
+                      "before 1.2.9)", sum(r[2] for r in rows), fail=False, examples=rows))
+    return out
+
+
+def _customer_checks(c) -> list[dict]:
+    """1.2.9b: aggregate customer counts (app/data/customers.py). Skipped on a database before migration 0008."""
+    cols = {r[1] for r in c.execute("PRAGMA table_info(demand_daily)")}
+    if not {"customer_count", "repeat_customer_count", "repeat_interval_days_sum"} <= cols:
+        return []
+    return [
+        _check("customer_counts_consistent",
+               "customer_count, repeat_customer_count, repeat_interval_days_sum are all NULL (unknown) or all set, with "
+               "customer_count >= 1, 0 <= repeat_customer_count <= customer_count, repeat_interval_days_sum >= 0 and = 0 "
+               "when there is no repeat customer",
+               _q(c, "SELECT scope_key, order_date, sku_id, fc_id, customer_count, repeat_customer_count, "
+                     "repeat_interval_days_sum FROM demand_daily NOT INDEXED WHERE NOT ("
+                     "(customer_count IS NULL AND repeat_customer_count IS NULL AND repeat_interval_days_sum IS NULL) OR "
+                     "(customer_count >= 1 AND repeat_customer_count BETWEEN 0 AND customer_count "
+                     "AND repeat_interval_days_sum >= 0 AND (repeat_customer_count > 0 OR repeat_interval_days_sum = 0))) "
+                     "LIMIT 50")),
+        _check("customer_counts_source_scope", "only BIGQUERY rows carry customer counts (DEMO / Excel have no customer column)",
+               _q(c, "SELECT scope_key, data_source, COUNT(*) FROM demand_daily NOT INDEXED WHERE data_source != 'BIGQUERY' "
+                     "AND customer_count IS NOT NULL GROUP BY 1, 2")),
+    ]
 
 
 def run(db_path: Path, models_dir: Path | None = None) -> dict:
@@ -100,6 +184,8 @@ def _run(c, db_path: Path, models_dir: Path | None) -> dict:
               "OR date(order_date) IS NULL OR date(order_date) != order_date LIMIT 50")
         + _q(c, "SELECT 'demand_daily', scope_key, order_date, qty FROM demand_daily WHERE qty < 0 "
                 "OR date(order_date) IS NULL OR date(order_date) != order_date LIMIT 50")))
+    out += _open_hours_checks(c)
+    out += _customer_checks(c)
     out.append(_check(
         "order_grain_duplicates",
         "order_id x SKU x FC appears once per ACTIVE batch (several lines are kept only if the import policy summed them)",
@@ -208,6 +294,24 @@ def _run(c, db_path: Path, models_dir: Path | None) -> dict:
                   "OR EXISTS (SELECT 1 FROM forecast_eod_snapshots s WHERE s.id = r.snapshot_id) "
                   "OR EXISTS (SELECT 1 FROM forecast_eod_snapshot_values v WHERE v.snapshot_id = r.snapshot_id) "
                   "OR r.rows_deleted IS NOT r.n_rows")))
+    has_final = bool(_q(c, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='actual_finals'"))
+    if has_final:       # 1.2.9 (seventh batch, migration 0009): finalized (frozen) actual of a day
+        out.append(_check(
+            "actual_final_sealed",
+            "every FINALIZED actual is sealed and holds exactly its n_rows values with its total and sha256 (a BLOCKED "
+            "day holds no value)",
+            _q(c, "SELECT f.id, f.business_date, f.status, f.sealed FROM actual_finals f WHERE f.status = 'FINALIZED' "
+                  "AND f.sealed != 1")
+            + _q(c, "SELECT f.id, f.business_date, f.n_rows, COUNT(v.sku_id), f.total_qty, TOTAL(v.qty) FROM actual_finals f "
+                    "LEFT JOIN actual_final_values v ON v.final_id = f.id WHERE f.status = 'FINALIZED' GROUP BY f.id "
+                    "HAVING COUNT(v.sku_id) != f.n_rows OR ABS(TOTAL(v.qty) - f.total_qty) > 1e-6 * MAX(1.0, ABS(f.total_qty))")
+            + _q(c, "SELECT f.id, f.business_date, f.status FROM actual_finals f WHERE f.status != 'FINALIZED' "
+                    "AND EXISTS (SELECT 1 FROM actual_final_values v WHERE v.final_id = f.id)")
+            + [(fid, day, "sha256 differs") for fid, day, sha, got in _final_sha(c) if sha != got]))
+        have = {r[0] for r in _q(c, "SELECT name FROM sqlite_master WHERE type='trigger'")}
+        out.append(_check("actual_final_protection_triggers",
+                          "every trigger that keeps a finalized actual frozen exists (migration 0009)",
+                          [(t,) for t in sorted(set(FINAL_TRIGGERS) - have)]))
     model_bad = []
     if models_dir is not None:
         for rid, mv, mp, sha in _q(c, "SELECT id, model_version, model_path, model_sha256 FROM training_runs "
@@ -241,6 +345,7 @@ def _run(c, db_path: Path, models_dir: Path | None) -> dict:
                "d0_snapshots", "job_runs") + (("forecast_history_sessions", "forecast_history_values",
                                                 "forecast_history_days") if has_history else ())
               + (("forecast_eod_snapshots", "forecast_eod_snapshot_values", "actual_closes", "actual_close_values")
-                 if has_eod else ()) + (("forecast_eod_snapshot_retention",) if has_ret else ())}
+                 if has_eod else ()) + (("forecast_eod_snapshot_retention",) if has_ret else ())
+              + (("actual_finals", "actual_final_values") if has_final else ())}
     return {"db": str(db_path), "schema_version": ver, "checked_at": now.isoformat(timespec="seconds"),
             "status": status, "row_counts": counts, "checks": out}

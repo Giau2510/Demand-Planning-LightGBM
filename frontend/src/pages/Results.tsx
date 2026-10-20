@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { get, post, qs } from "../api";
 import { useSystem } from "../App";
 import { useI18n } from "../i18n";
-import { AssessmentBox, Card, DateInput, Empty, ErrorBox, Field, FilterBar, JobProgress, LineChart, Loading, MethodLabel, PageHeader, Pager, SearchInput, SourceBadge, Stat, Term, fmtDate, fmtNum, fmtPct, fmtSignedPct, fmtTime, useAction, useAsync } from "../components/ui";
+import { AssessmentBox, Card, DateInput, Empty, ErrorBox, Field, FilterBar, JobProgress, LineChart, Loading, MethodLabel, PageHeader, Pager, SearchInput, SourceBadge, Stat, Term, fmtDate, fmtNum, fmtPct, fmtSignedPct, fmtTime, isoWeekday, useAction, useAsync, weekdayLabel } from "../components/ui";
 import { Icon } from "../components/icons";
 import { HorizonPicker } from "./Dashboard";
 import ExplainPanel from "./ExplainPanel";
@@ -235,11 +235,15 @@ export default function Results() {
         {tab === "daily" && daily.data && (
           <div className="scroll">
             <table className="tbl">
-              <thead><tr><th>{t("fc.sku")}</th><th>{t("fc.product_name")}</th><th>{t("fc.fc")}</th><th>{t("fc.date")}</th><th className="num">{t("fc.day_n")}</th><th className="num">{t("fc.qty")}</th>
+              <thead><tr><th>{t("fc.sku")}</th><th>{t("fc.product_name")}</th><th>{t("fc.fc")}</th><th>{t("fc.date")}</th><th title={t("fc.weekday_help")}>{t("fc.weekday")}</th><th className="num">{t("fc.qty")}</th>
                 <th className="num" title={t("actual.col_help")}>{t("actual.col_so_far")}</th><th>{t("fc.method")}</th><th></th></tr></thead>
               <tbody>
                 {daily.data.rows.map((x: any) => (
-                  <tr key={x.sku_id + x.fc_id + x.target_date}><td className="sku">{x.sku_id}</td><td className="pname"><ProductName name={x.product_name} /></td><td className="nowrap">{x.fc_id}</td><td className="nowrap">{fmtDate(x.target_date)}</td><td className="num">{x.horizon_day}</td><td className="num">{fmtNum(x.forecast_qty)}</td>
+                  <tr key={x.sku_id + x.fc_id + x.target_date}><td className="sku">{x.sku_id}</td><td className="pname"><ProductName name={x.product_name} /></td><td className="nowrap">{x.fc_id}</td><td className="nowrap">{fmtDate(x.target_date)}</td>
+                    {/* 1.2.9: weekday of the target date (1 = Thứ 2 ... 7 = Chủ nhật, computed by the backend from the date);
+                        the position in the forecast period (horizon_day) stays available as the cell's tooltip */}
+                    <td className="nowrap" data-testid="fc-weekday" title={`${t("fc.day_n")} ${x.horizon_day}`}>{weekdayLabel(x.weekday ?? isoWeekday(x.target_date), lang)}</td>
+                    <td className="num">{fmtNum(x.forecast_qty)}</td>
                     <td className="num"><ActualCell value={x.actual_today} actual={daily.data.actual} /></td>
                     <td className="small method-c"><MethodLabel code={x.method} /></td>
                     <td className="nowrap"><button className="link" onClick={() => setExplain({ sku: x.sku_id, fc: x.fc_id, date: x.target_date })}>{t("ex.open")}</button></td></tr>

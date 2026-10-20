@@ -16,15 +16,25 @@ that day. Rules confirmed by the owner; full description in docs/LICH-SU-FORECAS
                the whole dataset - the same rule as the training panel); a loaded day without any row = unknown;
                else the latest successful D0 snapshot of that day (cumulative so far);
                else none ("no actual data yet") - never 0.
-             COMPLETE only when the D-1 load of that day ran on the configured completion signal (bigquery.completion_table);
-             1.2.6: a day closed at 23:59 (actual_close.py) without that signal is CLOSED ("closed - needs
-             verification"); every other actual is PROVISIONAL. The figure always comes from the source above.
+             1.2.9 (seventh batch, owner rule 20/10/2026): COMPLETE only when the day is FINALIZED (actual_final.py):
+             the figure is then the FROZEN copy written from the verified D-1 load of that day, never the live
+             demand_daily again (a later reload, correction or missing key changes nothing). A day not finalized yet
+             keeps the live source above: 1.2.6 a day closed at 23:59 (actual_close.py) is CLOSED ("closed - needs
+             verification"), every other actual is PROVISIONAL (a completion-signal day that is not frozen included).
+             The 23:59 close itself still reads the live source (actual_context(closes=False), unchanged).
+  KPI        1.2.9 (seventh batch): actual total, deviation, WAPE and bias use the FINALIZED rows only; the provisional
+             and the closed rows are reported apart (their own totals and metrics, never mixed into the finalized ones),
+             with the row / day counts of every group.
   backup     1.2.6: a run date WITHOUT an official session shows the D+1 of the newest COMPLETE end-of-day snapshot that
              covers it (forecast_backup.py, fallback_days), labelled SNAPSHOT with its snapshot and source run; an
              official session always wins. No snapshot covering it -> no forecast for that day (a gap, never 0).
 Recording runs right after a run is published, outside its transaction (a history failure can never undo a forecast),
 and is retried idempotently from the immutable runs at the next publish, at app start and by
 `python -m app.cli history-reconcile`. Showing the history only reads.
+  quantity   1.2.9: the forecast shown, summed, sorted, compared and exported is the whole-number quantity of app/qty.py
+             (round half up of the stored yhat, never below 0 - the same number as the Results page and its Excel);
+             deviation and WAPE of this page compare that issued quantity with the actual. The stored yhat is unchanged
+             and still returned (`yhat`); model accuracy (backtest, quality gate) keeps using it.
 """
 from __future__ import annotations
 
@@ -33,7 +43,7 @@ import json
 import logging
 from datetime import date, timedelta
 
-from . import db
+from . import db, qty
 from .messages import AppError
 from .timeutil import VN_TZ, now_iso, parse_iso, today_vn
 
@@ -45,14 +55,17 @@ ACTUAL_STATUSES = (COMPLETE, CLOSED, PROVISIONAL, NO_ACTUAL)
 PRIMARY, SNAPSHOT = "PRIMARY", "SNAPSHOT"          # 1.2.6 forecast source of a run date: official session / EOD backup
 FORECAST_SOURCES = (PRIMARY, SNAPSHOT)
 SORTS = {
-    "date": "b.run_date DESC, b.yhat DESC, b.sku_id, b.fc_id",
-    "abs_error": "ABS(b.yhat - b.actual) DESC NULLS LAST, b.run_date DESC, b.sku_id, b.fc_id",
-    "forecast": "b.yhat DESC, b.run_date DESC, b.sku_id, b.fc_id",
+    "date": "b.run_date DESC, b.forecast_qty DESC, b.yhat DESC, b.sku_id, b.fc_id",
+    "abs_error": "ABS(b.forecast_qty - b.actual) DESC NULLS LAST, b.run_date DESC, b.sku_id, b.fc_id",
+    "forecast": "b.forecast_qty DESC, b.yhat DESC, b.run_date DESC, b.sku_id, b.fc_id",
     "actual": "b.actual DESC NULLS LAST, b.run_date DESC, b.sku_id, b.fc_id",
     "sku": "b.sku_id, b.fc_id, b.run_date DESC",
 }
 MAX_EXPORT_ROWS = 1_000_000          # one Excel sheet holds 1,048,576 rows: larger selections are refused, never cut
 MAX_RANGE_DAYS = 400
+# 1.2.9: the whole-number forecast quantity of a stored value v.yhat (app/qty.py rule, SQL form)
+FORECAST_QTY_SQL = qty.SQL.replace("yhat", "v.yhat")
+EXPORT_FORMAT = "H4"                 # H3 (1.2.9): whole-number forecast; H4 (seventh batch): KPI of finalized rows
 
 
 def _vn_date(ts: str) -> date:
@@ -258,8 +271,29 @@ def actual_context(c, scope_key: str, data_source: str, dates: list[str], today:
         return {}
     out = _source_context(c, scope_key, data_source, dates, today)
     if closes:
+        _final_overlay(c, scope_key, out)
         _close_overlay(c, scope_key, out)
     return out
+
+
+def _final_overlay(c, scope_key: str, out: dict[str, dict]) -> None:
+    """1.2.9 (seventh batch): a FINALIZED (sealed) day is COMPLETE and its actual is the frozen copy (source FINAL,
+    snapshot_id = the actual_finals id). A day that is not finalized is never COMPLETE: a live completion-signal day
+    becomes PROVISIONAL (D1_NOT_FINALIZED), and a BLOCKED day carries its reason in `finalization`."""
+    from . import actual_final
+    heads = actual_final.finals(c, scope_key, list(out))
+    for d, x in out.items():
+        x["final"], x["finalization"] = None, None
+        h = heads.get(d)
+        if h and h["status"] == actual_final.FINALIZED and h["sealed"] == 1:
+            x.update(source="FINAL", snapshot_id=h["id"], as_of=h["finalized_at"], status=COMPLETE, reason="FINALIZED_D1")
+            x["final"] = {k: h[k] for k in ("id", "finalized_at", "d1_load_id", "d1_job_id", "d1_synced_at", "d1_mode",
+                                            "d1_backfill", "n_rows", "total_qty", "values_sha256")}
+            continue
+        if h:
+            x["finalization"] = {"status": h["status"], "reason": h["reason"], "last_attempt_at": h["last_attempt_at"]}
+        if x["status"] == COMPLETE or x["reason"] == "D1_NO_COMPLETION_SIGNAL":
+            x["status"], x["reason"] = PROVISIONAL, "D1_NOT_FINALIZED"
 
 
 def _close_overlay(c, scope_key: str, out: dict[str, dict]) -> None:
@@ -276,7 +310,9 @@ def _close_overlay(c, scope_key: str, out: dict[str, dict]) -> None:
         x = out[r["business_date"]]
         x["close"] = {"id": r["id"], "revision": r["revision"], "status": r["status"], "closed_at": r["closed_at"],
                       "cutoff_at": r["cutoff_at"], "source": r["source"], "total_qty": r["total_qty"],
-                      "current": r["source"] == x["source"] and (x["source"] != "D0" or r["source_ref"] == x["snapshot_id"])}
+                      # 1.2.9: a finalized day shows its frozen copy - "current" (same live source) does not apply
+                      "current": None if x["source"] == "FINAL" else (
+                          r["source"] == x["source"] and (x["source"] != "D0" or r["source_ref"] == x["snapshot_id"]))}
         if x["status"] == PROVISIONAL:
             x["status"], x["reason"] = CLOSED, f"CLOSED_{x['source']}"
 
@@ -397,14 +433,22 @@ class Query:
         if self.filters["actual_status"]:
             where += f" AND ctx.st IN ({','.join('?' * len(self.filters['actual_status']))})"
             wp += self.filters["actual_status"]
+        # 1.2.9 (seventh batch): a FINALIZED day reads its frozen copy (ctx.snap = actual_finals id). On a finalized or a
+        # D-1 day an SKU x FC without a row is 0 (the whole day was read - the training panel rule); actual_present
+        # tells the two apart so the page can show how many compared zeros come from an absent row
         actual = ("ctx.st AS actual_status, ctx.reason AS actual_reason, ctx.src AS actual_source, CASE ctx.src WHEN 'D1' "
-                  "THEN COALESCE(dd.qty, 0) WHEN 'D0' THEN COALESCE(sv.cumulative_qty, 0) END AS actual ")
+                  "THEN COALESCE(dd.qty, 0) WHEN 'D0' THEN COALESCE(sv.cumulative_qty, 0) WHEN 'FINAL' THEN COALESCE(fv.qty, 0) "
+                  "END AS actual, CASE ctx.src WHEN 'D1' THEN dd.sku_id IS NOT NULL WHEN 'D0' THEN sv.sku_id IS NOT NULL "
+                  "WHEN 'FINAL' THEN fv.sku_id IS NOT NULL END AS actual_present ")
         joins = ("JOIN ctx ON ctx.target_date = v.target_date "
                  "LEFT JOIN demand_daily dd ON ctx.src = 'D1' AND dd.scope_key = {scope} AND dd.order_date = v.target_date "
                  "AND dd.sku_id = v.sku_id AND dd.fc_id = v.fc_id "
                  "LEFT JOIN d0_snapshot_values sv ON ctx.src = 'D0' AND sv.snapshot_id = ctx.snap AND sv.sku_id = v.sku_id "
-                 "AND sv.fc_id = v.fc_id ")
-        primary = ("SELECT d.run_date, v.target_date, v.sku_id, v.fc_id, v.yhat, v.method, v.product_name, d.forecast_run_id, "
+                 "AND sv.fc_id = v.fc_id "
+                 "LEFT JOIN actual_final_values fv ON ctx.src = 'FINAL' AND fv.final_id = ctx.snap AND fv.sku_id = v.sku_id "
+                 "AND fv.fc_id = v.fc_id ")
+        primary = (f"SELECT d.run_date, v.target_date, v.sku_id, v.fc_id, v.yhat, {FORECAST_QTY_SQL} AS forecast_qty, "
+                   "v.method, v.product_name, d.forecast_run_id, "
                    f"s.model_version, s.session_started_at, s.published_at, {actual}, 'PRIMARY' AS forecast_source, "
                    "NULL AS snapshot_id, NULL AS snapshot_business_date, NULL AS snapshot_created_at "
                    "FROM forecast_history_days d JOIN forecast_history_sessions s ON s.forecast_run_id = d.forecast_run_id "
@@ -418,7 +462,8 @@ class Query:
             sql += f", bk(run_date, target_date, snapshot_id) AS (VALUES {','.join('(?,?,?)' for _ in self.use_backup)})"
             for d in self.use_backup:
                 params += [d["run_date"], d["target_date"], d["snapshot_id"]]
-            primary += (" UNION ALL SELECT bk.run_date, v.target_date, v.sku_id, v.fc_id, v.yhat, v.method, hv.product_name, "
+            primary += (f" UNION ALL SELECT bk.run_date, v.target_date, v.sku_id, v.fc_id, v.yhat, {FORECAST_QTY_SQL}, "
+                        "v.method, hv.product_name, "
                         "es.source_run_id, es.source_model_version, es.source_session_started_at, es.source_published_at, "
                         f"{actual}, 'SNAPSHOT', es.id, es.business_date, es.created_at "
                         "FROM bk JOIN forecast_eod_snapshots es ON es.id = bk.snapshot_id "
@@ -437,10 +482,11 @@ class Query:
         if self.ctx:
             sql, p = self._base()
             for r in db.rows(self.c, sql + " SELECT run_date, target_date, actual_status, actual_reason, COUNT(*) AS n_rows, "
-                                     "SUM(yhat) AS forecast, SUM(actual) AS actual, COUNT(actual) AS n_actual, "
-                                     "SUM(CASE WHEN actual IS NOT NULL THEN yhat END) AS forecast_compared, "
-                                     "SUM(ABS(yhat - actual)) AS abs_error FROM base GROUP BY run_date, target_date, "
-                                     "actual_status, actual_reason", p):
+                                     "SUM(forecast_qty) AS forecast, SUM(actual) AS actual, COUNT(actual) AS n_actual, "
+                                     "SUM(CASE WHEN actual IS NOT NULL THEN forecast_qty END) AS forecast_compared, "
+                                     "SUM(ABS(forecast_qty - actual)) AS abs_error, "
+                                     "SUM(CASE WHEN actual IS NOT NULL AND NOT actual_present THEN 1 ELSE 0 END) AS n_zero_absent "
+                                     "FROM base GROUP BY run_date, target_date, actual_status, actual_reason", p):
                 by_date[r["run_date"]] = r
         out = []
         d, end = date.fromisoformat(self.run_from), date.fromisoformat(self.run_to)
@@ -462,40 +508,68 @@ class Query:
                     "forecast_compared": (r or {}).get("forecast_compared"), "abs_error": (r or {}).get("abs_error"),
                     "actual_status": x["status"] if x else None, "actual_reason": x["reason"] if x else None,
                     "actual_as_of": x["as_of"] if x else None, "actual_source": x["source"] if x else None,
-                    "actual_close": x.get("close") if x else None}
+                    "actual_close": x.get("close") if x else None,
+                    # 1.2.9: the frozen copy (provenance) or why the day is not finalized yet; compared zeros of an
+                    # absent SKU x FC row on a whole-day source
+                    "actual_final": x.get("final") if x else None,
+                    "actual_finalization": x.get("finalization") if x else None,
+                    "n_zero_absent": (r or {}).get("n_zero_absent", 0) if (r or {}).get("n_actual") else 0}
             item["deviation"] = (item["forecast_compared"] - item["actual"]) if item["actual"] is not None else None
             item["wape"] = (item["abs_error"] / item["actual"]) if item["actual"] else None
             out.append(item)
             d += timedelta(days=1)
         return out
 
-    def kpi(self, daily: list[dict]) -> dict:
-        """Totals of the selected rows. Actual, deviation and WAPE use ONLY the rows that have an actual (never a
-        missing actual as 0); WAPE = sum|forecast - actual| / sum(actual) as in ml/metrics.py, undefined when that sum
-        is 0. status: COMPLETE when every compared row is complete, PROVISIONAL when any is provisional, otherwise
-        CLOSED (closed at 23:59, not confirmed by the source)."""
-        f = sum(x["forecast"] or 0 for x in daily)
-        comp = [x for x in daily if x["actual"] is not None]
+    @staticmethod
+    def _group(items: list[dict]) -> dict:
+        """Totals and metrics of the days of ONE actual status (only rows that have an actual; never a missing actual
+        as 0). WAPE = sum|forecast - actual| / sum(actual) as in ml/metrics.py, bias = (sum F - sum A) / sum A, both
+        undefined when the actual sum is 0."""
+        comp = [x for x in items if x["actual"] is not None]
         a = sum(x["actual"] for x in comp)
         fc = sum(x["forecast_compared"] or 0 for x in comp)
         err = sum(x["abs_error"] or 0 for x in comp)
-        sts = {x["actual_status"] for x in comp}
-        status = NO_ACTUAL if not comp else (COMPLETE if sts == {COMPLETE} else PROVISIONAL if PROVISIONAL in sts
-                                             else CLOSED)
-        notes = []
-        if not comp:
-            notes.append("NO_ACTUAL")
-        elif a <= 0:
-            notes.append("SUM_ACTUAL_ZERO")
-        return {"n_rows": sum(x["n_rows"] for x in daily), "n_rows_compared": sum(x["n_rows"] for x in comp),
-                "days_with_history": sum(1 for x in daily if x["has_history"]), "days_compared": len(comp),
-                "days_primary": sum(1 for x in daily if x["forecast_source"] == PRIMARY),
-                "days_backup": sum(1 for x in daily if x["forecast_source"] == SNAPSHOT),
-                "forecast_total": f if any(x["has_history"] for x in daily) else None,
+        return {"n_rows": sum(x["n_rows"] for x in comp), "days": len(comp),
+                "n_zero_absent": sum(x.get("n_zero_absent") or 0 for x in comp),
                 "actual_total": a if comp else None, "forecast_compared": fc if comp else None,
                 "deviation": (fc - a) if comp else None, "abs_error": err if comp else None,
-                "wape": (err / a) if comp and a > 0 else None, "bias": ((fc - a) / a) if comp and a > 0 else None,
-                "status": status, "notes": notes}
+                "wape": (err / a) if comp and a > 0 else None, "bias": ((fc - a) / a) if comp and a > 0 else None}
+
+    def kpi(self, daily: list[dict]) -> dict:
+        """Totals of the selected rows. 1.2.9 (seventh batch): actual, deviation, WAPE and bias are those of the
+        FINALIZED rows only (status COMPLETE: frozen copy of the verified D-1 load) - the model-quality view. Rows still
+        PROVISIONAL or CLOSED (23:59, not finalized) are reported apart in `provisional` / `closed` (never mixed into
+        the finalized figures); `coverage` gives the rows and days of every group, so the evaluation base is visible.
+        status: COMPLETE when there is a finalized actual, else NO_ACTUAL (note NO_FINAL_ACTUAL)."""
+        f = sum(x["forecast"] or 0 for x in daily)
+        hist = [x for x in daily if x["has_history"]]
+        by = {s: [x for x in hist if x["actual_status"] == s] for s in ACTUAL_STATUSES}
+        fin, prov, closed = self._group(by[COMPLETE]), self._group(by[PROVISIONAL]), self._group(by[CLOSED])
+        notes = []
+        if not fin["days"]:
+            notes.append("NO_FINAL_ACTUAL")
+        elif fin["actual_total"] <= 0:
+            notes.append("SUM_ACTUAL_ZERO")
+        if not any(g["days"] for g in (fin, prov, closed)):
+            notes.append("NO_ACTUAL")
+        rows_of = lambda s: sum(x["n_rows"] for x in by[s])          # noqa: E731
+        days_of = lambda s: sum(1 for x in by[s] if x["n_rows"])     # noqa: E731 - days with rows in the filter
+        return {"n_rows": sum(x["n_rows"] for x in daily), "n_rows_compared": fin["n_rows"],
+                "days_with_history": len(hist), "days_compared": fin["days"],
+                "days_primary": sum(1 for x in daily if x["forecast_source"] == PRIMARY),
+                "days_backup": sum(1 for x in daily if x["forecast_source"] == SNAPSHOT),
+                "forecast_total": f if hist else None,
+                "basis": "FINALIZED_ONLY", "actual_total": fin["actual_total"],
+                "forecast_compared": fin["forecast_compared"], "deviation": fin["deviation"],
+                "abs_error": fin["abs_error"], "wape": fin["wape"], "bias": fin["bias"],
+                "n_zero_absent": fin["n_zero_absent"],
+                "status": COMPLETE if fin["days"] else NO_ACTUAL, "notes": notes,
+                "provisional": prov, "closed": closed,
+                "coverage": {"rows_total": sum(x["n_rows"] for x in hist), "rows_final": rows_of(COMPLETE),
+                             "rows_provisional": rows_of(PROVISIONAL), "rows_closed": rows_of(CLOSED),
+                             "rows_no_actual": rows_of(NO_ACTUAL),
+                             "days_final": days_of(COMPLETE), "days_provisional": days_of(PROVISIONAL),
+                             "days_closed": days_of(CLOSED), "days_no_actual": days_of(NO_ACTUAL)}}
 
     def count(self) -> int:
         if not self.ctx:
@@ -505,14 +579,14 @@ class Query:
 
     def rows(self, sort: str = "date", limit: int | None = 100, offset: int = 0):
         """Table rows (one per official SKU x FC x run date) with deviation and per-row WAPE (|f - a| / a, only when
-        the actual is > 0)."""
+        the actual is > 0); f = forecast_qty, the whole-number quantity shown (1.2.9)."""
         if sort not in SORTS:
             raise AppError("VALIDATION_ERROR", 422, detail=f"sort must be one of {', '.join(SORTS)}")
         if not self.ctx:
             return []
         sql, p = self._base()
-        sql += (" SELECT b.*, CASE WHEN b.actual IS NOT NULL THEN b.yhat - b.actual END AS deviation, "
-                "CASE WHEN b.actual > 0 THEN ABS(b.yhat - b.actual) / b.actual END AS row_wape FROM base b "
+        sql += (" SELECT b.*, CASE WHEN b.actual IS NOT NULL THEN b.forecast_qty - b.actual END AS deviation, "
+                "CASE WHEN b.actual > 0 THEN ABS(b.forecast_qty - b.actual) * 1.0 / b.actual END AS row_wape FROM base b "
                 f"ORDER BY {SORTS[sort]}")
         if limit is not None:
             sql += " LIMIT ? OFFSET ?"
@@ -562,7 +636,7 @@ def export_xlsx(qy: Query, labels: dict, sort: str = "date") -> bytes:
     info = wb.create_sheet(L["sheet_info"])
     info.append([L["field"], L["value"]])
     f = qy.filters
-    for key, val in (("export_format_version", "H2"), ("language", L["language_name"]),
+    for key, val in (("export_format_version", EXPORT_FORMAT), ("language", L["language_name"]),
                      ("generated_at_vn", L["fmt_time"](now_iso())), ("scope", qy.scope_key),
                      ("data_source", qy.data_source or ""), ("run_from", L["fmt_date"](f["run_from"])),
                      ("run_to", L["fmt_date"](f["run_to"])), ("fc_filter", f["fc_id"] or L["all"]),
@@ -575,7 +649,15 @@ def export_xlsx(qy: Query, labels: dict, sort: str = "date") -> bytes:
                      ("rule_actual", L["rule_actual"]), ("rule_wape", L["rule_wape"]),
                      ("source_filter", src_label(f["forecast_source"]) if f["forecast_source"] else L["all"]),
                      ("days_primary", k["days_primary"]), ("days_backup", k["days_backup"]),
-                     ("rule_backup", L["rule_backup"]), ("rule_close", L["rule_close"])):
+                     ("rule_backup", L["rule_backup"]), ("rule_close", L["rule_close"]),
+                     # H4 (1.2.9, seventh batch): the figures above are of the FINALIZED rows; the others apart
+                     ("basis", L["basis_final"]), ("rows_final", k["coverage"]["rows_final"]),
+                     ("rows_provisional", k["coverage"]["rows_provisional"]),
+                     ("rows_closed", k["coverage"]["rows_closed"]), ("rows_no_actual", k["coverage"]["rows_no_actual"]),
+                     ("provisional_actual_total", k["provisional"]["actual_total"]),
+                     ("provisional_wape", k["provisional"]["wape"]),
+                     ("closed_actual_total", k["closed"]["actual_total"]), ("closed_wape", k["closed"]["wape"]),
+                     ("zero_absent", k["n_zero_absent"]), ("rule_final", L["rule_final"])):
         info.append([L["info"][key], val])
     ses = wb.create_sheet(L["sheet_sessions"])
     ses.append(list(L["cols_sessions"].values()))
@@ -601,7 +683,7 @@ def export_xlsx(qy: Query, labels: dict, sort: str = "date") -> bytes:
     for r in qy.rows(sort=sort, limit=None):
         put(det, [r["run_date"], r["target_date"], r["forecast_run_id"], r["model_version"],
                   L["fmt_time"](r["session_started_at"]), r["sku_id"], r["product_name"] or L["no_product_name"],
-                  r["fc_id"], r["yhat"], r["actual"], r["deviation"], r["row_wape"], st_label(r["actual_status"]),
+                  r["fc_id"], r["forecast_qty"], r["actual"], r["deviation"], r["row_wape"], st_label(r["actual_status"]),
                   rs_label(r["actual_reason"]), L["fmt_time"](r["actual_as_of"]) if r["actual_as_of"] else "",
                   src_label(r["forecast_source"]), r["snapshot_id"], r["snapshot_business_date"],
                   L["fmt_time"](r["snapshot_created_at"]) if r["snapshot_created_at"] else ""],

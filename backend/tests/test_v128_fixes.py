@@ -188,7 +188,8 @@ def test_values_summary_export_and_explanation_show_the_same_whole_numbers(clien
     assert totals == sorted(totals, reverse=True)
     wb = load_workbook(io.BytesIO(client.get(f"/api/forecast-runs/{rid}/export.xlsx?horizon={h}&lang=en").content))
     daily = list(wb["Daily"].iter_rows(min_row=2, values_only=True))
-    assert {(r[0], r[2], r[3].date().isoformat()): r[5] for r in daily} == {k: qty.business_qty(v) for k, v in stored.items()}
+    # 1.2.9 (format 6): weekday name after the date (index 4) -> the forecast is column 6
+    assert {(r[0], r[2], r[3].date().isoformat()): r[6] for r in daily} == {k: qty.business_qty(v) for k, v in stored.items()}
     ws = wb[f"Totals {h}d"]
     head = [c.value for c in ws[1]]
     ci = head.index("Period total forecast")

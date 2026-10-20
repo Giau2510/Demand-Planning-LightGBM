@@ -18,6 +18,8 @@ from ..messages import AppError
 from ..ml import metrics as mt
 from ..ml import pipeline
 from ..timeutil import today_vn
+from ..weekday import iso_weekday
+from ..weekday import label as weekday_label
 from . import background
 
 router = APIRouter(prefix="/api")
@@ -289,8 +291,11 @@ def forecast_values(run_id: str, horizon: int | None = None, sku_id: str | None 
     for r in rows:
         r["actual_today"] = intraday.value_for(act, r["sku_id"], r["fc_id"], r["target_date"])
         r["product_name"] = names.get(r["sku_id"])
+        # 1.2.9: day of week of the TARGET date (1 = Monday ... 7 = Sunday, app/weekday.py); horizon_day stays the
+        # position in the forecast period (1 = first forecast day)
+        r["weekday"] = iso_weekday(r["target_date"])
     return {"total": total, "rows": rows, "horizon": h, "actual": intraday.public(act), "q": q or None,
-            "qty_rule": QTY_RULE}
+            "qty_rule": QTY_RULE, "weekday_rule": "ISO_1_MONDAY_7_SUNDAY"}
 
 
 @router.get("/forecast-runs/{run_id}/summary")
@@ -363,6 +368,8 @@ def forecast_export(run_id: str, horizon: int | None = None, lang: str = "vi"):
                              for r in daily.itertuples()]
     daily["method_label"] = daily["method"].map(lambda m: method_label(m, lang))
     daily["product_name"] = daily["sku_id"].map(name_of)
+    # 1.2.9 (format 6): weekday name of the target date next to it; the numeric horizon_day column is kept unchanged
+    daily["weekday"] = daily["target_date"].map(lambda d: weekday_label(iso_weekday(d), lang))
     totals = daily.groupby(["sku_id", "fc_id", "method"], as_index=False)["forecast_qty"].sum()
     totals["method_label"] = totals["method"].map(lambda m: method_label(m, lang))
     totals["product_name"] = totals["sku_id"].map(name_of)
@@ -436,9 +443,12 @@ def forecast_explain_history(run_id: str, sku_id: str, fc_id: str, target_date: 
 @router.get("/features/catalog")
 def features_catalog(target_date: str | None = None):
     """Every feature of the current model configuration with its exact definition (ml/feature_catalog.py)."""
+    from ..data import open_hours
     from ..ml import feature_catalog
     from ..ml.features import feature_names
-    names = feature_names(ss.get("model"))
+    # 1.2.9: the SKU open hours belong to the configuration of the BIGQUERY source (mandatory input, not a user setting)
+    cfg = ss.get("model").model_copy(update={"feature_open_hours": open_hours.mandatory(ss.get("general").active_source)})
+    names = feature_names(cfg)
     return {"features": [feature_catalog.describe(n, target_date) for n in names],
             "roles": {k: {"vi": v[0], "en": v[1]} for k, v in feature_catalog.ROLES.items()}}
 

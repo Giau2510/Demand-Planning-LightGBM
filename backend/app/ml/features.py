@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from ..weekday import iso_weekday
+
 LAGS = [1, 2, 3, 4, 5, 6, 7, 14, 21, 28]
 ROLL_WINDOWS = [7, 14, 28, 56]
 LAST_SALE_WINDOW = 180
@@ -34,6 +36,14 @@ class Panel:
     missing_days: np.ndarray             # bool T: calendar days with no orders at all in the scope
     sku_codes: dict[str, int] = field(default_factory=dict)
     fc_codes: dict[str, int] = field(default_factory=dict)
+    # 1.2.9: S x T SKU open hours of the day (D-1 total_open_hours, status OK only); NaN = no value (no demand row that
+    # day, or a value that is missing / conflicting / out of range). Never forward-filled, never 0 for unknown
+    hours: np.ndarray | None = None
+    # 1.2.9b: S x T customer counts of the day (data/customers.py: distinct customers, repeat customers, sum of their
+    # days since the previous order day); NaN = unknown (no customer column / no identifier that day), never 0
+    customers: np.ndarray | None = None
+    repeat_customers: np.ndarray | None = None
+    repeat_interval: np.ndarray | None = None
 
     @property
     def n_series(self) -> int:
@@ -45,9 +55,13 @@ class Panel:
 
     def truncate(self, t_end: int) -> "Panel":
         """Copy of the panel restricted to day indices < t_end (used by backtesting)."""
+        def cut(a):
+            return None if a is None else a[:, :t_end].copy()
         return Panel(self.keys, self.dates[:t_end], self.Y[:, :t_end].copy(), self.price[:, :t_end].copy(),
                      self.disc[:, :t_end].copy(), self.promo[:, :t_end].copy(),
-                     self.start_idx.copy(), self.missing_days[:t_end].copy(), self.sku_codes, self.fc_codes)
+                     self.start_idx.copy(), self.missing_days[:t_end].copy(), self.sku_codes, self.fc_codes,
+                     hours=cut(self.hours), customers=cut(self.customers), repeat_customers=cut(self.repeat_customers),
+                     repeat_interval=cut(self.repeat_interval))
 
 
 def _ffill_rows(a: np.ndarray) -> np.ndarray:
@@ -92,7 +106,18 @@ def build_panel(demand: pd.DataFrame, end_date: str | None = None, max_days: int
         disc[si, ti] = d["avg_discount_rate"].to_numpy(dtype=float)
     if "promo_share" in d:
         promo[si, ti] = np.nan_to_num(d["promo_share"].to_numpy(dtype=float))
-    first = np.where(present.any(axis=1), present.argmax(axis=1), T)
+    hours = np.full((S, T), np.nan)
+    if "open_hours" in d:            # stored only for status OK (data/open_hours.py); None -> NaN
+        hours[si, ti] = pd.to_numeric(d["open_hours"], errors="coerce").to_numpy(dtype=float)
+    # 1.2.9b customer counts (None -> NaN); no array at all when the rows carry none (the usual case: about 40 MB per
+    # array on the production scope) - a model that uses them is never resolved without data (feature_registry.resolve)
+    cust = dict.fromkeys(("customer_count", "repeat_customer_count", "repeat_interval_days_sum"))
+    if "customer_count" in d and d["customer_count"].notna().any():
+        for col in cust:
+            a = np.full((S, T), np.nan)
+            a[si, ti] = pd.to_numeric(d[col], errors="coerce").to_numpy(dtype=float)
+            cust[col] = a
+    first =np.where(present.any(axis=1), present.argmax(axis=1), T)
     missing_days = ~present.any(axis=0)
     # not started yet -> NaN ; whole-calendar gaps -> NaN (unknown, not "zero demand")
     Y[np.arange(T)[None, :] < first[:, None]] = np.nan
@@ -100,7 +125,9 @@ def build_panel(demand: pd.DataFrame, end_date: str | None = None, max_days: int
     skus = sorted({k[0] for k in keys})
     fcs = sorted({k[1] for k in keys})
     return Panel(keys, dates, Y, _ffill_rows(price), _ffill_rows(disc), promo, first, missing_days,
-                 {s: i for i, s in enumerate(skus)}, {f: i for i, f in enumerate(fcs)})
+                 {s: i for i, s in enumerate(skus)}, {f: i for i, f in enumerate(fcs)}, hours=hours,
+                 customers=cust["customer_count"], repeat_customers=cust["repeat_customer_count"],
+                 repeat_interval=cust["repeat_interval_days_sum"])
 
 
 def discount_on(cfg) -> bool:
@@ -117,6 +144,37 @@ def weekday_on(cfg) -> bool:
     feature_weekday: the pair follows the calendar group, exactly as before."""
     v = getattr(cfg, "feature_weekday", None)
     return bool(cfg.feature_calendar) if v is None else bool(v)
+
+
+def weekday_encoding(cfg) -> str:
+    """1.2.9: models trained from 1.2.9 store weekday_encoding="ISO": dow = 1 Monday ... 7 Sunday (app/weekday.py, the
+    application's one convention). A model trained before has no value and keeps the encoding it was trained with:
+    0 Monday ... 6 Sunday (= ISO - 1). Both come from the same function, so they can never disagree on the day."""
+    return "ISO" if getattr(cfg, "weekday_encoding", None) == "ISO" else "MON0"
+
+
+def dow_value(d, cfg=None) -> float:
+    n = iso_weekday(d)
+    return float(n if weekday_encoding(cfg) == "ISO" else n - 1)
+
+
+OPEN_HOURS = ["open_hours_last", "open_hours_mean_7"]
+
+
+def open_hours_on(cfg) -> bool:
+    """1.2.9: SKU open hours (D-1 total_open_hours) as model input. Set by the training (mandatory for the BIGQUERY
+    source, data/open_hours.py); never a user switch. Models trained before 1.2.9 have no value: not an input."""
+    return bool(getattr(cfg, "feature_open_hours", None))
+
+
+CUSTOMER = ["cust_mean_28", "cust_repeat_share_28", "cust_repeat_interval_28"]
+CUSTOMER_WINDOW = 28
+
+
+def customer_on(cfg) -> bool:
+    """1.2.9b: aggregate customer features (data/customers.py). The resolved switch stored with the run (True only when
+    the user switch is ON and the scope has the data); configurations without the field: not an input."""
+    return bool(getattr(cfg, "feature_customer", None))
 
 
 def calendar_names(cfg) -> list[str]:
@@ -140,6 +198,10 @@ def feature_names(cfg) -> list[str]:
         names += ["disc_last"]
     if cfg.feature_promotion:
         names += ["promo_last", "promo_mean_7"]
+    if open_hours_on(cfg):
+        names += OPEN_HOURS
+    if customer_on(cfg):
+        names += CUSTOMER
     if is_direct(cfg):
         # features at the ORIGIN (calendar removed), then the calendar of the TARGET day and the horizon (1 = first
         # forecast day); same column order as the experiment harness (L7_direct)
@@ -152,6 +214,15 @@ def _nanmean(a):
         cnt = np.sum(~np.isnan(a), axis=1)
         s = np.nansum(a, axis=1)
         return np.where(cnt > 0, s / np.maximum(cnt, 1), np.nan)
+
+
+def _ratio(num, den):
+    """Sum of num / sum of den over the days where both are known; NaN without such a day or when the sum of den is 0."""
+    both = ~np.isnan(num) & ~np.isnan(den)
+    sn = np.where(both, num, 0.0).sum(axis=1)
+    sd = np.where(both, den, 0.0).sum(axis=1)
+    with np.errstate(all="ignore"):
+        return np.where(sd > 0, sn / sd, np.nan)
 
 
 def _nanstd(a):
@@ -192,7 +263,7 @@ def features_at(p: Panel, Y: np.ndarray, price: np.ndarray, disc: np.ndarray, pr
             cols.append(np.full(S, np.nan))
     cal = calendar_names(cfg)
     if cal:
-        vals = dict(zip(CALENDAR, calendar_row(dates[t])))
+        vals = dict(zip(CALENDAR, calendar_row(dates[t], cfg)))
         for n in cal:
             cols.append(np.full(S, vals[n]))
     if cfg.feature_price:
@@ -205,6 +276,30 @@ def features_at(p: Panel, Y: np.ndarray, price: np.ndarray, disc: np.ndarray, pr
     if cfg.feature_promotion:
         cols.append(promo[:, t - 1] if t > 0 else np.zeros(S))
         cols.append(promo[:, max(0, t - 7):t].mean(axis=1) if t > 0 else np.zeros(S))
+    if open_hours_on(cfg):
+        # open hours of the day BEFORE the target / origin day and the mean of the known values of the 7 days before;
+        # a day without a value stays unknown (NaN), never 0 or a carried value. After the forecast origin nothing is
+        # known (RECURSIVE: NaN for the day before, mean over the known days only)
+        if p.hours is None:      # never an all-unknown column passed off as the input
+            raise ValueError("OPEN_HOURS_NOT_IN_PANEL: the model uses the SKU open hours but the panel has none")
+        hrs = p.hours
+        th = hrs.shape[1]
+        cols.append(hrs[:, t - 1] if 0 < t <= th else np.full(S, np.nan))
+        w7 = hrs[:, max(0, t - 7):min(t, th)]
+        cols.append(_nanmean(w7) if w7.shape[1] else np.full(S, np.nan))
+    if customer_on(cfg):
+        # 1.2.9b: the known days among the 28 calendar days before the target day / origin (each day's counts use orders
+        # up to that day only, data/customers.py); nothing after the origin is known. No known day -> NaN, never 0
+        if p.customers is None or p.repeat_customers is None or p.repeat_interval is None:
+            raise ValueError("CUSTOMER_NOT_IN_PANEL: the model uses the customer features but the panel has none")
+        lo, hi = max(0, t - CUSTOMER_WINDOW), min(t, p.customers.shape[1])
+        if hi <= lo:
+            cols += [np.full(S, np.nan)] * len(CUSTOMER)
+        else:
+            n, r, iv = (a[:, lo:hi] for a in (p.customers, p.repeat_customers, p.repeat_interval))
+            cols.append(_nanmean(n))        # mean distinct customers of the known days
+            cols.append(_ratio(r, n))       # share of repeat customers
+            cols.append(_ratio(iv, r))      # mean days since the previous order of the repeat customers
     with np.errstate(all="ignore"):
         return np.column_stack(cols).astype(np.float32)
 
@@ -221,16 +316,17 @@ class _NoCalendar:
         return getattr(self._cfg, name)
 
 
-def calendar_row(d) -> list[float]:
-    """Calendar features of one day, identical to the calendar block of features_at."""
-    return [float(d.dayofweek), float(d.day), float(d.month), float(d.isocalendar()[1]),
-            1.0 if d.dayofweek >= 5 else 0.0, float(d.days_in_month - d.day)]
+def calendar_row(d, cfg=None) -> list[float]:
+    """Calendar features of one day, identical to the calendar block of features_at. dow in the encoding of the model
+    (cfg: 1..7 from 1.2.9, 0..6 before); the weekday itself always comes from app/weekday.iso_weekday."""
+    return [dow_value(d, cfg), float(d.day), float(d.month), float(d.isocalendar()[1]),
+            1.0 if iso_weekday(d) >= 6 else 0.0, float(d.days_in_month - d.day)]
 
 
 def direct_extra(cfg, target_day, h: int) -> list[float]:
     """Columns appended to the origin features of a DIRECT row: target-day calendar (if on) + horizon h (1-based)."""
     cal = calendar_names(cfg)
-    return [v for n, v in zip(CALENDAR, calendar_row(target_day)) if n in cal] + [float(h)]
+    return [v for n, v in zip(CALENDAR, calendar_row(target_day, cfg)) if n in cal] + [float(h)]
 
 
 def origin_features(p: Panel, Y, price, disc, promo, dates, t0: int, cfg, sc, fcc) -> np.ndarray:
@@ -245,14 +341,25 @@ def static_codes(p: Panel, sku_codes: dict | None = None, fc_codes: dict | None 
             np.array([fcc.get(k[1], -1) for k in p.keys], dtype=float))
 
 
-def training_matrix(p: Panel, cfg, min_t: int = 7, max_rows: int = 4_000_000):
-    """Stack features/targets for every (series, day) with a known target, oldest days dropped if too big."""
+def _stack(Xs, ys, idx, cfg, with_index: bool):
+    if not Xs:
+        X, y = np.empty((0, len(feature_names(cfg))), dtype=np.float32), np.empty(0)
+    else:
+        X, y = np.vstack(Xs), np.concatenate(ys)
+    if not with_index:
+        return X, y
+    return X, y, (np.vstack(idx) if idx else np.empty((0, 2), dtype=np.int64))
+
+
+def training_matrix(p: Panel, cfg, min_t: int = 7, max_rows: int = 4_000_000, with_index: bool = False):
+    """Stack features/targets for every (series, day) with a known target, oldest days dropped if too big.
+    with_index (1.2.9b): also the (series, target day) index of every row, e.g. to give a row a training weight."""
     sc, fcc = static_codes(p)
     S, T = p.Y.shape
     t_from = max(min_t, 1)
     max_days = max(1, max_rows // max(S, 1))
     t_from = max(t_from, T - max_days)
-    Xs, ys = [], []
+    Xs, ys, idx = [], [], []
     for t in range(t_from, T):
         target = p.Y[:, t]
         ok = ~np.isnan(target) & (t > p.start_idx)
@@ -261,18 +368,19 @@ def training_matrix(p: Panel, cfg, min_t: int = 7, max_rows: int = 4_000_000):
         X = features_at(p, p.Y, p.price, p.disc, p.promo, p.dates, t, cfg, sc, fcc)
         Xs.append(X[ok])
         ys.append(target[ok])
-    if not Xs:
-        return np.empty((0, len(feature_names(cfg))), dtype=np.float32), np.empty(0)
-    return np.vstack(Xs), np.concatenate(ys)
+        if with_index:
+            idx.append(np.column_stack([np.nonzero(ok)[0], np.full(int(ok.sum()), t)]))
+    return _stack(Xs, ys, idx, cfg, with_index)
 
 
-def direct_training_matrix(p: Panel, cfg, horizon: int):
+def direct_training_matrix(p: Panel, cfg, horizon: int, with_index: bool = False):
     """DIRECT training rows: for origins t0 = T - j * step (j = 1..direct_origins, t0 >= 7) and h = 1..horizon with
     t0 + h - 1 < T: features at t0 (data < t0), target-day calendar, h -> target Y[t0 + h - 1]. A series counts only if
-    it started before t0 and its target day is known (NaN = not started / no data at all, never 0)."""
+    it started before t0 and its target day is known (NaN = not started / no data at all, never 0).
+    with_index (1.2.9b): also the (series, target day) index of every row."""
     sc, fcc = static_codes(p)
     S, T = p.Y.shape
-    Xs, ys = [], []
+    Xs, ys, idx = [], [], []
     for j in range(1, cfg.direct_origins + 1):
         t0 = T - j * cfg.direct_origin_step_days
         if t0 < 7:
@@ -288,6 +396,6 @@ def direct_training_matrix(p: Panel, cfg, horizon: int):
                 extra = np.tile(np.array(direct_extra(cfg, p.dates[td], h), dtype=np.float32), (int(ok.sum()), 1))
                 Xs.append(np.hstack([Xb[ok], extra]))
                 ys.append(target[ok])
-    if not Xs:
-        return np.empty((0, len(feature_names(cfg))), dtype=np.float32), np.empty(0)
-    return np.vstack(Xs), np.concatenate(ys)
+                if with_index:
+                    idx.append(np.column_stack([np.nonzero(ok)[0], np.full(int(ok.sum()), td)]))
+    return _stack(Xs, ys, idx, cfg, with_index)

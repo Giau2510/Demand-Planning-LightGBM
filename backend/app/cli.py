@@ -138,6 +138,11 @@ def main(argv=None) -> int:
     er.add_argument("--db", help="dry run on this database file (read-only); default: the configured database")
     er.add_argument("--apply", action="store_true", help="delete the snapshots of the reviewed plan (needs --plan)")
     er.add_argument("--plan", help="plan_id printed by the dry run that was reviewed")
+    af = sub.add_parser("actual-finalize", help="1.2.9: finalize (freeze) the actual of completed days written by a "
+                                                "verified D-1 load (dry run unless --apply)")
+    af.add_argument("--db", help="dry run on this database file (read-only); default: the configured database")
+    af.add_argument("--apply", action="store_true", help="finalize the eligible days in the configured database")
+    af.add_argument("--summary", action="store_true", help="dry run: counts only, without the per-day list")
     a = ap.parse_args(argv)
     from . import paths
     try:
@@ -188,6 +193,16 @@ def _run(a) -> int:
         res = eod_retention.dry_run(target)
         print(json.dumps({"ok": not res["refused"], **res}, indent=2, default=str, ensure_ascii=False))
         return 2 if res["refused"] else 0
+    if a.cmd == "actual-finalize" and not a.apply:
+        from pathlib import Path
+        from . import actual_final
+        target = Path(a.db) if a.db else paths.db_path()
+        if not target.exists():
+            print(json.dumps({"ok": False, "code": "STORAGE_NOT_FOUND", "detail": str(target)}, ensure_ascii=False))
+            return 3
+        res = actual_final.dry_run(target, items=not a.summary)
+        print(json.dumps({"ok": True, "dry_run": True, **res}, indent=2, default=str, ensure_ascii=False))
+        return 0
     if a.cmd == "storage-init":
         cfg = paths.init_storage_config(a.data_dir, a.logs_dir, a.backups_dir, a.reports_dir)
         paths.ensure_storage()
@@ -278,6 +293,19 @@ def _run(a) -> int:
         res = forecast_history.reconcile()
         print(json.dumps({"ok": not res["errors"], **res}, indent=2, ensure_ascii=False, default=str))
         return 1 if res["errors"] else 0
+    elif a.cmd == "actual-finalize":               # --apply (the dry run is handled above, read-only)
+        if a.db:
+            print(json.dumps({"ok": False, "refused": "--apply works on the configured database only"},
+                             ensure_ascii=False))
+            return 2
+        db.migrate()
+        from . import actual_final
+        with db.read() as c:
+            scopes = actual_final.d1_scopes(c)
+        res = [actual_final.finalize(sk, "BIGQUERY", by="CLI") for sk in scopes]
+        print(json.dumps({"ok": not any(r["errors"] for r in res), "scopes": res}, indent=2, default=str,
+                         ensure_ascii=False))
+        return 1 if any(r["errors"] for r in res) else 0
     elif a.cmd == "eod-retention":                 # --apply (the dry run is handled above, read-only)
         from . import eod_retention
         from .messages import AppError

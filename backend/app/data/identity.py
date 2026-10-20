@@ -27,23 +27,46 @@ from .demand import fingerprint
 ALGORITHM = "content-v1"
 CONTENT_COLUMNS = ("order_date", "sku_id", "fc_id", "qty", "n_orders", "avg_unit_price", "avg_discount_rate",
                    "promo_share", "voucher_share")
+# 1.2.9: a run that used the SKU open hours also hashes them. Each identity stores its own column list and is always
+# compared with exactly that list, so runs recorded before (CONTENT_COLUMNS) keep their identity when a D-1 reload adds
+# open hours to their days.
+OPEN_HOURS_COLUMNS = CONTENT_COLUMNS + ("open_hours",)
+# 1.2.9b: a run that used the customer features also hashes the customer counts (same per-identity column list rule)
+CUSTOMER_COLUMNS = ("customer_count", "repeat_customer_count", "repeat_interval_days_sum")
+_ALLOWED = (CONTENT_COLUMNS, OPEN_HOURS_COLUMNS, CONTENT_COLUMNS + CUSTOMER_COLUMNS, OPEN_HOURS_COLUMNS + CUSTOMER_COLUMNS)
+
+
+def columns_for(cfg) -> tuple[str, ...]:
+    from ..ml.features import customer_on, open_hours_on
+    base = OPEN_HOURS_COLUMNS if open_hours_on(cfg) else CONTENT_COLUMNS
+    return base + CUSTOMER_COLUMNS if customer_on(cfg) else base
+
+
+def _columns(cols) -> tuple[str, ...]:
+    c = tuple(cols or CONTENT_COLUMNS)
+    if c not in _ALLOWED:        # stored JSON never reaches the SQL text unchecked
+        raise ValueError(f"unknown identity columns {c}")
+    return c
 _cache: "OrderedDict[tuple, dict]" = OrderedDict()     # (scope_key, fingerprint) -> {date: (sha256, rows)}
 _CACHE_MAX = 4
 _lock = threading.Lock()
 
 
-def day_hashes(scope_key: str, conn, cache: bool = True, fp: str | None = None) -> dict[str, tuple[str, int]]:
+def day_hashes(scope_key: str, conn, cache: bool = True, fp: str | None = None,
+               columns=None) -> dict[str, tuple[str, int]]:
     """{order_date: (sha256, rows)} of the whole scope. One ordered scan (~11 s for 1.35 M rows), cached per data
     version of the live database (the fingerprint): computed again only after the data was written. cache=False for
-    another database (a backup copy). fp: the fingerprint when the caller has it (one full-scope aggregate less)."""
-    key = (scope_key, fp or fingerprint(scope_key, conn))
+    another database (a backup copy). fp: the fingerprint when the caller has it (one full-scope aggregate less).
+    columns: the identity's own column list (CONTENT_COLUMNS for every run before 1.2.9)."""
+    cols = _columns(columns)
+    key = (scope_key, fp or fingerprint(scope_key, conn), cols)
     with _lock:
         if cache and key in _cache:
             _cache.move_to_end(key)
             return _cache[key]
     out: dict[str, tuple[str, int]] = {}
     day, h, n = None, None, 0
-    for row in conn.execute(f"SELECT {', '.join(CONTENT_COLUMNS)} FROM demand_daily WHERE scope_key=? "
+    for row in conn.execute(f"SELECT {', '.join(cols)} FROM demand_daily WHERE scope_key=? "
                             "ORDER BY order_date, sku_id, fc_id", (scope_key,)):
         t = tuple(row)
         if t[0] != day:
@@ -63,12 +86,14 @@ def day_hashes(scope_key: str, conn, cache: bool = True, fp: str | None = None) 
     return out
 
 
-def window_identity(scope_key: str, start: str, end: str, conn, days: dict | None = None, fp: str | None = None) -> dict:
+def window_identity(scope_key: str, start: str, end: str, conn, days: dict | None = None, fp: str | None = None,
+                    columns=None) -> dict:
     """Identity of the data window [start, end] of a scope (both Vietnam calendar dates, inclusive)."""
-    days = days if days is not None else day_hashes(scope_key, conn, fp=fp)
+    cols = _columns(columns)
+    days = days if days is not None else day_hashes(scope_key, conn, fp=fp, columns=cols)
     sel = {d: v for d, v in days.items() if start <= d <= end}
     sha = hashlib.sha256("\n".join(f"{d}:{sel[d][0]}" for d in sorted(sel)).encode()).hexdigest()
-    return {"algorithm": ALGORITHM, "columns": list(CONTENT_COLUMNS), "start": start, "end": end, "days": len(sel),
+    return {"algorithm": ALGORITHM, "columns": list(cols), "start": start, "end": end, "days": len(sel),
             "rows": sum(v[1] for v in sel.values()), "sha256": sha, "day_sha": {d: v[0][:16] for d, v in sel.items()},
             "computed_at": now_iso()}
 
@@ -97,7 +122,10 @@ def data_state(tr: dict | None, scope_key: str, conn) -> dict:
     ident = stored_identity(tr, conn)
     if not ident or ident.get("algorithm") != ALGORITHM:
         return {"status": "UNVERIFIABLE", "key": cur}
-    now = window_identity(scope_key, ident["start"], ident["end"], conn, fp=cur)
+    try:
+        now = window_identity(scope_key, ident["start"], ident["end"], conn, fp=cur, columns=ident.get("columns"))
+    except ValueError:
+        return {"status": "UNVERIFIABLE", "key": cur}
     base = {"key": cur, "origin": ident["origin"], "window": [ident["start"], ident["end"]], "rows": ident.get("rows"),
             "sha256": ident["sha256"]}
     if now["sha256"] == ident["sha256"]:
@@ -108,10 +136,10 @@ def data_state(tr: dict | None, scope_key: str, conn) -> dict:
             "n_changed_days": len(changed)}
 
 
-def record_for_training(run_id: str, scope_key: str, start: str, end: str) -> dict:
+def record_for_training(run_id: str, scope_key: str, start: str, end: str, columns=None) -> dict:
     """Stored with a training run at training time (feature_config_json.data_identity)."""
     with db.read() as c:
-        ident = window_identity(scope_key, start, end, c)
+        ident = window_identity(scope_key, start, end, c, columns=columns)
     with db.tx() as c:
         c.execute("UPDATE training_runs SET feature_config_json=json_set(COALESCE(feature_config_json, '{}'), "
                   "'$.data_identity', json(?)) WHERE id=?", (json.dumps(ident), run_id))

@@ -107,7 +107,7 @@ def _kpi(**kw):
 # ------------------------------------------------------------------ A. WAPE after each D0 update, formula unchanged
 def test_wape_is_recomputed_after_each_d0_update_with_the_unchanged_formula():
     rid = _run("2026-10-18 19:00", origin="2026-10-18", horizon=15, keys=KEYS)
-    fh.capture(rid)                                         # D+1 = 19/10: 10.5, 11.5, 12.5
+    fh.capture(rid)                                         # D+1 = 19/10: 10.5, 11.5, 12.5 -> shown 11, 12, 13 (1.2.9)
     f0, j0 = _fp(), _jobs()
     seen = []
     for at, vals in (("2026-10-19 08:05", {}), ("2026-10-19 10:05", {("S1", "HN"): 3, ("S1", "BD"): 2}),
@@ -115,14 +115,17 @@ def test_wape_is_recomputed_after_each_d0_update_with_the_unchanged_formula():
         _at(at)
         _snapshot("2026-10-19", vals, at[:-1] + "0")
         k, _d, rows = _kpi(run_from="2026-10-18", run_to="2026-10-18")
-        f = [r["yhat"] for r in rows]
+        f = [r["forecast_qty"] for r in rows]                              # 1.2.9: the whole number shown
         a = [r["actual"] for r in rows]
-        assert k["status"] == fh.PROVISIONAL and k["actual_total"] == sum(vals.values())
+        # 1.2.9 (seventh batch): intraday actual is PROVISIONAL - reported in its own group, never as the finalized KPI
+        kp = k["provisional"]
+        assert k["status"] == fh.NO_ACTUAL and k["actual_total"] is None and kp["actual_total"] == sum(vals.values())
         exp = mt.compute(a, f)["wape"] if sum(a) > 0 else None             # ml/metrics.py, the same formula
-        assert k["wape"] == exp and (exp is None or abs(exp - sum(abs(x - y) for x, y in zip(f, a)) / sum(a)) < 1e-12)
-        seen.append(k["wape"])
+        assert kp["wape"] == exp and (exp is None or abs(exp - sum(abs(x - y) for x, y in zip(f, a)) / sum(a)) < 1e-12)
+        assert k["wape"] is None
+        seen.append(kp["wape"])
         assert _fp() == f0 and _jobs() == j0                                # actual moved, forecast and jobs did not
-    assert seen[0] is None and seen[1] == pytest.approx(29.5 / 5) and seen[2] == pytest.approx((4.5 + 10.5 + 8.5) / 11)
+    assert seen[0] is None and seen[1] == pytest.approx((8 + 12 + 11) / 5) and seen[2] == pytest.approx((5 + 11 + 9) / 11)
 
 
 def test_a_d0_job_re_entered_with_the_same_job_id_writes_one_snapshot(small_demo):
@@ -320,8 +323,9 @@ def test_a_new_official_session_takes_over_and_reading_writes_nothing(client):
     only = client.get("/api/history/rows", params={**p, "limit": 1000, "forecast_source": "PRIMARY"}).json()
     assert {r["run_date"] for r in only["rows"]} == {"2026-10-15", "2026-10-16"}
     bk = client.get("/api/history/summary", params={**p, "forecast_source": "SNAPSHOT"}).json()
-    assert bk["kpi"]["n_rows"] == 4 * 2 and bk["kpi"]["actual_total"] == 100                 # 17/10 -> 18/10: 51 vs 40, 52 vs 60
-    assert bk["kpi"]["wape"] == pytest.approx((11 + 8) / 100)
+    # 1.2.9 (seventh batch): those days are not finalized -> the provisional group of the KPI
+    assert bk["kpi"]["n_rows"] == 4 * 2 and bk["kpi"]["provisional"]["actual_total"] == 100   # 17/10 -> 18/10: 51 vs 40, 52 vs 60
+    assert bk["kpi"]["provisional"]["wape"] == pytest.approx((11 + 8) / 100) and bk["kpi"]["wape"] is None
     assert client.get("/api/history/summary", params={**p, "forecast_source": "OTHER"}).status_code == 422
     x = client.get("/api/history/export.xlsx", params={**p, "lang": "vi"})
     wb = load_workbook(io.BytesIO(x.content))
@@ -331,7 +335,7 @@ def test_a_new_official_session_takes_over_and_reading_writes_nothing(client):
     assert {r[15] for r in det[1:]} == {"Forecast chính", "Snapshot dự phòng"}
     assert all(r[16] and r[17] for r in det[1:] if r[15] == "Snapshot dự phòng") and all(r[16] is None for r in det[1:] if r[15] == "Forecast chính")
     info = {r[0]: r[1] for r in wb["Thông tin"].iter_rows(min_row=2, values_only=True)}
-    assert info["Phiên bản định dạng file"] == "H2" and info["Số ngày dùng snapshot dự phòng"] == 4
+    assert info["Phiên bản định dạng file"] == "H4" and info["Số ngày dùng snapshot dự phòng"] == 4     # 1.2.9: H4
     with db.read() as c:
         assert {t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables} == before     # GET writes nothing
     f0 = _fp()["forecast_eod_snapshot_values"]
@@ -418,8 +422,10 @@ def test_a_missing_actual_is_never_zero_and_without_a_signal_a_close_is_never_co
     assert by["2026-10-18"]["actual"] is None and by["2026-10-18"]["actual_status"] == "NO_ACTUAL"
     assert by["2026-10-18"]["actual_close"]["status"] == "CLOSED_NO_DATA"
     assert (by["2026-10-19"]["actual_status"], by["2026-10-19"]["actual_reason"]) == ("CLOSED", "CLOSED_D0")
-    assert by["2026-10-19"]["actual_close"]["current"] is True and k["status"] == "CLOSED"
-    assert k["actual_total"] == 4.0                                      # the shown figure is the source's, unchanged
+    assert by["2026-10-19"]["actual_close"]["current"] is True
+    # 1.2.9 (seventh batch): a closed day that is not finalized is reported in the `closed` group, not as final
+    assert k["status"] == "NO_ACTUAL" and k["actual_total"] is None
+    assert k["closed"]["actual_total"] == 4.0                            # the shown figure is the source's, unchanged
 
 
 def test_late_data_adds_controlled_revisions_and_never_touches_the_forecast():
@@ -449,7 +455,10 @@ def test_late_data_adds_controlled_revisions_and_never_touches_the_forecast():
     assert [(r["reason"], r["status"]) for r in ac.reconcile(SCOPE, "BIGQUERY")["revised"]] == [
         ("COMPLETION_SIGNAL_CONFIRMED", "CLOSED_VERIFIED")]
     k, daily, _rows = _kpi(run_from="2026-10-17", run_to="2026-10-17")
-    assert (daily[0]["actual_status"], daily[0]["actual_close"]["revision"], k["status"]) == ("COMPLETE", 4, "COMPLETE")
+    # 1.2.9 (seventh batch): the close keeps its own rule (revision 4 CLOSED_VERIFIED on the signal), but the history
+    # shows COMPLETE only for a FINALIZED day - this day was not finalized (no verified D-1 load), so it stays CLOSED
+    assert (daily[0]["actual_status"], daily[0]["actual_close"]["revision"], k["status"]) == ("CLOSED", 4, "NO_ACTUAL")
+    assert daily[0]["actual_close"]["status"] == "CLOSED_VERIFIED"
     r1 = _one("SELECT * FROM actual_closes WHERE id=?", (rev1["id"],))
     assert (r1["total_qty"], r1["source"], r1["status"]) == (5.0, "D0", "CLOSED_UNVERIFIED")      # revision 1 kept
     assert _fp() == f0 and _jobs() == j0                                   # forecast and jobs untouched
@@ -574,8 +583,11 @@ def test_migration_0005_on_a_v4_database_keeps_every_row(tmp_path, monkeypatch):
             before = {t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tabs}
             vals0 = c.execute("SELECT COUNT(*), SUM(yhat) FROM forecast_values").fetchone()
         res = db.migrate(target)
-        assert (res["from"], res["to"], res["applied"]) == (4, 6, ["0005_eod_backup_actual_close.sql",
-                                                                   "0006_eod_snapshot_retention.sql"])
+        assert (res["from"], res["to"], res["applied"]) == (4, 9, ["0005_eod_backup_actual_close.sql",
+                                                                   "0006_eod_snapshot_retention.sql",
+                                                                   "0007_open_hours.sql",       # 1.2.9: additive
+                                                                   "0008_customer_aggregates.sql",  # 1.2.9b: additive
+                                                                   "0009_actual_finalization.sql"])  # 1.2.9: additive
         assert db.migrate(target)["applied"] == []
         with db.read() as c:
             assert {t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tabs} == before

@@ -15,6 +15,7 @@ import pandas as pd
 
 from .. import db
 from ..timeutil import VN_TZ, now_iso, today_vn
+from ..weekday import is_weekend
 from .demand import aggregate_batch
 from .validation import normalize_and_validate
 
@@ -159,7 +160,7 @@ def demo_intraday_lines(day: date, seed: int = 42) -> pd.DataFrame:
     for spec in _series_specs(30, np.random.default_rng(seed)):
         if spec["kind"] in ("discontinued",):
             continue
-        dow_f = 0.7 if day.weekday() >= 5 else 1.0
+        dow_f = 0.7 if is_weekend(day) else 1.0
         total = rng.poisson(spec["level"] * dow_f) if spec["kind"] != "intermittent" else (
             int(rng.integers(1, 6)) if rng.random() < 0.12 else 0)
         for _ in range(int(total)):

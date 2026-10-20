@@ -20,7 +20,9 @@ Số lượng đặt hàng **theo ngày Việt Nam** cho mỗi tổ hợp **SKU 
 | Lag | nhu cầu 1–7, 14, 21, 28 ngày trước |
 | Rolling | trung bình 7/14/28/56 ngày, độ lệch chuẩn 7/28, tỷ lệ ngày = 0 trong 28 ngày, số ngày từ lần bán gần nhất, max 28 ngày |
 | Lịch | thứ, ngày trong tháng, tháng, tuần trong năm, cuối tuần, số ngày đến cuối tháng |
-| Thứ trong tuần (1.2.8, công tắc riêng `feature_weekday`) | `dow` (0 = Thứ Hai … 6 = Chủ Nhật) và `is_weekend` của **ngày dự báo**. Lịch sử dùng ngày của dòng nhu cầu (`order_date`, ngày Việt Nam, lấy từ cột ngày / `created_at` đã ánh xạ), không dùng thời điểm tạo bản ghi. Chưa lưu (`null`, mọi cấu hình trước 1.2.8) = đi cùng nhóm Lịch như trước, nên model cũ giữ đúng danh sách feature. Đổi công tắc chỉ áp dụng từ lần huấn luyện kế tiếp; huấn luyện, backtest và dự báo (RECURSIVE và DIRECT) dùng cùng một hàm `calendar_names` |
+| Thứ trong tuần (1.2.8, công tắc riêng `feature_weekday`; 1.2.9: quy ước 1–7) | `dow` và `is_weekend` của **ngày dự báo**. Một quy ước cho cả ứng dụng (`backend/app/weekday.py`): **Thứ 2 = 1 … Thứ 7 = 6, Chủ nhật = 7**, tính từ chính ngày lịch (không qua múi giờ). Model huấn luyện từ 1.2.9 lưu `weekday_encoding = "ISO"` (dow 1–7); model cũ hơn giữ mã đã học 0–6 (= ISO − 1), cùng một hàm nên không bao giờ lệch ngày. Lịch sử dùng ngày của dòng nhu cầu (`order_date` = cột `created_date` của D-1, ngày Việt Nam), không dùng thời điểm tạo bản ghi. Chưa lưu (`null`) = đi cùng nhóm Lịch như trước. Bật/tắt ở **Cấu hình mô hình** hoặc thẻ *Thứ trong tuần* của trang **Ánh xạ trường** (cùng một cài đặt `model.feature_weekday`, có báo "Chưa lưu"); áp dụng từ lần huấn luyện kế tiếp; huấn luyện, backtest và dự báo (RECURSIVE và DIRECT) dùng cùng `calendar_names` / `calendar_row` |
+| Giờ mở bán (1.2.9, **bắt buộc** với nguồn BigQuery; không phải công tắc) | `open_hours_last` = số giờ SKU mở bán (0–24) của ngày **trước** ngày dự báo / mốc dự báo; `open_hours_mean_7` = trung bình các ngày đã biết trong 7 ngày trước. Ngày không có giá trị = NaN (không 0, không mang giá trị ngày khác); giờ mở bán của chính ngày dự báo chưa biết nên không dùng. Huấn luyện nguồn BIGQUERY dừng (`OPEN_HOURS_INVALID`) nếu cửa sổ dữ liệu còn dòng không hợp lệ (xem BIGQUERY.md mục 3). DEMO / Excel không có cột này: không áp dụng. `PUT /api/settings/model` từ chối `feature_open_hours` (`OPEN_HOURS_MANDATORY`); giá trị được ghi vào bản cấu hình lưu cùng từng lần huấn luyện, model cũ (không có khóa) giữ nguyên danh sách feature. Lưu ý: model RECURSIVE tính feature cho từng ngày dự báo, nên từ ngày dự báo thứ 2 giờ mở bán "hôm trước" luôn chưa biết (NaN) — so sánh WAPE / bias có và không có giờ mở bán trước khi promote (promote vốn là thao tác tay); model DIRECT (production) tính tại mốc dự báo nên không có lệch này |
+| Hành vi mua lại của khách (1.2.9b, công tắc `feature_customer`, **mặc định TẮT**) | `cust_mean_28` = số khách đặt bình quân / ngày, `cust_repeat_share_28` = Σ khách quay lại ÷ Σ khách, `cust_repeat_interval_28` = Σ số ngày từ lần đặt trước ÷ Σ khách quay lại; trên các ngày **đã biết** trong 28 ngày trước ngày dự báo / mốc dự báo. Số của mỗi ngày tính trong BigQuery từ cột mã khách tùy chọn, chỉ dùng đơn tới chính ngày đó (BIGQUERY.md mục 3); không có mã = NaN, không phải 0. Chỉ dùng khi công tắc BẬT **và** dữ liệu đủ độ phủ (`feature_min_coverage`); nếu không, nhóm bị bỏ khỏi lần huấn luyện đó. Đầu ra vẫn theo SKU × FC |
 | Giá | giá gần nhất đã biết, giá so với trung bình 28 ngày, tỷ lệ giảm giá gần nhất |
 | Khuyến mãi | tỷ lệ khuyến mãi hôm trước, trung bình 7 ngày |
 
@@ -111,6 +113,21 @@ với dữ liệu trước mốc → dự báo H ngày → so với thực tế.
 sánh với baseline trung bình 28 ngày; tách theo phương pháp. Ít hơn 2 fold hợp lệ → *không đủ tin cậy* → từ 1.2.2 là
 *độ tin cậy thấp* (cảnh báo); chỉ chặn publish khi chính sách dưới ngưỡng là `BLOCK` (xem Quality gate).
 Lưu cấu hình và kết quả từng lần backtest.
+
+**1.2.9: chỉ số theo nhóm** (`backtest_runs.metrics_json.segments`, `GET /api/model/training-explain` →
+`backtest.segments`). Cùng các điểm của chỉ số gộp, tách theo:
+- **nhóm nhu cầu** (`ml/demand_patterns.py`, phân loại Syntetos–Boylan trên 91 ngày đã biết trước mốc fold):
+  SMOOTH, ERRATIC, INTERMITTENT, LUMPY, INACTIVE, SHORT_HISTORY;
+- **khối lượng**: HIGH_VOLUME là các chuỗi lớn nhất cộng lại đủ 80% nhu cầu của 91 ngày trước mốc;
+- **ngày đột biến**: thực tế ≥ 10 và lớn hơn cả 3 × trung vị ngày có đơn của chính chuỗi lẫn trung vị + 5 × 1,4826 ×
+  MAD (chỉ dùng lịch sử trước mốc);
+- **ngày trong kỳ**: 1–7, 8–15, 16–30;
+- **tổng kỳ 7 / 15 / 30 ngày**: WAPE của tổng mỗi chuỗi trên các ngày đầu của fold.
+
+Mỗi nhóm có chỉ số của mô hình và của baseline trên cùng điểm. Đây chỉ là **đánh giá**: không loại, cắt hay giảm trọng
+số giá trị nào, và không phải đầu vào của mô hình. Ngưỡng là tham số phân tích, không phải quy tắc nghiệp vụ. Một ngày
+đột biến có thể là đơn sỉ, sự kiện, lỗi dữ liệu hay nhu cầu dồn sau khi hết hàng; nguồn không có trường nào để phân
+biệt, nên không có nhãn nào được gán là sự thật.
 
 ## Chỉ số (định nghĩa giống hệt ở backend `backend/app/ml/metrics.py` và giao diện)
 
@@ -244,8 +261,9 @@ bằng backtest walk-forward. Thông tin thực tế của từng lần huấn l
 (`backend/app/qty.py`): **làm tròn nửa lên của giá trị đã lưu, không nhỏ hơn 0** (2,5 → 3; 2,49 → 2; 0,4 → 0; giá trị 0
 vẫn là 0, không ép lên 1). Mọi tổng (theo ngày, theo chuỗi, theo phương pháp, tổng kỳ) là tổng của các số nguyên theo
 ngày, nên bảng, biểu đồ, tổng và Excel luôn khớp nhau. Giá trị `yhat` trong database **không đổi**; WAPE, bias, MAE,
-quality gate và mọi chỉ số chất lượng vẫn tính trên `yhat`. Trang Lịch sử forecast & thực tế chưa đổi (xem CHANGELOG
-1.2.8: chờ quyết định nghiệp vụ về độ lệch và WAPE theo dòng).
+quality gate và mọi chỉ số chất lượng vẫn tính trên `yhat`. 1.2.9: trang Lịch sử forecast & thực tế cũng hiển thị,
+cộng, sắp xếp và xuất Excel (định dạng H3) số nguyên này. Độ lệch và WAPE **của trang đó** so số nguyên đã hiển thị với
+thực tế; xem `docs/LICH-SU-FORECAST.md` mục 4.
 
 Chỉ lớp hiển thị và file Excel thay đổi; API, database và mọi phép tính giữ nguyên độ chính xác.
 - Số trong phần giải thích, bảng feature, kết quả & chất lượng: **tối đa 2 chữ số thập phân**, không có số 0 thừa
@@ -483,3 +501,49 @@ Khi phát hành, ngoại lệ được ghi ở ba nơi:
 
 Mọi lần huấn luyện sau, theo lịch hay thủ công, vẫn qua quality gate và cơ chế bảo vệ model đang dùng như bình thường.
 Không có cơ chế bỏ qua chung.
+
+## Ngày bắt đầu dữ liệu cho mô hình theo giờ mở bán (1.2.9b)
+
+`data_policy.training_start_rule`:
+- `WINDOW_START` (mặc định): như trước, từ `window_start_date` tới hôm qua.
+- `OPEN_HOURS_COVERAGE` (lựa chọn tạm thời của chủ hệ thống ngày 20/10/2026, chỉ nguồn BigQuery): từ **ngày đầu tiên đã lưu
+  có giờ mở bán** (`open_hours.coverage_start`, tính lại từ dữ liệu ở mỗi lần dùng, không ghi ngày cố định trong mã).
+
+Cùng một cửa sổ cho huấn luyện, backtest (fold nằm trong cùng panel), panel dự báo, kiểm tra giờ mở bán, báo cáo chất lượng
+dữ liệu và data-check. Ngày trước mốc vẫn được lưu và nạp; mỗi lần huấn luyện ghi `data_window.excluded_summary` (số ngày,
+dòng, chuỗi, chuỗi chỉ có trong phần bị loại, số lượng và tỷ lệ). Không còn ngày nào có giờ mở bán thì giữ mốc cấu hình, và
+kiểm tra giờ mở bán báo thiếu (không tự đoán). Quy tắc này **không** gỡ được 2 khóa `MULTI_ITEM` / `CONFLICT` ngày 26/08:
+huấn luyện BigQuery vẫn dừng cho tới khi có quy tắc được duyệt.
+
+## Trọng số ngày đột biến (spike) khi huấn luyện — chỉ để thí nghiệm (1.2.9b)
+
+`backend/app/ml/spike_weights.py` biểu diễn giả thuyết của chủ hệ thống thành **trọng số của dòng huấn luyện** (không sửa
+số lượng, feature hay dữ liệu lưu):
+- spike 1 ngày: trọng số thấp;
+- spike lặp lại ngày thứ 2: học (trọng số cao hơn);
+- đã có ngày thứ 3 bình thường: hạ lại;
+- từ 3 ngày liên tiếp: giữ đủ trọng số (đổi mức).
+
+Ngưỡng spike như `demand_patterns` (≥ 10 và lớn hơn cả 3 × trung vị ngày có đơn lẫn trung vị + 5 MAD), tính từ các ngày
+**trước** ngày đó (cuộn) hoặc từ 91 ngày trước mốc fold. Mọi thứ chỉ dùng dữ liệu trước mốc huấn luyện; một đợt spike chưa
+biết ngày kế tiếp được xếp theo những gì đã biết và có thể đổi trọng số ở lần huấn luyện sau. `model.train(weights=...)`
+chỉ được script thí nghiệm gọi; huấn luyện của ứng dụng không truyền trọng số (có test). Kết quả thí nghiệm và trade-off
+ở `reports/demandforecast_dq_spike_customer_20261020.md`; đưa vào ứng dụng cần quyết định riêng.
+
+## Dự báo dư / thiếu và "ngày thường" — chỉ để đánh giá (1.2.9, đợt 4)
+
+`backend/app/ml/overforecast.py` (có test; huấn luyện, dự báo và công bố của ứng dụng không dùng) định nghĩa trên **cùng
+một tập quan sát** (mỗi quan sát = 1 SKU × FC × ngày có thực tế; F dự báo, A thực tế):
+- Bias = Σ(F − A) / ΣA (có dấu); Over = Σmax(F − A, 0) / ΣA (chỉ phần dư, không bù trừ phần thiếu);
+  Under = Σmax(A − F, 0) / ΣA; WAPE = Σ|F − A| / ΣA = Over + Under; Tỷ lệ = ΣF / ΣA.
+- ΣA = 0: mọi tỷ lệ "không xác định", không chia cho 0, không bỏ quan sát.
+- F có thể là `yhat` lưu (đầu vào của mọi chỉ số trong ứng dụng) hoặc số nguyên công bố (`app/qty.py`).
+
+"Ngày thường" = ngày có thực tế và **không** phải ngày spike của `demand_patterns` (ngưỡng tính từ lịch sử **trước** mốc).
+Nhãn cần thực tế của chính ngày đó nên chỉ dùng sau khi có thực tế (đánh giá), không bao giờ làm feature. Bias có dấu
+không đổi theo mức tổng hợp; Over phụ thuộc mức tổng hợp (từng ngày × chuỗi lớn hơn nhiều so với tổng 30 ngày hay tổng
+toàn mạng), nên mọi mục tiêu về Over phải ghi rõ mức tổng hợp.
+
+Hiệu chỉnh walk-forward (thí nghiệm): hệ số chỉ học từ các kỳ đánh giá **trước** mốc; nhóm có ít khối lượng dùng hệ số
+chung, nhóm khác co về hệ số chung. Kết quả và giới hạn ở `reports/demandforecast_multi_item_overforecast_20261020.md`;
+đưa vào ứng dụng cần quyết định riêng.

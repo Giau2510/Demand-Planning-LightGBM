@@ -71,12 +71,17 @@ def _snap(days_back: int, scope: str = SCOPE) -> dict:
     return fb.create(scope, "BIGQUERY", _d(days_back))
 
 
+NEW_0007 = {"open_hours", "open_hours_status"}     # 1.2.9: additive nullable columns of demand_daily (NULL checked apart)
+
+
 def _fp_all() -> dict:
-    """Row count + sha256 of every table of the database."""
+    """Row count + sha256 of every table of the database (the columns that existed before 0007)."""
     out = {}
     with db.read() as c:
         for (t,) in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall():
-            lines = sorted(repr(tuple(r)) for r in c.execute(f'SELECT * FROM "{t}"'))
+            cols = [r[1] for r in c.execute(f'PRAGMA table_info("{t}")') if not (t == "demand_daily" and r[1] in NEW_0007)]
+            sel = ", ".join(f'"{x}"' for x in cols)
+            lines = sorted(repr(tuple(r)) for r in c.execute(f'SELECT {sel} FROM "{t}"'))
             out[t] = (len(lines), hashlib.sha256("\n".join(lines).encode()).hexdigest())
     return out
 
@@ -138,8 +143,12 @@ def test_migration_0006_from_v4_and_from_v5_keeps_every_row_and_deletes_nothing(
                 assert [_snap(k)["status"] for k in (100, 3)] == ["COMPLETE", "COMPLETE"]
             before = _fp_all()
             res = db.migrate(target)
-            assert (res["from"], res["to"]) == (start, 6)
-            assert res["applied"] == ["0005_eod_backup_actual_close.sql", "0006_eod_snapshot_retention.sql"][start - 4:]
+            assert (res["from"], res["to"]) == (start, 9)                        # 1.2.9: + 0007, 0008, 0009 (additive)
+            assert res["applied"] == ["0005_eod_backup_actual_close.sql", "0006_eod_snapshot_retention.sql",
+                                      "0007_open_hours.sql", "0008_customer_aggregates.sql",
+                                      "0009_actual_finalization.sql"][start - 4:]
+            assert _rows("SELECT COUNT(*) AS n FROM demand_daily WHERE open_hours IS NOT NULL OR "
+                         "open_hours_status IS NOT NULL")[0]["n"] == 0                     # nothing invented
             assert db.migrate(target)["applied"] == []                          # running it again changes nothing
             after = _fp_all()
             assert {t: v for t, v in after.items() if t in before and t != "schema_migrations"} == \
@@ -181,7 +190,8 @@ def test_a_failed_0006_leaves_schema_5_with_the_0005_protection(tmp_path, monkey
                 c.execute("DELETE FROM forecast_eod_snapshots WHERE id=?", (snap["id"],))
     with monkeypatch.context() as m:
         m.setattr(paths, "db_path", lambda: target)
-        assert db.migrate(target)["applied"] == ["0006_eod_snapshot_retention.sql"]
+        assert db.migrate(target)["applied"] == ["0006_eod_snapshot_retention.sql", "0007_open_hours.sql",
+                                                 "0008_customer_aggregates.sql", "0009_actual_finalization.sql"]
         assert _rows("SELECT COUNT(*) AS n FROM forecast_eod_snapshot_values")[0]["n"] == 21
 
 
@@ -500,7 +510,7 @@ def test_upgrading_a_v4_database_with_a_saved_125_schedule_keeps_the_new_flows_o
     with monkeypatch.context() as m:
         m.setattr(paths, "db_path", lambda: target)
         _store_125_schedule()
-        assert db.migrate(target)["to"] == 6
+        assert db.migrate(target)["to"] == 9                 # 1.2.9: up to 0009 (seventh batch)
         s = ss.get("schedule")
         raw = json.loads(_rows("SELECT value_json FROM app_settings WHERE section='schedule'")[0]["value_json"])
     assert raw == STORED_125                                 # the migrations write no setting

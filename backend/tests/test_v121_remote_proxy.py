@@ -64,7 +64,8 @@ def test_every_read_of_the_viewing_pages_passes():
     # 1.2.7: the dashboard reads the shell's status and /api/forecast-runs/{id}/summary (no longer /api/dashboard)
     assert "/api/forecast-runs/X1/summary" in used and "/api/system/status" in used
     by_design = {"/api/settings/X1/history",                     # administration history: not remote
-                 "/api/schedules/X1/preview"}                    # 1.2.6 operator dry run: local only (proxy unchanged)
+                 "/api/schedules/X1/preview",                    # 1.2.6 operator dry run: local only (proxy unchanged)
+                 "/api/sync/backfill/preview"}                   # 1.2.9 backfill preview: operator only (proxy unchanged)
     blocked = sorted(p for p in used - by_design if rp.classify("GET", p) is not None)
     assert blocked == [], blocked
     assert all(rp.classify("GET", p) for p in by_design)

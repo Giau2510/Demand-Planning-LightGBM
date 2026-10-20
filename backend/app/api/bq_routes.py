@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from .. import db
+from .. import db, sync
 from .. import settings_service as ss
 from ..bq import connector, oauth, source_tables, sql_sources
 from ..messages import AppError
@@ -243,7 +243,7 @@ def _last(c, job_type: str) -> dict | None:
             "series_days_updated", "series_days_removed", "series_rows_new", "snapshot_id", "series", "window_start",
             "window_end", "mode", "backfill", "sql_source", "key_duplicate_rows", "exact_duplicate_rows",
             "source_batch_id", "already_written", "dates_in_output", "warnings", "qty_valid", "full_reload",
-            "rows_other_day", "forecast_match")
+            "rows_other_day", "forecast_match", "open_hours_status_rows", "preview_id", "pre_backfill_backup")
     r["result"] = {k: res.get(k) for k in keep if k in res}
     return r
 
@@ -292,18 +292,46 @@ def sync_status():
 class BackfillBody(BaseModel):
     start: str
     end: str
+    # 1.2.9: id of the READY preview of exactly this window (POST /api/sync/backfill/preview)
+    preview_id: str | None = None
 
 
-@router.post("/sync/backfill")
-def sync_backfill(body: BackfillBody):
-    """Re-read an explicit history window (user request only; bounded; requires production + validation)."""
+def _backfill_dates(body: BackfillBody) -> tuple[date, date]:
     try:
         s, e = date.fromisoformat(body.start), date.fromisoformat(body.end)
     except ValueError as ex:
         raise AppError("VALIDATION_ERROR", 422, detail=str(ex)) from ex
     if e < s or e >= today_vn():
         raise AppError("VALIDATION_ERROR", 422, detail="end must be >= start and before today (D-1 or older)")
-    return background.submit("D1_SYNC", {"backfill_start": str(s), "backfill_end": str(e)})
+    return s, e
+
+
+@router.post("/sync/backfill/preview")
+def sync_backfill_preview(body: BackfillBody):
+    """1.2.9: what a backfill of the window would change, WITHOUT writing demand (read-only BigQuery read, capped)."""
+    s, e = _backfill_dates(body)
+    return sync.backfill_preview(str(s), str(e))
+
+
+@router.get("/sync/backfill/preview")
+def sync_backfill_preview_last():
+    """The latest backfill preview (READY / BLOCKED / FAILED / USED), or {status: NONE}."""
+    with db.read() as c:
+        r = db.one(c, "SELECT value_json FROM sync_state WHERE name=?", (sync.BACKFILL_PREVIEW_STATE,))
+    return json.loads(r["value_json"]) if r else {"status": "NONE"}
+
+
+@router.post("/sync/backfill")
+def sync_backfill(body: BackfillBody):
+    """Re-read an explicit history window (user request only; bounded; requires production + validation; 1.2.9: the
+    id of a READY preview of the same window - checked here and again by the job - and an online backup first)."""
+    s, e = _backfill_dates(body)
+    bq = ss.get("bigquery")
+    day = today_vn() - timedelta(days=1)
+    bs, be = sync._backfill_window(str(s), str(e), connector.read_range(bq, day)[0], day)
+    sync.check_backfill_preview(body.preview_id, bs, be, connector.mapping_hash(bq), sql_sources.snapshot("history"))
+    return background.submit("D1_SYNC", {"backfill_start": str(s), "backfill_end": str(e),
+                                         "backfill_preview_id": body.preview_id})
 
 
 # ------------------------------------------------------------------ 1.2.4: product names (display / search only)

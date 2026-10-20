@@ -32,7 +32,11 @@ def test_feature_group_switches_decide_the_trained_features(client, small_demo):
     names, fc = _booster_features(r1["training_run_id"])
     assert PRICE <= set(names) and HIST(names)
     assert fc["feature_groups"] == {"historical_demand": {"switch_on": True, "used": True},
-                                    "price": {"switch_on": True, "used": True}}
+                                    "price": {"switch_on": True, "used": True},
+                                    # 1.2.9: open hours exist only in the BigQuery source (not this DEMO run)
+                                    "open_hours": {"mandatory": False, "used": False},
+                                    # 1.2.9b: customer group OFF by default
+                                    "customer": {"switch_on": False, "used": False}}
     assert fc["forecast_strategy"] == "RECURSIVE" and len(fc["config_fingerprint"]) == 16
     # price off -> the next model has no price feature; the model in use keeps its own list
     r = client.put("/api/settings/model", json={**ss.get("model").model_dump(), "feature_price": False})

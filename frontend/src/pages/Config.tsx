@@ -134,6 +134,22 @@ export function FeatureGroups({ v, set }: { v: any; set: Setter }) {
         </label>
         <div className="small muted">{t("cfg.fg_weekday_note")}</div>
       </Field>
+      <Field label={t("cfg.fg_open_hours")}>
+        {/* 1.2.9: mandatory input of the BigQuery source - shown, never a switch (the API refuses a value) */}
+        <label className="row small">
+          <input type="checkbox" data-testid="fg-open-hours" checked disabled />{t("cfg.fg_open_hours_desc")}
+        </label>
+      </Field>
+      <Field label={t("cfg.fg_customer")}>
+        {/* 1.2.9b: OFF by default; used only when ON and the source rows carry the aggregates of a mapped customer column */}
+        <label className="row small">
+          <input type="checkbox" data-testid="fg-customer" checked={!!v.feature_customer}
+            onChange={(e) => set({ feature_customer: e.target.checked })} />{t("cfg.fg_customer_desc")}
+        </label>
+        {v.feature_customer && reg.data?.decisions?.customer && !reg.data.decisions.customer.used && (
+          <div className="alert warn small" data-testid="fg-customer-nodata">{t("cfg.fg_customer_nodata")}</div>
+        )}
+      </Field>
       <div className="full small muted">{t("cfg.fg_always")}</div>
       {none && <div className="full alert error small" data-testid="fg-empty">{t("cfg.fg_empty")}</div>}
       <Field label={t("cfg.strategy")}>
@@ -221,6 +237,14 @@ export default function Config() {
             <Field label={t("cfg.max_lag")}><Num v={v} k="max_data_lag_days" set={set} /></Field>
             <Field label={t("cfg.late_lookback")}><Num v={v} k="late_data_lookback_days" set={set} /></Field>
             <Field label={t("cfg.min_date")}><DateInput value={v.min_date ?? ""} onChange={(d) => set({ min_date: d || null })} /></Field>
+            <Field label={t("cfg.training_start_rule")}>
+              <select data-testid="cfg-training-start-rule" value={v.training_start_rule ?? "WINDOW_START"}
+                onChange={(e) => set({ training_start_rule: e.target.value })}>
+                <option value="WINDOW_START">{t("cfg.tsr.WINDOW_START")}</option>
+                <option value="OPEN_HOURS_COVERAGE">{t("cfg.tsr.OPEN_HOURS_COVERAGE")}</option>
+              </select>
+              <span className="small muted">{t("cfg.training_start_rule_desc")}</span>
+            </Field>
             <Field label={t("cfg.price_outlier")}><Num v={v} k="price_outlier_factor" set={set} step={0.5} /></Field>
           </>
         )}

@@ -47,6 +47,8 @@ def overview(scope_key: str | None = None):
         fcs = fh.Query(c, sk).fcs() if dl else []
         bq = ss.get("bigquery", c)
         today = str(fh.today_vn())
+        from .. import actual_final
+        final_summary = actual_final.summary(c, sk)
     return {"scope_key": sk, "data_source": src, "active_scope_key": (active or {}).get("scope_key"),
             "active_data_source": (active or {}).get("data_source"),
             "scopes": [{**s, "active": s["scope_key"] == (active or {}).get("scope_key")} for s in scopes],
@@ -54,7 +56,9 @@ def overview(scope_key: str | None = None):
             "today_session": next((d for d in dl if d["run_date"] == today), None),
             "today_backup": next((d for d in backup if d["run_date"] == today), None),
             "completion_signal_configured": bool(bq.completion_table and bq.completion_date_column)
-            if src == "BIGQUERY" else False}
+            if src == "BIGQUERY" else False,
+            # 1.2.9 (seventh batch): finalized (frozen) actual days of the scope; only the D-1 source finalizes
+            "finalization": {**final_summary, "applicable": src == "BIGQUERY"}}
 
 
 def _query(c, scope_key, run_from, run_to, fc_id, q, actual_status, forecast_source=None):

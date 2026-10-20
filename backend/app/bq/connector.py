@@ -21,6 +21,7 @@ from pathlib import Path
 
 from .. import db, paths
 from .. import settings_service as ss
+from ..data import open_hours
 from ..messages import AppError
 from ..timeutil import VN_TZ, now_iso, now_vn, today_vn
 from . import dup_report, oauth, sql_guard
@@ -358,8 +359,9 @@ def _fm(m):
     return m if isinstance(m, ss.FieldMapping) else ss.FieldMapping.model_validate(m)
 
 
-def validate_mapping(columns: list[dict], mapping=None, reference_mapping=None) -> dict:
+def validate_mapping(columns: list[dict], mapping=None, reference_mapping=None, extra_reference_columns=None) -> dict:
     bq = ss.get("bigquery")
+    extra = list(bq.extra_reference_columns if extra_reference_columns is None else extra_reference_columns)
     mapping = {k: _fm(v) for k, v in (mapping or bq.field_mapping).items()}
     for f in ss.INTERNAL_FIELDS:            # a partial mapping (e.g. posted by a client) = the other fields unmapped
         mapping.setdefault(f, ss.FieldMapping(column=None, usage="UNUSED"))
@@ -390,6 +392,11 @@ def validate_mapping(columns: list[dict], mapping=None, reference_mapping=None) 
         elif types[m.column] not in REF_COMPATIBLE[field]:
             errors.append({"field": field, "code": "TYPE_INCOMPATIBLE", "column": m.column, "type": types[m.column],
                            "expected": sorted(REF_COMPATIBLE[field]), "reference": True})
+    # 1.2.9: a REQUIRED_FEATURE (SKU open hours) must be mapped: the model input cannot exist without its column
+    for field in ss.MANDATORY_REFERENCE_FIELDS:
+        m = reference_mapping.get(field)
+        if not m or m.usage == "UNUSED" or not m.column:
+            errors.append({"field": field, "code": "REQUIRED_NOT_MAPPED", "reference": True, "role": "REQUIRED_FEATURE"})
     used = lambda f: mapping[f].usage != "UNUSED" and mapping[f].column  # noqa: E731
     if not used("created_at") and not used("order_date"):
         errors.append({"field": "created_at", "code": "NEED_CREATED_AT_OR_ORDER_DATE"})
@@ -404,13 +411,61 @@ def validate_mapping(columns: list[dict], mapping=None, reference_mapping=None) 
             roles.setdefault(m.column, []).append(f)
     for col, fs in roles.items():
         key_fs = [f for f in fs if f in ("sku_id", "fc_id", "order_qty", "order_date", "created_at", "order_id")]
+        # 1.2.9: one column feeds at most ONE of key / target / model input (a key or the target as a model input would
+        # break the grain or leak the target); a REFERENCE field may read the same column (shown, never an input)
+        model_fs = [f for f in fs if ss.FIELD_ROLES.get(f) != "REFERENCE"]
         if len(key_fs) > 1:
             errors.append({"field": key_fs[0], "code": "SAME_COLUMN_FOR_SEVERAL_KEYS", "column": col, "fields": key_fs})
+        elif len(model_fs) > 1:
+            errors.append({"field": model_fs[0], "code": "COLUMN_ROLE_CONFLICT", "column": col, "fields": model_fs,
+                           "roles": [ss.FIELD_ROLES[f] for f in model_fs]})
         elif len(fs) > 1:
             warnings.append({"field": fs[0], "code": "COLUMN_USED_TWICE", "column": col, "fields": fs})
+    for col in extra:                # columns classified as REFERENCE without a field: never read, so only checked here
+        if col in roles:
+            errors.append({"field": "extra_reference_columns", "code": "EXTRA_REFERENCE_ALREADY_MAPPED", "column": col,
+                           "fields": roles[col]})
+        elif col not in types:
+            warnings.append({"field": "extra_reference_columns", "code": "EXTRA_REFERENCE_NOT_IN_SOURCE", "column": col})
     if bq.partition_column and bq.partition_column not in types:
         errors.append({"field": "partition_column", "code": "COLUMN_NOT_FOUND", "column": bq.partition_column})
     return {"ok": not errors, "errors": errors, "warnings": warnings}
+
+
+_ROLE_ORDER = {r: i for i, r in enumerate(ss.ROLES)}
+
+
+def column_roles(columns: list[dict], bq=None) -> list[dict]:
+    """1.2.9: every column of the D-1 source (schema snapshot / live schema) with the field(s) and role reading it.
+    A column no field uses is UNCLASSIFIED (waiting for a decision) or an extra REFERENCE column; nothing is ever turned
+    into a key, the target or a model input because it exists. Columns mapped but absent from the source are listed
+    with status MISSING_IN_SOURCE."""
+    bq = bq or ss.get("bigquery")
+    used: dict[str, list[dict]] = {}
+    for ref, fm in ((False, bq.field_mapping), (True, bq.reference_mapping)):
+        for f, m in fm.items():
+            if m.usage != "UNUSED" and m.column:
+                used.setdefault(m.column, []).append({"field": f, "role": ss.FIELD_ROLES[f], "reference": ref})
+    extra = set(bq.extra_reference_columns)
+    out, names = [], set()
+    for c in columns:
+        n = c["name"]
+        names.add(n)
+        fs = used.get(n, [])
+        if fs:
+            role = min((x["role"] for x in fs), key=_ROLE_ORDER.get)
+            status = "CLASSIFIED"
+        elif n in extra:
+            role, status = "REFERENCE", "EXTRA_REFERENCE"
+        else:
+            role, status = None, "UNCLASSIFIED"
+        out.append({"name": n, "type": c.get("type"), "role": role, "status": status, "fields": fs,
+                    "model_input": role in ("REQUIRED_FEATURE", "OPTIONAL_FEATURE")})
+    for n, fs in used.items():
+        if n not in names:
+            out.append({"name": n, "type": None, "role": min((x["role"] for x in fs), key=_ROLE_ORDER.get),
+                        "status": "MISSING_IN_SOURCE", "fields": fs, "model_input": False})
+    return out
 
 
 def suggest_mapping(columns: list[dict]) -> dict:
@@ -473,6 +528,9 @@ def mapping_hash(bq, conn=None) -> str:
            "history_start_date": bq.history_start_date, "exact_duplicate_policy": bq.exact_duplicate_policy,
            "history_source": _hist_identity(conn),
            "window_start_date": ss.get("data_policy", conn).window_start_date}
+    if bq.customer_id_column:       # 1.2.9b: only when mapped - an unmapped installation keeps its hash
+        from ..data import customers
+        key["customer_id"] = {"column": bq.customer_id_column, "repeat_lookback_days": customers.REPEAT_LOOKBACK_DAYS}
     return hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()[:16]
 
 
@@ -601,6 +659,11 @@ def require_mapping(bq, snap: dict | None) -> dict:
     with the list of fields."""
     sch = _output_columns(bq, snap)
     mc = validate_mapping(sch["columns"])
+    if bq.customer_id_column:       # 1.2.9b: a mapped customer column must exist in the live source too
+        from ..data import customers
+        cerr = customers.check_column(sch["columns"], bq.customer_id_column)
+        if cerr:
+            mc = {**mc, "ok": False, "errors": mc["errors"] + cerr}
     if not mc["ok"]:
         raise AppError("BQ_MAPPING_INVALID", 422, detail=json.dumps(mc["errors"]))
     return {**sch, "mapping_check": mc}
@@ -797,6 +860,9 @@ def _validation_sqls(bq, start: date, end: date, snap: dict | None = None) -> di
         if f in REF_NUMERIC:
             ref_parts += (f", SUM(ref_{f}) AS ref_{f}_sum, SUM(IF(_reason IS NULL, ref_{f}, NULL)) AS ref_{f}_sum_valid, "
                           f"COUNTIF(ref_{f} < 0) AS ref_{f}_negative")
+            if f == "open_hours":       # 1.2.9: hours of one day: 0..24 (data/open_hours.py)
+                ref_parts += (f", COUNTIF(ref_{f} > {open_hours.MAX_HOURS:g}) AS ref_{f}_above_max, "
+                              f"MIN(ref_{f}) AS ref_{f}_min, MAX(ref_{f}) AS ref_{f}_max")
         else:
             ref_parts += f", COUNT(DISTINCT CAST(ref_{f} AS STRING)) AS ref_{f}_distinct"
     dup_key = ("COUNT(*) - COUNT(DISTINCT _key) AS duplicate_key_rows" if _key_expr(snap)
@@ -924,6 +990,19 @@ def _analyse(bq, start: date, end: date, s: dict, days: list[dict], cats: list[d
                    "negative": s.get(f"ref_{f}_negative"), "distinct": s.get(f"ref_{f}_distinct")}
         if f in ("sales_price", "price_after_discount") and (s.get(f"ref_{f}_negative") or 0) > 0:
             warnings.append({"code": "NEGATIVE_PRICE", "detail": {"field": f, "rows": s.get(f"ref_{f}_negative")}})
+    oh = refs.get("open_hours")
+    if oh is not None:
+        # 1.2.9: mandatory model input. Reported here (counts only); the training of the BIGQUERY source stops while a
+        # demand row of its window has no valid value (OPEN_HOURS_INVALID) - the D-1 load of the demand is not blocked
+        oh.update(min=_num(s.get("ref_open_hours_min")), max=_num(s.get("ref_open_hours_max")),
+                  above_max=s.get("ref_open_hours_above_max"))
+        if n and oh["non_null"] < n:
+            warnings.append({"code": "OPEN_HOURS_MISSING", "detail": {"rows": n - oh["non_null"],
+                                                                       "share": (n - oh["non_null"]) / n}})
+        out_of_range = int(oh.get("negative") or 0) + int(oh.get("above_max") or 0)
+        if out_of_range:
+            warnings.append({"code": "OPEN_HOURS_OUT_OF_RANGE", "detail": {"rows": out_of_range, "min": oh["min"],
+                                                                            "max": oh["max"]}})
     outbound = None
     if "outbound_qty" in refs:
         ob = refs["outbound_qty"]["sum_valid"]
@@ -1052,32 +1131,93 @@ def _daily_sql(bq, start: date, end: date, snap: dict | None = None) -> tuple[st
     oid = "order_id" if _col(bq, "order_id") else "CAST(NULL AS STRING)"
     upd = "source_updated_at" if _col(bq, "source_updated_at") else "CAST(NULL AS TIMESTAMP)"
     bid = "batch_id" if _col(bq, "batch_id") else "CAST(NULL AS STRING)"
+    # 1.2.9: SKU open hours (mandatory REQUIRED_FEATURE): lines without a value + MIN / MAX per day x SKU x FC. Python
+    # turns them into a value or a status (data/open_hours.cell); no aggregation rule is invented for differing lines
+    oh = ("COUNTIF(ref_open_hours IS NULL) AS open_hours_null_rows, MIN(ref_open_hours) AS open_hours_min, "
+          "MAX(ref_open_hours) AS open_hours_max") if _ref_col(bq, "open_hours") else (
+        "CAST(NULL AS INT64) AS open_hours_null_rows, CAST(NULL AS FLOAT64) AS open_hours_min, "
+        "CAST(NULL AS FLOAT64) AS open_hours_max")
+    # 1.2.9b: open hours are measured per item (listing of the SKU) and day: distinct items with a value, distinct
+    # (item, value) pairs and lines with a value but no item code tell "one value per item" (MULTI_ITEM) from a real
+    # disagreement (CONFLICT); only counts leave BigQuery
+    oh += (", COUNT(DISTINCT IF(ref_open_hours IS NULL, NULL, CAST(ref_item_code AS STRING))) AS open_hours_items, "
+           "COUNT(DISTINCT IF(ref_open_hours IS NULL OR ref_item_code IS NULL, NULL, CONCAT(CAST(ref_item_code AS STRING), "
+           "'|', CAST(ref_open_hours AS STRING)))) AS open_hours_item_values, "
+           "COUNTIF(ref_open_hours IS NOT NULL AND ref_item_code IS NULL) AS open_hours_no_item_rows"
+           ) if _ref_col(bq, "open_hours") and _ref_col(bq, "item_code") else (
+        ", CAST(NULL AS INT64) AS open_hours_items, CAST(NULL AS INT64) AS open_hours_item_values, "
+        "CAST(NULL AS INT64) AS open_hours_no_item_rows")
     cols = ", ".join(al) + ", _order_date, _key"
     nulls = "CAST(NULL AS DATE), CAST(NULL AS STRING), CAST(NULL AS STRING)"
     keydup = "CAST(COUNT(*) - COUNT(DISTINCT _key) AS STRING)" if _key_expr(snap) else "'NO_KEY'"
+    valid = f"""SELECT 'VALID' AS _kind, CAST(NULL AS STRING) AS _reason, _order_date AS order_date, CAST(sku_id AS STRING) AS sku_id,
+  CAST(fc_id AS STRING) AS fc_id, SUM(order_qty) AS qty, COUNT(DISTINCT CAST({oid} AS STRING)) AS n_orders,
+  SAFE_DIVIDE(SUM({up} * order_qty), SUM(IF({up} IS NULL, NULL, order_qty))) AS avg_unit_price,
+  SAFE_DIVIDE(SUM({disc}), SUM({up} * order_qty)) AS avg_discount_rate,
+  AVG({pf}) AS promo_share, AVG({vf}) AS voucher_share,
+  MAX({upd}) AS max_source_updated_at, MAX(CAST({bid} AS STRING)) AS max_batch_id, COUNT(*) AS n_rows,
+  {oh}
+FROM checked WHERE _reason IS NULL GROUP BY 3, 4, 5"""
+    params = [("start", "DATE", start), ("end", "DATE", end)]
+    extra_ctes, more_nulls = "", ""
+    if bq.customer_id_column:
+        # 1.2.9b: customer counts per day x SKU x FC (data/customers.py), joined to the valid aggregate; the identifier
+        # stays inside BigQuery. Only when the owner mapped a customer column
+        from ..data import customers
+        extra_ctes = f""",
+{_customer_ctes(bq, snap)},
+valid AS (
+{valid}
+)"""
+        valid = ("SELECT valid.*, cust.customer_count, cust.repeat_customer_count, cust.repeat_interval_days_sum "
+                 "FROM valid LEFT JOIN cust ON cust.d = valid.order_date AND cust.sku_id = valid.sku_id "
+                 "AND cust.fc_id = valid.fc_id")
+        more_nulls = ", NULL, NULL, NULL"
+        params.append(("cust_start", "DATE", start - timedelta(days=customers.REPEAT_LOOKBACK_DAYS)))
     sql = f"""WITH src AS (
   {_src_cte(bq, True, snap=snap)}
 ), kept AS (
   SELECT {'DISTINCT ' if drop else ''}{cols} FROM src
 ), checked AS (
   SELECT {cols}, {_REASON} AS _reason FROM kept
-)
-SELECT 'VALID' AS _kind, CAST(NULL AS STRING) AS _reason, _order_date AS order_date, CAST(sku_id AS STRING) AS sku_id,
-  CAST(fc_id AS STRING) AS fc_id, SUM(order_qty) AS qty, COUNT(DISTINCT CAST({oid} AS STRING)) AS n_orders,
-  SAFE_DIVIDE(SUM({up} * order_qty), SUM(IF({up} IS NULL, NULL, order_qty))) AS avg_unit_price,
-  SAFE_DIVIDE(SUM({disc}), SUM({up} * order_qty)) AS avg_discount_rate,
-  AVG({pf}) AS promo_share, AVG({vf}) AS voucher_share,
-  MAX({upd}) AS max_source_updated_at, MAX(CAST({bid} AS STRING)) AS max_batch_id, COUNT(*) AS n_rows
-FROM checked WHERE _reason IS NULL GROUP BY 3, 4, 5
+){extra_ctes}
+{valid}
 UNION ALL
-SELECT 'EXCLUDED', _reason, {nulls}, SUM(order_qty), NULL, NULL, NULL, NULL, NULL, NULL, NULL, COUNT(*)
+SELECT 'EXCLUDED', _reason, {nulls}, SUM(order_qty), NULL, NULL, NULL, NULL, NULL, NULL, NULL, COUNT(*), NULL, NULL, NULL,
+  NULL, NULL, NULL{more_nulls}
 FROM checked WHERE _reason IS NOT NULL GROUP BY 2
 UNION ALL
 SELECT 'TOTAL_READ', CAST(COUNT(*) - COUNT(DISTINCT TO_JSON_STRING(s)) AS STRING), {nulls}, SUM(order_qty),
-  NULL, NULL, NULL, NULL, NULL, NULL, NULL, COUNT(*) FROM src AS s
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL, COUNT(*), NULL, NULL, NULL, NULL, NULL, NULL{more_nulls} FROM src AS s
 UNION ALL
-SELECT 'TOTAL_KEPT', {keydup}, {nulls}, SUM(order_qty), NULL, NULL, NULL, NULL, NULL, NULL, NULL, COUNT(*) FROM kept"""
-    return sql, [("start", "DATE", start), ("end", "DATE", end)]
+SELECT 'TOTAL_KEPT', {keydup}, {nulls}, SUM(order_qty), NULL, NULL, NULL, NULL, NULL, NULL, NULL, COUNT(*),
+  NULL, NULL, NULL, NULL, NULL, NULL{more_nulls} FROM kept"""
+    return sql, params
+
+
+def _customer_ctes(bq, snap: dict | None) -> str:
+    """1.2.9b: per day x SKU x FC of [@start, @end] - distinct customers, repeat customers (an earlier order day of the
+    same SKU x FC within REPEAT_LOOKBACK_DAYS) and the sum of their days since that order (data/customers.py). Same
+    source relation, day expression and valid-line rule as the demand; empty / blank identifiers are no customer. Only
+    the counts (cte `cust`) are joined to the output: no identifier is selected out of BigQuery."""
+    from ..data import customers
+    od = _order_date_expr(bq)
+    sku, fc, qty = _col(bq, "sku_id"), _col(bq, "fc_id"), _col(bq, "order_qty")
+    lb = customers.REPEAT_LOOKBACK_DAYS
+    return f"""cust_src AS (
+  SELECT DISTINCT {od} AS d, CAST({sku} AS STRING) AS sku_id, CAST({fc} AS STRING) AS fc_id,
+    NULLIF(TRIM(CAST(`{bq.customer_id_column}` AS STRING)), '') AS cid
+  FROM {_rel(bq, snap)} WHERE {od} BETWEEN @cust_start AND @end{_partition_filter(bq, "cust_start", "end", snap)}
+    AND {sku} IS NOT NULL AND {fc} IS NOT NULL AND {qty} IS NOT NULL AND {qty} >= 0
+), cust_seq AS (
+  SELECT d, sku_id, fc_id, LAG(d) OVER (PARTITION BY cid, sku_id, fc_id ORDER BY d) AS prev_d
+  FROM cust_src WHERE cid IS NOT NULL
+), cust AS (
+  SELECT d, sku_id, fc_id, COUNT(*) AS customer_count,
+    COUNTIF(prev_d >= DATE_SUB(d, INTERVAL {lb} DAY)) AS repeat_customer_count,
+    SUM(IF(prev_d >= DATE_SUB(d, INTERVAL {lb} DAY), DATE_DIFF(d, prev_d, DAY), 0)) AS repeat_interval_days_sum
+  FROM cust_seq WHERE d BETWEEN @start AND @end GROUP BY 1, 2, 3
+)"""
 
 
 def _key_gate(snap: dict | None, key_dups: str | None, where: str) -> int | None:

@@ -338,7 +338,7 @@ def overview() -> dict:
         g = ss.get("general", c)
         sched = ss.get("schedule", c)
     return {"timezone": TIMEZONE, "now_vn": now.isoformat(timespec="seconds"), "active_source": g.active_source,
-            "data_window": {"start": win["start"], "end": win["end"]}, "scheduler": sv,
+            "data_window": {"start": win["start"], "end": win["end"], "start_rule": win["start_rule"]}, "scheduler": sv,
             "policy": {"slot_grace_minutes": sched.slot_grace_minutes, "max_attempts": sched.max_attempts,
                        "timeout_seconds": sched.timeout_seconds},
             "flows": flows}

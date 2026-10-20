@@ -119,7 +119,8 @@ Trang **Ánh xạ trường** có nút **Gợi ý cho bảng demand_planing_ligh
 | `order_id` | `so_code` | Đếm số đơn, kiểm tra trùng (đơn × SKU × FC × ngày) |
 | `source_updated_at` | `refresh_time` | Metadata độ mới của nguồn; không phải feature |
 
-**Trường tham chiếu** chỉ dùng để kiểm tra, đối chiếu và cho feature tương lai. Chúng không phải target và không phải đầu vào mô hình:
+**Trường tham chiếu** chỉ dùng để kiểm tra, đối chiếu và cho feature tương lai. Chúng không phải target và không phải đầu vào mô hình
+(trừ `open_hours`, xem dưới):
 
 | Trường tham chiếu | Cột gợi ý | Dùng để |
 |---|---|---|
@@ -128,7 +129,69 @@ Trang **Ánh xạ trường** có nút **Gợi ý cho bảng demand_planing_ligh
 | `order_status` | `order_status` | Thống kê phân bố. **Không** dùng để lọc thêm dòng. |
 | `sales_price`, `price_after_discount` | cùng tên | Độ đầy đủ; feature giá tương lai |
 | `seller_code`, `sku_status` | `seller_code`, `sku_system_status` | Độ đầy đủ; feature tương lai |
-| `open_date`, `open_hours`, `open_days` | `open_date`, `total_open_hours`, `total_open_days` | Độ đầy đủ; feature khả dụng tương lai |
+| `open_date`, `open_days` | `open_date`, `total_open_days` | Độ đầy đủ; feature khả dụng tương lai |
+| `open_hours` | `total_open_hours` | **1.2.9: đặc trưng BẮT BUỘC** (xem dưới) |
+
+### Vai trò của trường và của mọi cột nguồn (1.2.9)
+
+Mỗi trường có một vai trò cố định (`settings_service.FIELD_ROLES`, hiển thị ở cột *Vai trò*):
+
+| Vai trò | Trường |
+|---|---|
+| Khóa dữ liệu | `order_date` / `created_at` (ngày), `sku_id`, `fc_id` (grain SKU × FC × ngày); `order_id` (khóa dòng nguồn, dùng phát hiện trùng) |
+| Target | `order_qty` |
+| Đặc trưng bắt buộc | `open_hours` (`total_open_hours`) |
+| Đặc trưng tùy chọn | `unit_price`, `discount_amount`, `promotion_flag` (bật/tắt ở Cấu hình mô hình) |
+| Tham chiếu / metadata | mọi trường còn lại (`promotion_id`, `voucher_*`, `source_updated_at`, `batch_id` và các trường tham chiếu khác) |
+
+- Thẻ **Tất cả cột của nguồn D-1** liệt kê mọi cột của schema đã đọc: cột có trường dùng mang vai trò của trường đó; cột không
+  trường nào dùng là **Chưa phân loại** cho tới khi người dùng đánh dấu **Tham chiếu** (`bigquery.extra_reference_columns`,
+  lưu cùng ánh xạ, D-1 không đọc, mô hình không dùng, không thuộc mapping hash). Không cột nào tự thành khóa, target hay đặc
+  trưng chỉ vì có trong bảng.
+- Kiểm tra: thiếu trường bắt buộc (`REQUIRED_NOT_MAPPED`, kể cả `open_hours`); một cột vừa là khóa/target vừa là đặc trưng,
+  hoặc hai đặc trưng cùng một cột (`COLUMN_ROLE_CONFLICT`); hai khóa cùng một cột (`SAME_COLUMN_FOR_SEVERAL_KEYS`); cột tham
+  chiếu bổ sung đã được trường khác dùng (`EXTRA_REFERENCE_ALREADY_MAPPED`) hoặc không còn trong nguồn (cảnh báo). Một trường
+  tham chiếu đọc chung cột với một đặc trưng (vd. `sales_price`) chỉ là cảnh báo `COLUMN_USED_TWICE`.
+- `open_hours` được giữ trong `reference_mapping` như trước 1.2.9 để ánh xạ đã lưu và **mapping hash không đổi** (production
+  không phải kiểm tra lại toàn kỳ vì nâng cấp).
+
+### Giờ mở bán `total_open_hours` (1.2.9, đặc trưng bắt buộc)
+
+Định nghĩa (chủ hệ thống, 19/10/2026): số giờ trong một ngày SKU được mở để bán. Miền 0–24 suy từ định nghĩa và đúng với
+bảng thật (profile chỉ đọc 01/01–18/10/2026: min 0, max 24, không âm, không > 24; NULL toàn bộ trước **19/03/2026**, không
+NULL từ ngày đó; các dòng cùng ngày × SKU × FC bằng nhau, trừ **2 khóa tháng 8**). Quy tắc (`backend/app/data/open_hours.py`):
+
+| Dòng đơn của ngày × SKU × FC | Lưu `open_hours` / `open_hours_status` |
+|---|---|
+| mọi dòng có giá trị, bằng nhau, trong 0–24 | giá trị / `OK` (0 là giá trị hợp lệ) |
+| có dòng NULL | NULL / `MISSING` |
+| có giá trị < 0 hoặc > 24 | NULL / `OUT_OF_RANGE` |
+| các dòng khác nhau, nhưng mỗi item một giá trị (1.2.9b, cần ánh xạ `item_code`) | NULL / `MULTI_ITEM`: giờ mở bán đo theo item (`item_code` của SKU; hậu tố `.1`, `.2` là thứ tự mở bán ở các miền, không phải mã miền), chưa có quy tắc gộp về SKU × FC |
+| các dòng khác nhau, không giải thích được bằng item (cùng item hai giá trị, hoặc dòng không có item) | NULL / `CONFLICT` (cần điều tra) |
+
+Không bao giờ thay bằng 0, giá trị ngày bên cạnh hay giá trị ước lượng. Dòng nạp trước 1.2.9 không có trạng thái
+(`NOT_LOADED`); D-1 gia tăng chỉ đọc lại vài ngày gần nhất, nên cần **nạp lại D-1 toàn kỳ** để đọc cột cho lịch sử. Kiểm tra
+toàn kỳ báo `OPEN_HOURS_MISSING` / `OPEN_HOURS_OUT_OF_RANGE` dạng cảnh báo (không chặn D-1 nạp nhu cầu); **huấn luyện nguồn
+BIGQUERY dừng** với `OPEN_HOURS_INVALID` (số dòng và khoảng ngày theo từng trạng thái) khi còn bất kỳ dòng nào của cửa sổ dữ
+liệu không `OK`. Trên dữ liệu thật hiện tại, mở khóa cần quyết định của chủ hệ thống: quy tắc cho ngày thiếu (01/01–18/03) và
+cho 2 khóa xung đột, hoặc dời `data_policy.window_start_date` và sửa nguồn.
+
+1.2.9b: `data_policy.training_start_rule = OPEN_HOURS_COVERAGE` (trang Cấu hình > Chính sách dữ liệu; mặc định
+`WINDOW_START` như cũ) cho mô hình bắt đầu từ **ngày đầu tiên đã lưu có giờ mở bán**, tính lại từ dữ liệu ở mỗi lần dùng.
+Ngày trước đó vẫn lưu và vẫn được D-1 / backfill đọc (mốc đọc = `window_start_date`, mapping hash không đổi). Nguồn chỉ giữ
+giờ mở bán khoảng **7 tháng gần nhất** (mục 11c): đọc lại ngày cũ hơn sẽ thay giá trị đã lưu bằng `MISSING`; bản xem trước
+backfill cảnh báo `OPEN_HOURS_WOULD_BE_LOST`, kết quả nạp đếm `open_hours_lost`.
+
+### Mã khách hàng `customer_id` (1.2.9b, tùy chọn, mặc định không dùng)
+
+`bigquery.customer_id_column` (thẻ *Mã khách hàng* trên trang Ánh xạ; "" = không dùng). Khi có cột, D-1 tính **ngay trong
+BigQuery** cho mỗi ngày × SKU × FC: `customer_count` (số khách khác nhau), `repeat_customer_count` (khách đã đặt cùng
+SKU × FC trong 90 ngày trước), `repeat_interval_days_sum` (tổng số ngày từ lần đặt trước của họ). Câu truy vấn đọc thêm 90
+ngày trước khoảng nạp chỉ để tính số này; mã rỗng / NULL không tính là khách nhưng nhu cầu của dòng vẫn tính đủ. Mã khách
+**không bao giờ** được lấy về, lưu, ghi log hay xuất; ngày không có mã = NULL (không phải 0). Cột phải tồn tại ở nguồn với
+kiểu STRING / INTEGER (`COLUMN_NOT_FOUND` / `TYPE_NOT_ALLOWED`). Lưu cột này đổi mapping hash (như mọi thay đổi ánh xạ):
+production tắt cho tới khi kiểm tra toàn kỳ và kích hoạt lại; để trống thì hash không đổi. Mô hình chỉ dùng khi bật nhóm
+*Hành vi mua lại của khách* (`model.feature_customer`, mặc định tắt) và dữ liệu đủ độ phủ (MO-HINH-VA-CHI-SO.md).
 
 `unit_price`, `discount_amount`, `promotion_flag`, `voucher_*` **không được ánh xạ tự động**. Để ánh xạ, cần quyết định nghiệp vụ, ví dụ `sales_price` có phải đơn giá lúc đặt hàng hay không. Khi các trường này chưa có dữ liệu, các feature giá, chiết khấu và khuyến mãi **không được dùng** (xem MO-HINH-VA-CHI-SO.md, mục Feature registry).
 
@@ -320,9 +383,106 @@ Trên DuckDB với dữ liệu tổng hợp, phiên bản 2 cho cùng các dòng
   - chỉ cho khoảng trong `[đầu khoảng đọc, hôm qua]`, tối đa 400 ngày;
   - cần chế độ sản xuất và kiểm tra dữ liệu đạt;
   - cần đã có một lần đồng bộ thường với ánh xạ hiện tại.
+  - 1.2.9: **bắt buộc xem trước** (`POST /api/sync/backfill/preview`, nút "Xem trước (không ghi)"). Bước này dùng
+    cùng kiểm tra và cùng lần đọc BigQuery với lần nạp: chỉ đọc, dry-run trước, giới hạn byte, kiểm trùng lặp.
+    Nó báo số dòng mới / đổi số / giữ nguyên / bị xóa, tổng số lượng trước và sau, trạng thái giờ mở bán sẽ ghi, và số
+    ngày đã chốt 23:59 sẽ có bản chốt bổ sung. Không ghi `demand_daily`; kết quả lưu ở `sync_state`
+    `bq_backfill_preview` và audit `D1_BACKFILL_PREVIEW`.
+  - 1.2.9: `POST /api/sync/backfill` cần `preview_id` của bản xem trước `READY`, đúng khoảng ngày, cùng mapping hash và
+    cùng SQL nguồn, không quá 6 giờ (`BACKFILL_PREVIEW_MAX_AGE_HOURS`). Mỗi bản xem trước dùng được **một lần**
+    (`USED`). Sai thì `BACKFILL_PREVIEW_REQUIRED`; API kiểm trước khi tạo job, job kiểm lại lần nữa.
+  - 1.2.9: ngay trước khi thay dữ liệu, job tạo **backup online đã kiểm** (`backup-…-pre-backfill.zip`, gồm DB và model)
+    và ghi tên file vào kết quả job. Không tạo được backup thì `BACKFILL_BACKUP_FAILED` và không ghi gì.
+  - 1.2.9: trong chính giao dịch ghi, trước khi xóa, job kiểm lại ba điều:
+    - bản xem trước vẫn `READY` (chưa job nào khác dùng);
+    - không có lần D-1 thường nào chạy sau bản xem trước;
+    - số dòng mới / đổi / bị xóa đúng bằng số đã xem trước.
+
+    Sai một điều thì `BACKFILL_PREVIEW_REQUIRED`, không ghi gì, cần xem trước lại.
+  - Đọc rỗng khi đang có dữ liệu thì bản xem trước là `BLOCKED` (lần nạp cũng từ chối).
+  - Khoảng có ngày hôm qua mà nguồn chưa có tín hiệu hoàn tất thì bản xem trước có cảnh báo `YESTERDAY_NOT_CONFIRMED`.
+  - Chỉ thay các dòng `demand_daily` của scope trong khoảng đã chọn, giống nguồn hiện tại. Không đổi snapshot D-0,
+    forecast, model, lịch sử forecast, bản sao cuối ngày, mốc `last_d1_sync`; không kích hoạt huấn luyện
+    (`flows.d1_success_today` bỏ qua backfill). Ngày đã chốt 23:59 có thực tế thay đổi được thêm bản chốt mới; các bản
+    chốt trước giữ nguyên.
+  - Diễn tập trên bản sao DB production ngày 19/10/2026 (đọc BigQuery thật, ghi bản sao): khoảng 01/01–18/10 mất
+    735 s, đọc 1,27 GB, RAM của tiến trình khoảng 1,9 GB. Nên chia backfill lớn theo tháng, ngoài giờ D-1 / D-0 /
+    huấn luyện. Chi tiết trong `reports/demandforecast_comprehensive_upgrade_review.md`.
 - **Đồng bộ không kích hoạt huấn luyện.** Huấn luyện có lịch riêng; với BIGQUERY còn chờ D-1 thành công và kiểm tra dữ liệu đạt.
 - **Dữ liệu D0** nằm trong bảng snapshot riêng, không bao giờ được dùng làm dữ liệu huấn luyện lịch sử.
 - **Múi giờ lịch chạy:** `Asia/Ho_Chi_Minh` (múi giờ duy nhất ứng dụng hỗ trợ), hiển thị trên trang.
+
+## 11b. Giờ mở bán và trạng thái SKU trong nguồn thật (kiểm tra chỉ đọc ngày 19/10/2026)
+
+- `total_open_hours` chỉ có từ **19/03/2026**. Các dòng trước đó đều NULL, nên D-1 ghi `MISSING` cho mọi ngày
+  01/01–18/03 (400.082 dòng ngày × SKU × FC).
+- Hai nhóm `CONFLICT` (26/08/2026, FC `BD`) đều có **hai `item_code`** của cùng SKU và cùng seller. Mỗi item có giờ mở
+  bán riêng và nhất quán (23,72 / 24 và 18,22 / 22,85). Nghĩa là nguồn tính giờ mở bán theo **item**, còn D-1 gộp theo
+  SKU × FC. Từ 19/03: 954.891 nhóm ngày × SKU × FC, chỉ 11 nhóm có nhiều item, 2 trong số đó lệch giờ. Không có nhóm
+  nào nhiều seller hay nhiều `open_date`.
+- 722 dòng ngày × SKU × FC có giờ mở bán = 0 dù có đơn (ví dụ tháng 8: 669 dòng đơn). Không tự diễn giải: ghi `OK`
+  với giá trị 0, khác với "thiếu".
+- `sku_system_status` (`NORMAL` / `OUT_OF_STOCK` / `LIMIT`) gần như không đổi theo ngày: chỉ 35 trong 17.128 cặp
+  SKU × FC có hơn một giá trị trong 01/01–18/10. Đây là **trạng thái hiện tại** được chép vào mọi dòng lịch sử, không
+  phải trạng thái của ngày đó, nên **không được dùng làm feature** (rò rỉ thông tin tương lai).
+- Không có cột khách hàng (`customer_id`) trong bảng nguồn (17 cột, kiểm metadata ngày 19/10/2026).
+- `order_status` không có giá trị huỷ trong 01/01–18/10. Gồm COMPLETED, DELIVERED, DELIVERING, CONFIRMED,
+  WAIT_TO_DELIVER, WAIT_TO_CONFIRM và PROCESSING.
+
+## 11c. Kiểm tra chỉ đọc ngày 20/10/2026 (bảng làm mới lúc 00:10 UTC; khoảng 3,4 GB quét)
+
+- **Giờ mở bán đo theo item và ngày.** 108 item-ngày xuất hiện ở hai FC trong cùng ngày: giờ mở bán luôn giống nhau; trong
+  một item × FC × ngày không có hai giá trị. `item_code` = `<sku_code>.<số thứ tự>`; phần lớn dòng của một item đi qua
+  một FC. 130 / 17.114 item từng xuất hiện ở hai FC; không item nào thuộc hai SKU.
+- **Khóa nhiều item** (ngày × SKU × FC): 101 khóa, chỉ trong tháng 2 (35), tháng 3 (55) và ngày 26/08 (11); ngày 26/08:
+  9/11 khóa cùng giờ (OK), 2 khóa khác giờ; 1.2.9b gọi là `MULTI_ITEM`. Bảng nguồn không có cột miền bán.
+- **Đính chính (đợt 5, 20/10/2026):** câu cũ "`.1` ở BD, `.2` ở HN", "item vùng HN" và "khác biệt giữa miền bán" đã bị
+  rút lại. Hậu tố `.1`, `.2`, `.3` là **thứ tự SKU được mở bán ở các miền**, không phải mã miền (chủ hệ thống xác nhận):
+  không suy ra miền, FC hay giờ mở bán từ hậu tố. Số dòng theo `fc_code` ở trên vẫn là dữ kiện.
+- **Nguồn giữ giờ mở bán cuộn khoảng 7 tháng**: bản 19/10 có giá trị từ 19/03, bản 20/10 từ 20/03 (19/03 thành NULL). Mốc
+  này đi theo ngày làm mới (ngày làm mới − 7 tháng); cần chủ dữ liệu xác nhận.
+- **Nguồn sửa lịch sử ở mỗi lần làm mới**: so với bản sao nạp tối 19/10, 276 / 291 ngày có tổng số lượng khác (−12.313 đơn
+  vị trên 41,9 triệu); số dòng bảng 8.942.586 → 8.939.819. D-1 gia tăng chỉ đọc lại 3 ngày gần nhất.
+- **Giờ mở bán = 0 nhưng có đơn**: 2.592 dòng đơn (20.987 đơn vị), 718 khóa ngày × SKU × FC; 1.398 dòng đã xuất hàng
+  (`outbound_quantity` > 0). Workbook kiểm tra: `reports/zero_open_hours_orders_20261020.xlsx` (ngoài Git).
+- **Hai khóa `MULTI_ITEM` ngày 26/08** (kiểm tra chỉ đọc lần 2, bản làm mới 12:29 ngày 20/10, ~2,3 GB): cùng FC `BD`, hai
+  item (`.1` chỉ có dòng ở FC BD; `.2` có 99–99,6% số dòng ở FC HN, ở BD đúng 1 dòng là ngày đó), đơn khác nhau trong mỗi khóa;
+  hai dòng `.2` ở BD cùng thuộc một đơn (11 dòng, 11 SKU, toàn item `.2` / `.3`), đơn này có mặt ở 9/11 khóa nhiều item
+  của BD ngày 26/08. Mỗi item một giá trị giờ / ngày. Workbook: `reports/demandforecast_multi_item_review_20261020.xlsx`
+  (ngoài Git). Quy tắc giá trị ở hạt SKU × FC vẫn chờ chủ hệ thống quyết định.
+
+## 11d. Kiểm tra chỉ đọc sau khi chủ dữ liệu bổ sung giờ mở bán (bản làm mới 15:05:19 ngày 20/10/2026; ~8 GB quét)
+
+- Bảng được tạo lại lúc 08:05:30 UTC; `refresh_time` = `15:05:19 20/10/2026` trên mọi dòng; 8.961.566 dòng,
+  01/01–19/10/2026, đủ 292 ngày, 2 FC (BD, HN). Mọi dòng hợp lệ theo quy tắc D-1 (0 thiếu SKU / FC / số lượng, 0 âm).
+- **`total_open_hours` có giá trị trên mọi dòng** (bản 07:10 cùng ngày còn 2.946.849 dòng NULL, toàn bộ 01/01–19/03).
+  0 NaN / Inf / âm / > 24; 8.682.210 dòng = 24 giờ, 276.339 dòng trong (0, 24), 3.017 dòng = 0 (đều có số lượng > 0).
+- Ở hạt ngày × SKU × FC (1.357.889 khóa): 1.357.883 `OK`, **6 `MULTI_ITEM`** (09/02 HN, 10/02 HN, 02/03 BD × 2,
+  26/08 BD × 2; 156 đơn vị), 0 `MISSING` / `CONFLICT` / `OUT_OF_RANGE`. 931 khóa `OK` có giờ = 0 nhưng có đơn (25.542
+  đơn vị, 0,06%): không tự diễn giải.
+- 0 dòng trùng hoàn toàn (17 cột). 7.203 dòng lặp khóa D-1 (so_code, sku_code, fc_code, ngày): luôn cùng item, khác
+  số lượng và/hoặc giá, được cộng theo quy tắc SUM_ALL đã duyệt. Không item nào thuộc hai SKU; mọi `item_code` bắt đầu bằng
+  `<sku_code>.`; 0 item × FC × ngày có hai giá trị giờ.
+- Preview backfill của 1.2.9 trên bản sao (01/01–19/10) cho đúng các số trên. So với DB production (nạp tăng dần): 344
+  khóa mới, 213 khóa đổi số lượng, 772 khóa nguồn không còn, −12.109 đơn vị (−0,03%) - nguồn sửa lịch sử ở mỗi lần làm mới.
+
+## 11e. Giờ = 0 có đơn và dữ liệu khả năng bán (kiểm tra chỉ đọc 20/10/2026 tối; cùng bản làm mới 15:05:19; ~11,6 GB quét)
+
+- 931 khóa `OK` có giờ = 0 và có đơn = 3.017 dòng, 25.542 đơn vị, 133 chuỗi SKU × FC, 01/01–18/10; mọi dòng của các khóa
+  đó đều = 0 (không khóa `MULTI_ITEM` / `CONFLICT` nào chứa dòng giờ 0). Ứng dụng lưu đúng `0` / `OK`, gate training
+  không chặn, feature nhận 0 (test `test_v129f_zero_open_hours.py`). Ý nghĩa nghiệp vụ: chủ hệ thống xem workbook
+  `reports/demandforecast_zero_open_hours_with_orders_20261020.xlsx` (không versioned).
+- `open_date` = `created_date` trên mọi dòng; `total_open_days` = round(`total_open_hours` / 24, 2) trên mọi dòng: hai cột
+  này **không** cho biết gì về ngày không có đơn. Bảng nguồn chỉ có dòng đơn (số lượng tối thiểu 1).
+- Dòng lớn nhất (71.834, 28/08 BD `MEDX.9DCBBCV8`) có giờ 19,25 (không phải 0); đơn 1 dòng, xuất kho đủ.
+- Cùng dataset có bảng theo ngày, kể cả ngày không có đơn (chỉ đọc metadata / tổng hợp; **ý nghĩa chưa được chủ dữ liệu
+  xác nhận, không dùng cho model**): `fact_product_sku_status` (item × `fc_code` × ngày từ 01/04/2026; `web_status`,
+  `is_active`, `product_afs`; ở ngày có đơn với giờ = 0 thì 619/621 dòng có dòng tương ứng là `OUT_OF_STOCK`, giờ = 24 thì
+  19 dòng), `fact_sku_is_active_day_by_date` / `fact_sku_status_day_by_date` (từ 02/07 và 20/07/2026, theo
+  `sales_region_code`), `staging_sku_status_history` / `staging_sku_is_active_history` (sự kiện từ 06/01/2025),
+  `fact_seller_oos` (ảnh chụp theo ngày từ 21/01/2025, có `fc_code`). Dùng trong model chỉ khi đã xác nhận ý nghĩa, ánh
+  xạ và thời điểm chụp, và chỉ với ngày trước mốc dự báo.
+- Mọi dòng của bảng nguồn có seller `MEDX` / `INTERNAL` (1 seller mỗi tháng).
 
 ## 12. Bảng nguồn thật — kiểm tra chỉ đọc ngày 16/10/2026 (11:20, giờ Việt Nam)
 

@@ -26,6 +26,23 @@ INTERNAL_FIELDS = ["order_id", "created_at", "order_date", "sku_id", "fc_id", "o
 # never a model input until a feature using them is explicitly activated (see ml/feature_registry.py).
 REFERENCE_FIELDS = ["product_id", "item_code", "outbound_qty", "order_status", "sales_price", "price_after_discount",
                     "seller_code", "sku_status", "open_date", "open_hours", "open_days"]
+# 1.2.9: role of every D-1 mapping field. KEY = grain / source-line identity, TARGET = what is forecast,
+# REQUIRED_FEATURE = model input that must be mapped and present, OPTIONAL_FEATURE = model input behind a model switch
+# (price, discount, promotion), REFERENCE = read for validation / reconciliation / lineage only, never a model input.
+# A column of the source that no field uses is UNCLASSIFIED (or an extra REFERENCE column, BigQuerySettings).
+ROLES = ("KEY", "TARGET", "REQUIRED_FEATURE", "OPTIONAL_FEATURE", "REFERENCE")
+FIELD_ROLES = {
+    "order_id": "KEY", "created_at": "KEY", "order_date": "KEY", "sku_id": "KEY", "fc_id": "KEY",
+    "order_qty": "TARGET",
+    "unit_price": "OPTIONAL_FEATURE", "discount_amount": "OPTIONAL_FEATURE", "promotion_flag": "OPTIONAL_FEATURE",
+    "promotion_id": "REFERENCE", "voucher_flag": "REFERENCE", "voucher_amount": "REFERENCE",
+    "source_updated_at": "REFERENCE", "batch_id": "REFERENCE",
+    **{f: "REFERENCE" for f in REFERENCE_FIELDS},
+    # SKU open hours of the day (total_open_hours): mandatory model input. Kept in reference_mapping, where it was
+    # mapped before 1.2.9, so a saved mapping (and its hash, i.e. the validated production state) stays unchanged
+    "open_hours": "REQUIRED_FEATURE",
+}
+MANDATORY_REFERENCE_FIELDS = ("open_hours",)
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # full BigQuery table id project.dataset.table (1.2.0 source tables of the D-1 and D-0 feeds)
 TABLE_ID_RE = re.compile(r"^([a-z][a-z0-9\-]{4,61}[a-z0-9])\.([A-Za-z_][A-Za-z0-9_]{0,1023})\.([A-Za-z_][A-Za-z0-9_]{0,1023})$")
@@ -91,6 +108,17 @@ class ModelSettings(BaseModel):
     # 1.2.8: day of week of the TARGET day (dow, is_weekend) as its own switch. None = legacy behaviour (part of the
     # calendar group, as for every model trained before 1.2.8)
     feature_weekday: bool | None = None
+    # 1.2.9: SKU open hours of the day (BigQuery total_open_hours): mandatory model input of the BIGQUERY source. Set by
+    # the training on the copy stored with its run (True = the run used it); never a user switch - PUT
+    # /api/settings/model refuses a value (OPEN_HOURS_MANDATORY). None = not an input (every model before 1.2.9)
+    feature_open_hours: bool | None = None
+    # 1.2.9: encoding of the dow feature stored with each training run: "ISO" = 1 Monday ... 7 Sunday, the application's
+    # one convention (app/weekday.py). None = models trained before 1.2.9 (0 Monday ... 6 Sunday). Set by the training
+    weekday_encoding: Literal["ISO"] | None = None
+    # 1.2.9b: aggregate customer features (repeat purchases, data/customers.py) - OFF by default; used only when ON *and*
+    # the stored rows carry the aggregates of a mapped customer column (feature_registry.resolve). Models trained before
+    # have no value: not an input
+    feature_customer: bool = False
     # a price/discount/promotion group is used only when at least this share of the scope's demand rows has the value
     feature_min_coverage: float = Field(0.5, gt=0, le=1)
     min_total_history_days: int = Field(56, ge=14)
@@ -148,6 +176,13 @@ class DataPolicySettings(BaseModel):
     # floor of BigQuery reads. Stored history before it is kept untouched - it is only not used. The window ends with
     # the last COMPLETE Vietnam day (yesterday): today's partial day is D0-only, future dates are never used.
     window_start_date: str = "2026-01-01"
+    # 1.2.9b: first day of the MODEL INPUT (training, backtest, forecast panel, data-quality report). WINDOW_START =
+    # window_start_date (default: the rule before). OPEN_HOURS_COVERAGE = the first stored day of the window whose
+    # BigQuery rows carry the SKU open hours (data/open_hours.coverage_start), recomputed from the stored data at every
+    # use - the owner's temporary choice of 20/10/2026 while the source has open hours for its last months only. The
+    # earlier days stay stored and are still read by D-1 / backfill (read floor = window_start_date); they are only not
+    # model input. Sources without open hours (DEMO / Excel) are not affected. Not part of the BigQuery mapping hash.
+    training_start_rule: Literal["WINDOW_START", "OPEN_HOURS_COVERAGE"] = "WINDOW_START"
 
     @field_validator("window_start_date")
     @classmethod
@@ -327,6 +362,33 @@ class BigQuerySettings(BaseModel):
     product_names_table: str = "dim_sku"
     product_names_key_column: str = "sku_code"
     product_names_name_column: str = "product_name"
+    # --- 1.2.9: source columns classified as REFERENCE although no mapping field uses them (shown on the mapping page,
+    # never read by D-1, never a model input). Any other unused column of the source is UNCLASSIFIED. Not part of the
+    # mapping hash (it changes no read).
+    extra_reference_columns: list[str] = Field(default_factory=list)
+    # --- 1.2.9b: optional customer identifier column of the D-1 source ("" = none, the default). D-1 reduces it to
+    # counts per day x SKU x FC inside BigQuery (data/customers.py); the identifier never leaves BigQuery. Part of the
+    # mapping hash only when set, so a saved mapping without it keeps its hash (validated state unchanged).
+    customer_id_column: str = ""
+
+    @field_validator("customer_id_column")
+    @classmethod
+    def _customer_col(cls, v):
+        v = (v or "").strip()
+        if v and not IDENT.match(v):
+            raise ValueError("invalid column name for customer_id")
+        return v
+
+    @field_validator("extra_reference_columns")
+    @classmethod
+    def _extra_refs(cls, v):
+        out = []
+        for c in v or []:
+            if not c or not IDENT.match(c):
+                raise ValueError(f"invalid column name {c!r}")
+            if c not in out:
+                out.append(c)
+        return out
 
     @field_validator("product_names_table")
     @classmethod

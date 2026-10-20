@@ -6,7 +6,18 @@ from app import db
 from app import settings_service as ss
 from app.bq import connector
 from app.messages import AppError
-from fake_bq import FakeBQ, Forbidden, NotFound
+from fake_bq import FakeBQ as _FakeBQ
+from fake_bq import Forbidden, NotFound
+
+# 1.2.9: SKU open hours are a mandatory D-1 input (reference field open_hours): the fake source has the column
+OH_SCHEMA = _FakeBQ().schema + [("open_hours", "FLOAT64")]
+OH_REF = {"open_hours": {"column": "open_hours", "usage": "OPTIONAL"}}
+
+
+class FakeBQ(_FakeBQ):
+    def __init__(self, *a, schema=None, **k):
+        super().__init__(*a, schema=schema or OH_SCHEMA, **k)
+
 
 MAPPING = {"order_id": {"column": "order_id", "usage": "OPTIONAL"},
            "created_at": {"column": "created_at", "usage": "REQUIRED"},
@@ -17,7 +28,7 @@ MAPPING = {"order_id": {"column": "order_id", "usage": "OPTIONAL"},
 
 def _configure(**extra):
     ss.update("bigquery", {"dataset_id": "sales", "source_table": "orders", "location": "asia-southeast1",
-                           "partition_column": "dt", **extra})
+                           "partition_column": "dt", "reference_mapping": OH_REF, **extra})
 
 
 def test_defaults_prefilled_and_nothing_assumed():

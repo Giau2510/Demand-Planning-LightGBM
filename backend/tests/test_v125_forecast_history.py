@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from openpyxl import load_workbook
 
-from app import data_checks, db, forecast_history as fh, paths, timeutil
+from app import data_checks, db, forecast_history as fh, paths, qty, timeutil
 from app.bq import product_names
 from app.ml import metrics as mt
 
@@ -290,9 +290,12 @@ def test_actual_join_missing_is_never_zero_and_status_follows_the_real_signal():
     _k, daily, rows, _n = _q(run_from="2026-10-17", run_to="2026-10-20")
     by = {(r["target_date"], r["sku_id"], r["fc_id"]): r for r in rows}
     assert by[("2026-10-18", "S1", "HN")]["actual"] == 5 and by[("2026-10-18", "S1", "BD")]["actual"] == 0
-    assert by[("2026-10-18", "S1", "BD")]["actual_status"] == "COMPLETE"
+    # 1.2.9 (seventh batch): COMPLETE only for a FINALIZED (frozen) day - a completion-signal day that is not frozen
+    # is provisional (test_v129g_actual_final.py covers the finalization itself)
+    assert by[("2026-10-18", "S1", "BD")]["actual_status"] == "PROVISIONAL"
+    assert by[("2026-10-18", "S1", "BD")]["actual_reason"] == "D1_NOT_FINALIZED"
     assert {by[("2026-10-19", s, f)]["actual_status"] for s, f in keys} == {"PROVISIONAL"}
-    assert by[("2026-10-19", "S1", "HN")]["actual_reason"] == "D1_NO_COMPLETION_SIGNAL"
+    assert by[("2026-10-19", "S1", "HN")]["actual_reason"] == "D1_NOT_FINALIZED"
     assert by[("2026-10-20", "S2", "HN")]["actual"] == 3 and by[("2026-10-20", "S1", "HN")]["actual"] == 0
     assert by[("2026-10-20", "S1", "HN")]["actual_reason"] == "D0_INTRADAY"
     fut = [by[("2026-10-21", s, f)] for s, f in keys]
@@ -328,7 +331,10 @@ def test_actual_updates_never_change_the_stored_forecast_nor_create_a_session():
     with db.read() as c:
         assert db.rows(c, "SELECT * FROM forecast_history_values ORDER BY sku_id, fc_id") == kept
     assert [r["yhat"] for r in rows1] == [r["yhat"] for r in rows2]
-    assert _k1["actual_total"] == 5 and _k2["actual_total"] == 10
+    # 1.2.9 (seventh batch): a day that is not finalized is provisional - its figure follows the live source, apart
+    # from the finalized KPI
+    assert _k1["provisional"]["actual_total"] == 5 and _k2["provisional"]["actual_total"] == 10
+    assert _k1["actual_total"] is None and _k2["actual_total"] is None
     assert {r["actual_as_of"] for r in rows2} == {"2026-10-20T02:00:00+00:00"}
     assert (_count("forecast_history_sessions"), _count("forecast_runs")) == (1, 1)
 
@@ -343,28 +349,38 @@ def test_kpi_and_wape_use_only_rows_with_an_actual_and_match_the_metric_module()
     _d1_audit("2026-10-18", "FALLBACK_TIME_VERIFIED")      # 19/10 (D+1 of b) has no actual yet
     k, daily, rows, n = _q(run_from="2026-10-17", run_to="2026-10-18")
     comp = [r for r in rows if r["actual"] is not None]
-    ref = mt.compute([r["actual"] for r in comp], [r["yhat"] for r in comp])
-    assert k["wape"] == pytest.approx(ref["wape"]) and k["bias"] == pytest.approx(ref["bias"])
-    assert k["actual_total"] == 37 and k["n_rows_compared"] == 3 and k["n_rows"] == n == 6
-    assert k["forecast_total"] == pytest.approx(sum(r["yhat"] for r in rows))
-    assert k["deviation"] == pytest.approx(sum(r["yhat"] for r in comp) - 37)
-    assert k["status"] == "PROVISIONAL" and k["days_compared"] == 1
+    # 1.2.9: the page compares the whole-number forecast it shows (app/qty.py) - same WAPE formula as ml/metrics.py
+    assert all(r["forecast_qty"] == qty.business_qty(r["yhat"]) for r in rows)
+    ref = mt.compute([r["actual"] for r in comp], [r["forecast_qty"] for r in comp])
+    # 1.2.9 (seventh batch): the day is not finalized -> its metrics are the PROVISIONAL group's, never the KPI's
+    kp = k["provisional"]
+    assert kp["wape"] == pytest.approx(ref["wape"]) and kp["bias"] == pytest.approx(ref["bias"])
+    assert kp["actual_total"] == 37 and kp["n_rows"] == 3 and k["n_rows"] == n == 6
+    assert k["forecast_total"] == sum(r["forecast_qty"] for r in rows)
+    assert kp["deviation"] == sum(r["forecast_qty"] for r in comp) - 37
+    assert kp["days"] == 1 and k["status"] == "NO_ACTUAL" and k["notes"] == ["NO_FINAL_ACTUAL"]
+    assert (k["actual_total"], k["wape"], k["deviation"], k["n_rows_compared"]) == (None, None, None, 0)
+    assert k["coverage"] == {"rows_total": 6, "rows_final": 0, "rows_provisional": 3, "rows_closed": 0,
+                             "rows_no_actual": 3, "days_final": 0, "days_provisional": 1, "days_closed": 0,
+                             "days_no_actual": 1}
     row = next(r for r in rows if (r["sku_id"], r["fc_id"], r["target_date"]) == ("S2", "HN", "2026-10-18"))
-    assert row["row_wape"] == pytest.approx(abs(row["yhat"] - 30) / 30)
+    assert row["row_wape"] == pytest.approx(abs(row["forecast_qty"] - 30) / 30)
 
 
 def test_wape_with_zero_actual_and_without_actual():
     a = _run("2026-10-18 09:00")
     fh.capture(a)
     k, *_ = _q(run_from="2026-10-18", run_to="2026-10-18")
-    assert (k["status"], k["wape"], k["actual_total"], k["notes"]) == ("NO_ACTUAL", None, None, ["NO_ACTUAL"])
+    assert (k["status"], k["wape"], k["actual_total"], k["notes"]) == ("NO_ACTUAL", None, None,
+                                                                       ["NO_FINAL_ACTUAL", "NO_ACTUAL"])
     _demand("2026-10-19", {})              # loaded day ...
     _demand("2026-10-18", {("S9", "HN"): 1})
     _d1_audit("2026-10-19", "SIGNAL")
     _demand("2026-10-19", {("OTHER", "HN"): 0.0})     # ... with only a zero row of another series
     k, _d, rows, _n = _q(run_from="2026-10-18", run_to="2026-10-18")
-    assert k["actual_total"] == 0 and k["wape"] is None and k["notes"] == ["SUM_ACTUAL_ZERO"]
-    assert k["status"] == "COMPLETE" and all(r["row_wape"] is None for r in rows)
+    # 1.2.9 (seventh batch): not finalized -> provisional group (SUM_ACTUAL_ZERO of a finalized day: test_v129g)
+    assert k["provisional"]["actual_total"] == 0 and k["provisional"]["wape"] is None and k["wape"] is None
+    assert k["notes"] == ["NO_FINAL_ACTUAL"] and all(r["row_wape"] is None for r in rows)
 
 
 # ------------------------------------------------------------------ filters, names, paging, export, API

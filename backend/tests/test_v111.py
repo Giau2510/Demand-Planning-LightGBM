@@ -368,16 +368,20 @@ def test_excel_follows_ui_language_and_keeps_numbers(client, demo_run):
     hv = [c.value for c in vi["Chi tiết theo ngày"][1]]
     he = [c.value for c in en["Daily"][1]]
     # 1.2.4 (format 5): product name after the SKU; a DEMO run has none -> the explicit "no name" text
-    assert hv == ["SKU", "Tên sản phẩm", "FC/kho", "Ngày", "Ngày thứ", "Số lượng dự báo", "Thực tế đến hiện tại", "Phương pháp", "Mã kỹ thuật phương pháp (không dịch)"]
-    assert he == ["SKU", "Product name", "FC/warehouse", "Date", "Day #", "Forecast qty", "Actual so far", "Method", "Technical method code (not translated)"]
+    # 1.2.9 (format 6): weekday name of the date after the date; the numeric 'Ngày thứ' (position in the period) is kept
+    assert hv == ["SKU", "Tên sản phẩm", "FC/kho", "Ngày", "Thứ trong tuần", "Ngày thứ", "Số lượng dự báo", "Thực tế đến hiện tại", "Phương pháp", "Mã kỹ thuật phương pháp (không dịch)"]
+    assert he == ["SKU", "Product name", "FC/warehouse", "Date", "Weekday", "Day #", "Forecast qty", "Actual so far", "Method", "Technical method code (not translated)"]
     today = str(timeutil.today_vn())
     for ws, lab in ((vi["Chi tiết theo ngày"], "Dự phòng cho chuỗi SKU–FC mới"), (en["Daily"], "Fallback for a new SKU–FC series")):
         rows = list(ws.iter_rows(min_row=2, values_only=True))
         assert len(rows) == len(stored)
         assert ws.cell(row=2, column=4).number_format == "DD/MM/YYYY"                # both languages
-        for sku, pname, fc, d, hday, q, act, mlabel, mcode in rows:
+        for sku, pname, fc, d, wday, hday, q, act, mlabel, mcode in rows:
             assert pname == ("Chưa có tên sản phẩm" if lab.startswith("Dự") else "No product name yet")
             assert isinstance(d, datetime)                                          # a real Excel date
+            assert wday == ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"][d.weekday()] \
+                if lab.startswith("Dự") else wday == d.strftime("%A")
+            assert isinstance(hday, int) and hday >= 1
             d = d.date().isoformat()
             # 1.2.8: the exported forecast is the whole number shown on the page (round half up of the stored value)
             assert isinstance(q, int) and q == business_qty(stored[(sku, fc, d)])
@@ -388,7 +392,7 @@ def test_excel_follows_ui_language_and_keeps_numbers(client, demo_run):
                 assert mlabel == ("Mô hình học máy (LightGBM)" if lab.startswith("Dự") else "Machine-learning model (LightGBM)")
     info_vi = {r[0]: r[1] for r in vi["Thông tin"].iter_rows(min_row=2, values_only=True)}
     info_en = {r[0]: r[1] for r in en["Info"].iter_rows(min_row=2, values_only=True)}
-    assert info_vi["Phiên bản định dạng file"] == "5" and info_en["Language"] == "English"
+    assert info_vi["Phiên bản định dạng file"] == "6" and info_en["Language"] == "English"
     run = client.get(f"/api/forecast-runs/{demo_run}").json()
     o = date_cls.fromisoformat(run["forecast_origin"])
     assert info_vi["Ngày bắt đầu"] == o.strftime("%d/%m/%Y") and info_en["Start date"] == o.strftime("%d/%m/%Y")
@@ -399,7 +403,7 @@ def test_excel_follows_ui_language_and_keeps_numbers(client, demo_run):
     assert info_en["Actual is simulated DEMO data"] == "Yes" and info_vi["Trạng thái thực tế trong ngày"] == "Đang cập nhật trong ngày"
     tot = list(en["Totals 7d"].iter_rows(min_row=2, values_only=True))
     daily_sum = {}
-    for sku, pn, fc, d, hday, q, act, ml, mc in en["Daily"].iter_rows(min_row=2, values_only=True):  # noqa: B007
+    for sku, pn, fc, d, wday, hday, q, act, ml, mc in en["Daily"].iter_rows(min_row=2, values_only=True):  # noqa: B007
         daily_sum[(sku, fc)] = daily_sum.get((sku, fc), 0) + q
     for sku, pn, fc, ml, total, act, mc in tot:                                       # totals == sum of daily sheet
         assert total == pytest.approx(daily_sum[(sku, fc)])

@@ -103,6 +103,7 @@ export default function Dashboard() {
         <p className="small muted" data-testid="dash-window">
           {t("dash.window")}: <b>{fmtDate(s.data_window.start)} → {fmtDate(s.data_window.end)}</b>
           {fresh?.window_rows !== undefined ? ` · ${fmtNum(fresh.window_rows)} ${t("common.rows")}` : ""} — {t("dash.window_rule")}
+          {s.data_window.start_rule === "OPEN_HOURS_COVERAGE" && <span data-testid="dash-window-rule"> {t("dash.window_open_hours")}</span>}
         </p>
       )}
 

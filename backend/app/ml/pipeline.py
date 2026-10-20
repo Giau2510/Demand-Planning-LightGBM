@@ -16,14 +16,14 @@ import numpy as np
 
 from .. import db, forecast_history, paths
 from .. import settings_service as ss
-from ..data import identity
-from ..data.demand import data_window, fingerprint, load_demand, panel_for_run, resolve_scope
+from ..data import identity, open_hours
+from ..data.demand import data_window, excluded_summary, fingerprint, load_demand, panel_for_run, resolve_scope
 from ..data.quality import build_report
 from ..messages import AppError
 from ..timeutil import now_iso, now_vn, today_vn
 from . import feature_registry as registry
 from . import model
-from .features import build_panel, feature_names, is_direct
+from .features import OPEN_HOURS, build_panel, feature_names, is_direct
 
 log = logging.getLogger("df.pipeline")
 
@@ -343,12 +343,29 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
                             "OR (status='REJECTED' AND reject_reason=?)) ORDER BY started_at DESC, rowid DESC LIMIT 1",
                          (scope["scope_key"], PENDING_REVIEW))
         cov = registry.coverage(c, scope["scope_key"])
-        window = data_window(c)
+        # 1.2.9b: start rule of data_policy (OPEN_HOURS_COVERAGE: first stored day with open hours); the days left out
+        # are counted with the run (excluded_summary), never deleted
+        window = data_window(c, scope=scope)
+        if window.get("excluded"):
+            window["excluded_summary"] = excluded_summary(c, scope["scope_key"], window)
+        # 1.2.9: SKU open hours, mandatory input of the BIGQUERY source: status of every demand row of the window
+        oh_chk = (open_hours.window_check(c, scope["scope_key"], window["start"], window["end"])
+                  if open_hours.mandatory(scope["data_source"]) else None)
     if not force and last_ok and last_ok["data_fingerprint"] == fp:
         return {"status": "SKIPPED", "reason_code": "NO_NEW_DATA", "training_run_id": last_ok["id"]}
+    if oh_chk is not None and oh_chk["not_ok"]:
+        # never trained as if the input existed: stop with the counts / day ranges per status (no value is invented).
+        # An empty window is not an open-hours problem: the data checks below report it with their own code
+        raise AppError("OPEN_HOURS_INVALID", 409, detail=open_hours.blocking_detail(oh_chk))
     # feature groups without real data in this scope are removed (never filled with invented values); the RESOLVED
     # switches are stored with the run so the model is always rebuilt/explained with exactly its own feature list
     mcfg, decisions = registry.resolve(mcfg_settings, cov)
+    # 1.2.9: decided per run and stored with it (never user switches): open hours = the BIGQUERY source (checked above),
+    # dow encoded 1 Monday ... 7 Sunday
+    mcfg = mcfg.model_copy(update={"feature_open_hours": oh_chk is not None, "weekday_encoding": "ISO"})
+    decisions["open_hours"] = {"mandatory": oh_chk is not None, "used": oh_chk is not None,
+                               "reason": "MANDATORY_DATA_OK" if oh_chk is not None else "NOT_IN_SOURCE",
+                               "window_check": oh_chk, "features": list(OPEN_HOURS)}
     names = feature_names(mcfg)
     if is_direct(mcfg) and max(hcfg.enabled) > model.direct_max_horizon(mcfg):
         raise AppError("DIRECT_HORIZON_EXCEEDS_TRAINING", 409,
@@ -371,14 +388,18 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
                                    "historical_demand": {"switch_on": bool(mcfg_settings.feature_lags or mcfg_settings.feature_rolling),
                                                          "used": bool(mcfg.feature_lags or mcfg.feature_rolling)},
                                    "price": {"switch_on": bool(mcfg_settings.feature_price),
-                                             "used": bool(decisions.get("price", {}).get("used"))}},
+                                             "used": bool(decisions.get("price", {}).get("used"))},
+                                   "open_hours": {"mandatory": oh_chk is not None, "used": bool(mcfg.feature_open_hours)},
+                                   # 1.2.9b: OFF by default; used only with the switch ON and the data stored
+                                   "customer": {"switch_on": bool(mcfg_settings.feature_customer),
+                                                "used": bool(decisions.get("customer", {}).get("used"))}},
                                "forecast_strategy": mcfg.forecast_strategy,
                                "config_fingerprint": hashlib.sha256(json.dumps(fcfg, sort_keys=True).encode()).hexdigest()[:16],
                                "feature_set_version": registry.feature_set_version(names),
                                "registry_version": registry.REGISTRY_VERSION,
                                "settings_switches": {k: getattr(mcfg_settings, k) for k in (
                                    "feature_lags", "feature_rolling", "feature_calendar", "feature_price",
-                                   "feature_discount", "feature_promotion", "feature_weekday")},
+                                   "feature_discount", "feature_promotion", "feature_weekday", "feature_customer")},
                                "feature_decisions": decisions, "lineage": lineage, "data_window": window},
                               default=str),
                    json.dumps(model.lgb_params(mcfg)), job_id))
@@ -413,6 +434,13 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
         at("PREPARING_DATA")
         # model input = the data window only (complete VN days from window_start_date to yesterday)
         demand = load_demand(scope["scope_key"], start=window["start"], end=window["end"])
+        if mcfg.feature_open_hours and demand["open_hours"].isna().any():
+            # 1.2.9: the rows really loaded must all carry their open hours - a D-1 load may have run since the check
+            with db.read() as c:
+                det = open_hours.blocking_detail(open_hours.window_check(c, scope["scope_key"], window["start"], window["end"]))
+            finish("FAILED", "OPEN_HOURS_INVALID", error=det[:2000])
+            return {"status": "FAILED", "reason_code": "OPEN_HOURS_INVALID", "failed_stage": "PREPARING_DATA",
+                    "training_run_id": run_id, "error": det}
         panel = build_panel(demand, max_days=mcfg.max_train_days)
         log.info("training window", extra={"ctx": {"training_run_id": run_id, "window": window["start"] + ".." +
                                                    window["end"], "panel": f"{panel.dates[0].date()}..{panel.dates[-1].date()}",
@@ -420,7 +448,8 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
         # 1.2.4: content identity (values, not load time) of exactly this window, so an explanation can later prove that
         # a reloaded database still holds the data this run used; metadata only - never blocks the training
         try:
-            identity.record_for_training(run_id, scope["scope_key"], str(panel.dates[0].date()), str(panel.dates[-1].date()))
+            identity.record_for_training(run_id, scope["scope_key"], str(panel.dates[0].date()), str(panel.dates[-1].date()),
+                                         columns=identity.columns_for(mcfg))
         except Exception:  # noqa: BLE001
             log.warning("data identity not recorded", exc_info=True, extra={"ctx": {"training_run_id": run_id}})
         at("BACKTESTING")
@@ -448,7 +477,8 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
                       "reliable, notes_json) VALUES (?,?,?,?,?,?,?,?)",
                       (bt_id, run_id, now_iso(), json.dumps(bt.get("config", {})), json.dumps(bt["folds"]),
                        json.dumps({"pooled": bt["metrics"], "baseline": bt["baseline_metrics"],
-                                   "by_method": bt["by_method"]}), int(bt["reliable"]), json.dumps(bt["notes"])))
+                                   "by_method": bt["by_method"], "segments": bt.get("segments")}),
+                       int(bt["reliable"]), json.dumps(bt["notes"])))
         if usage["status"] == "NOT_USABLE":
             if booster is not None:
                 # model file kept (hash recorded) so the run can be reviewed; under the BLOCK policy it is published

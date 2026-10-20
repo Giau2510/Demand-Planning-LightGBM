@@ -1,4 +1,4 @@
-# Lịch sử Forecast & Thực tế (1.2.5, bổ sung 1.2.6)
+# Lịch sử Forecast & Thực tế (1.2.5, bổ sung 1.2.6, 1.2.9)
 
 Màn hình **Lịch sử Forecast & Thực tế** (`/forecast-history`) lưu forecast ngày hôm sau (D+1) của từng ngày chạy
 forecast và so sánh với thực tế. Mã nguồn: `backend/app/forecast_history.py`, `backend/app/api/history_routes.py`,
@@ -50,40 +50,53 @@ Nguồn của ngày được dự báo T, theo thứ tự:
 | Trường hợp | Nguồn | Trạng thái |
 |---|---|---|
 | T chưa tới | — | `NO_ACTUAL` (`FUTURE_DATE`) |
-| T đã được D-1 nạp vào `demand_daily` | Tổng theo SKU × FC của ngày đó. SKU × FC không có dòng trong một ngày đã nạp = 0, giống quy tắc của panel huấn luyện / backtest. | `COMPLETE` nếu lần D-1 nạp ngày T chạy theo **tín hiệu hoàn tất** của nguồn; nếu không thì `PROVISIONAL` (`D1_NO_COMPLETION_SIGNAL`) |
+| 1.2.9: T đã được **chốt** (mục 15) | Bản đóng băng của ngày T (`actual_final_values`), không đọc lại `demand_daily`. SKU × FC không có dòng = 0 (ngày đã được đọc trọn). | `COMPLETE` (`FINALIZED_D1`) |
+| T đã được D-1 nạp vào `demand_daily` nhưng chưa chốt | Tổng theo SKU × FC của ngày đó. SKU × FC không có dòng trong một ngày đã nạp = 0, giống quy tắc của panel huấn luyện / backtest. | `PROVISIONAL` (`D1_NOT_FINALIZED`; trước 1.2.9: `COMPLETE` khi có tín hiệu hoàn tất, `D1_NO_COMPLETION_SIGNAL` nếu không) |
 | D-1 đã chạy qua T nhưng T không có dòng nào | — | `NO_ACTUAL` (`DAY_WITHOUT_DATA`), không coi là 0 |
 | D-1 chưa nạp T, có snapshot D0 thành công của T | Số lũy kế của snapshot D0 mới nhất (SKU × FC vắng = 0, vì snapshot đọc cả bộ dữ liệu) | `PROVISIONAL` (`D0_INTRADAY` cho hôm nay, `D0_LAST_READ` cho ngày đã qua) |
 | Không có gì | — | `NO_ACTUAL` (`NO_D0_READ_TODAY` / `NOT_LOADED_YET`), không bao giờ thành 0 |
 
-**Tín hiệu hoàn tất.** Bằng chứng duy nhất được chấp nhận là `audit_log` `D1_SYNC` có `mode = SIGNAL` cho đúng ngày đó.
-Chế độ này chỉ có khi cấu hình `bigquery.completion_table` / `completion_date_column`. D-1 chạy sau giờ dự phòng với
-kiểm tra số dòng (`FALLBACK_TIME_VERIFIED`), backfill, truy vấn thành công hay đã qua nửa đêm đều **không** phải bằng
-chứng.
+**1.2.9 (đợt 7, quy tắc của chủ sở hữu ngày 20/10/2026): "Đã hoàn tất" = đã chốt từ D-1.** Một ngày chỉ là
+`COMPLETE` khi đã được chốt (đóng băng) từ lần D-1 thành công đã ghi ngày đó (mục 15). Từ đó con số không đổi nữa.
 
-**Production 18/10/2026:** chưa cấu hình bảng tín hiệu hoàn tất. Vì vậy không ngày nào "Đã hoàn tất": trong ngày là
-"Tạm tính", từ 1.2.6 ngày đã chốt lúc 23:59 là "Đã chốt – cần xác minh" (`CLOSED`, mục 12). Màn hình nói rõ lý do.
-Muốn có "Đã hoàn tất" thì cấu hình tín hiệu hoàn tất có sẵn trong thiết lập BigQuery. Đó là quyết định nghiệp vụ; ứng
-dụng không tự đặt quy tắc mới.
+**Trước 1.2.9 (nguyên nhân màn hình mãi "Tạm tính").** Bằng chứng duy nhất được chấp nhận là `audit_log` `D1_SYNC`
+có `mode = SIGNAL`, mà chế độ này chỉ có khi cấu hình `bigquery.completion_table`. Production chạy D-1 ở chế độ
+`FALLBACK_TIME_VERIFIED` (kiểm tra đủ số dòng sau giờ dự phòng), nên không ngày nào thành "Đã hoàn tất": mọi ngày đã
+qua mãi là "Tạm tính", hoặc "Đã chốt – cần xác minh" sau 23:59. Ngoài ra con số luôn đọc lại từ `demand_daily`, nên mỗi
+lần D-1 nạp lại thì số của ngày cũ cũng đổi.
 
-Nguồn cập nhật hồi tố (D-1 nạp lại trong cửa sổ late-data) thì thực tế hiển thị theo số mới. "Thực tế tính đến"
-(`loaded_at` hoặc thời điểm snapshot) cho biết số đang thấy là của lần nạp nào. Giá trị cũ còn trong bản sao lưu.
+Ngày chưa chốt: nguồn cập nhật hồi tố (D-1 nạp lại trong cửa sổ late-data) thì thực tế hiển thị theo số mới. "Thực tế
+tính đến" (`loaded_at` hoặc thời điểm snapshot) cho biết số đang thấy là của lần nạp nào. Ngày đã chốt: không bao giờ
+đổi; ô thực tế ghi "đã chốt lúc".
 
 ## 4. KPI, sai lệch, WAPE
 
 Tất cả tính trên **đúng tập dòng của bộ lọc**: phạm vi ngày chạy, FC, SKU / tên, trạng thái thực tế. KPI, biểu đồ,
 bảng và Excel dùng chung truy vấn `forecast_history.Query`.
 
-- **Tổng forecast đã lưu** = Σ forecast của mọi dòng.
-- **Tổng thực tế hiện có** = Σ thực tế của các dòng **đã có thực tế** (dòng thiếu thực tế bị loại, không tính 0).
-- **Sai lệch** = Σ forecast − Σ thực tế, trên cùng các dòng có thực tế.
-- **WAPE** = Σ|forecast − thực tế| / Σ thực tế, trên cùng các dòng đó; đúng công thức của `ml/metrics.py` (test
-  đối chiếu). Không tính khi tổng thực tế = 0 (`SUM_ACTUAL_ZERO`) hoặc chưa có thực tế (`NO_ACTUAL`).
-- **WAPE dòng** = |F − T| / T, chỉ khi T > 0.
-- **Trạng thái KPI:** "Tạm tính" khi có dòng tạm tính trong tập so sánh; "Đã hoàn tất" chỉ khi mọi dòng so sánh đã
-  hoàn tất; còn lại (1.2.6: có dòng đã chốt nhưng chưa xác minh) là "Đã chốt – cần xác minh".
+- **Forecast (1.2.9)** = số lượng dự báo **nguyên** của `app/qty.py`: làm tròn nửa lên giá trị đã lưu, không âm, cho
+  phép 0. Là đúng số của trang Kết quả dự báo và Excel của run. Bảng, biểu đồ, KPI, sắp xếp và Excel dùng số này;
+  `yhat` đã lưu không đổi, vẫn có trong API và khi di chuột lên ô Forecast. Trước 1.2.9 trang này dùng `yhat` (số lẻ).
+  Chỉ số chất lượng mô hình (backtest, quality gate, thẻ accuracy của trang Kết quả) vẫn tính trên `yhat`.
+- **Tổng forecast đã lưu** = Σ forecast của mọi dòng (không đổi).
+- **1.2.9 (đợt 7) — KPI chính chỉ trên dòng đã chốt** (`kpi.basis = FINALIZED_ONLY`):
+  - **Thực tế đã hoàn tất** = Σ thực tế của các dòng có trạng thái `COMPLETE`;
+  - **Sai lệch (đã chốt)** = Σ forecast − Σ thực tế, trên cùng các dòng đó;
+  - **WAPE (đã chốt)** = Σ|forecast − thực tế| / Σ thực tế, và **bias** = (Σ F − Σ T) / Σ T, trên cùng các dòng đó;
+    đúng công thức của `ml/metrics.py` (công thức không đổi, chỉ đổi tập dòng).
+  - Không có dòng đã chốt: các thẻ ghi "Chưa có actual đã chốt" (`notes = NO_FINAL_ACTUAL`, `status = NO_ACTUAL`).
+    Tổng thực tế đã chốt = 0: WAPE không tính (`SUM_ACTUAL_ZERO`).
+- **Dòng chưa chốt tính riêng:** `kpi.provisional` (`PROVISIONAL`) và `kpi.closed` (`CLOSED`, đã chốt 23:59 nhưng chưa
+  chốt từ D-1), mỗi nhóm có số dòng, số ngày, tổng thực tế, forecast cùng dòng, sai lệch, WAPE, bias. Màn hình hiện
+  chúng ở thẻ "Thực tế chưa chốt — xem riêng, không phải chất lượng mô hình". Không bao giờ gộp vào KPI chính.
+- **Cơ sở so sánh** (`kpi.coverage`): số dòng / ngày đã hoàn tất, tạm tính, đã chốt cuối ngày, chưa có thực tế (không
+  tính 0). `kpi.n_zero_absent`: số dòng đã hoàn tất = 0 vì SKU × FC không có dòng trong ngày (ngày đã đọc trọn).
+- **WAPE dòng** = |F − T| / T, chỉ khi T > 0 (không đổi).
+- Trước 1.2.9: KPI gộp mọi dòng có thực tế và chỉ gắn nhãn "Tạm tính" / "Đã chốt – cần xác minh" / "Đã hoàn tất".
 - **1.2.6 — WAPE trong ngày giữ nguyên.** Mỗi lần D-0 cập nhật, WAPE được tính lại theo đúng công thức trên, kể cả
   khi thực tế đang là số lũy kế còn forecast là số cả ngày (chủ sở hữu đã chấp nhận). Bản chốt 23:59 chỉ đổi nhãn
-  trạng thái, không đổi con số (test và bản sao DB: cùng WAPE khi có / không có lớp chốt).
+  trạng thái, không đổi con số (test và bản sao DB: cùng WAPE khi có / không có lớp chốt). Từ 1.2.9 WAPE trong ngày
+  nằm ở nhóm tạm tính, không ở KPI chính.
 - Ghi chú: `/api/forecast-runs/{id}/accuracy` (có từ trước) chỉ ghép các ngày có dòng trong `demand_daily` (inner join).
   Màn hình lịch sử theo quy tắc panel (ngày đã nạp, không có đơn = 0). Không sửa endpoint cũ.
 
@@ -117,10 +130,16 @@ bảng và Excel dùng chung truy vấn `forecast_history.Query`.
 | `/api/history/overview?scope_key=` | scope có lịch sử, ngày chạy + phiên chính thức, FC, phiên hôm nay, đã cấu hình tín hiệu hoàn tất chưa; 1.2.6: `backup_days`, `today_backup` |
 | `/api/history/summary?scope_key&run_from&run_to&fc_id&q&actual_status&forecast_source` | KPI, một điểm mỗi ngày chạy (ngày không có forecast là khoảng trống), các phiên của khoảng ngày (cả phiên không được chọn); 1.2.6: `backup_days`, `forecast_source` / `snapshot` / `actual_close` mỗi ngày, `days_primary` / `days_backup` |
 | `/api/history/rows?…&sort=date\|abs_error\|forecast\|actual\|sku&limit<=1000&offset` | bảng SKU × FC có phân trang; 1.2.6: `forecast_source`, `snapshot_id`, `snapshot_business_date`, `snapshot_created_at` |
-| `/api/history/export.xlsx?…&lang=vi\|en` | Excel (định dạng H2 từ 1.2.6) |
+| `/api/history/export.xlsx?…&lang=vi\|en` | Excel (định dạng H2 từ 1.2.6; H3 từ 1.2.9: cột Forecast là số nguyên) |
 
 1.2.6 chỉ **thêm** trường và tham số (`forecast_source=PRIMARY|SNAPSHOT`, `actual_status` thêm `CLOSED`); trường cũ
 giữ nguyên. Đường dẫn không đổi, nên allowlist của proxy chỉ đọc không cần sửa.
+
+1.2.9 (đợt 7) thêm: `overview.finalization` (`finalized_days`, `blocked_days`, `last_finalized_date`, `applicable`);
+`summary.kpi.basis`, `provisional`, `closed`, `coverage`, `n_zero_absent`; mỗi ngày `actual_final` (provenance của bản
+đóng băng), `actual_finalization` (lý do chưa chốt được), `n_zero_absent`; mỗi dòng `actual_present`, và
+`actual_source = FINAL` cho ngày đã chốt. **Đổi nghĩa:** `kpi.actual_total`, `deviation`, `wape`, `bias`,
+`n_rows_compared`, `days_compared`, `status` giờ chỉ của dòng đã chốt.
 
 `q` tìm theo một phần SKU / tên, không phân biệt hoa thường, không cần dấu. Mặc định là 30 ngày chạy, kết thúc ở ngày
 chạy mới nhất có lịch sử; tối đa 400 ngày mỗi yêu cầu.
@@ -134,6 +153,11 @@ Gồm 4 sheet: Thông tin (bộ lọc, KPI, quy tắc), Phiên forecast, Theo ng
 - Quá 1.000.000 dòng thì từ chối với lỗi `HISTORY_EXPORT_TOO_LARGE`, không bao giờ cắt bớt.
 - Thực tế trống nghĩa là chưa có dữ liệu, không phải 0.
 - Trạng thái ghi bằng chữ: "Tạm tính" / "Đã chốt - cần xác minh" / "Đã hoàn tất" / "Chưa có dữ liệu thực tế".
+- 1.2.9 (định dạng H3): vị trí cột không đổi. Cột Forecast của sheet chi tiết, tổng theo ngày, sai lệch và WAPE dùng
+  số lượng nguyên (mục 4); "Cách tính" ở sheet Thông tin ghi rõ quy tắc.
+- 1.2.9 đợt 7 (định dạng H4): các dòng Tổng thực tế / Sai lệch / WAPE của sheet Thông tin là của dòng **đã chốt**;
+  nối thêm vào cuối sheet Thông tin: cơ sở tính, số dòng theo nhóm, tổng và WAPE riêng của nhóm tạm tính và nhóm đã
+  chốt cuối ngày, số dòng = 0 vì không có đơn, quy tắc thực tế đã hoàn tất. Vị trí các dòng / cột cũ không đổi.
 - 1.2.6 (định dạng H2): cột mới được **nối vào cuối**, vị trí cột cũ giữ nguyên.
   - Sheet "Chi tiết SKU x FC": Nguồn forecast, Mã snapshot dự phòng, Ngày nghiệp vụ của snapshot, Snapshot tạo lúc.
   - Sheet "Theo ngày": Nguồn forecast, Mã snapshot dự phòng, Ngày nghiệp vụ của snapshot.
@@ -148,7 +172,8 @@ Gồm 4 sheet: Thông tin (bộ lọc, KPI, quy tắc), Phiên forecast, Theo ng
   bằng model đang dùng sau D-1. 1.2.5 không tự thêm quy trình đó.
 - **Ngày quá khứ trước khi có forecast run:** không có lịch sử. Các run đã publish trước 1.2.5 được ghi nhận từ giá
   trị đã lưu (`RECOVERED`).
-- **Chưa có tín hiệu hoàn tất** nên không có thực tế nào "Đã hoàn tất" (mục 3).
+- **1.2.9:** thực tế chỉ "Đã hoàn tất" khi đã chốt từ D-1 (mục 15); trước 1.2.9 không ngày nào đạt vì production không
+  có tín hiệu hoàn tất (mục 3).
 - **1.2.6 — dung lượng snapshot dự phòng.** Mỗi snapshot hoàn chỉnh lưu 7 × số chuỗi SKU × FC. Đo trên bản sao DB
   ngày 18/10/2026: 119.889 dòng, khoảng 11,8 MB mỗi ngày, tức khoảng 4,3 GB mỗi năm nếu chạy mỗi ngày. Chủ sở hữu
   quyết định lưu **90 ngày** (18/10/2026): khoảng 90 × 11,8 MB ≈ 1,1 GB khi dọn đều đặn. Dọn bằng tay, dry run trước
@@ -344,3 +369,78 @@ không tính ngày đó.
 | Bảng (migration 0006, thêm) | Vai trò | Khóa |
 |---|---|---|
 | `forecast_eod_snapshot_retention` | Phiếu xóa và nhật ký vĩnh viễn của mỗi snapshot đã xóa: lần chạy, snapshot, scope, ngày, khoảng ngày, trạng thái snapshot, run nguồn, số dòng, sha256, tổng, ngày tạo snapshot, số ngày chính sách, ngày cắt, trạng thái phiếu, số dòng đã xóa, người yêu cầu, bản sao lưu, thời điểm | PK `seq` AUTOINCREMENT; UNIQUE `snapshot_id` |
+
+## 15. Thực tế đã hoàn tất: chốt từ D-1 và đóng băng (1.2.9, đợt 7)
+
+Quy tắc của chủ sở hữu (20/10/2026): thực tế của một ngày đã qua được chốt từ lần D-1 thành công và không bao giờ đổi
+nữa. Mã nguồn `backend/app/actual_final.py`; migration `0009_actual_finalization.sql`; test
+`backend/tests/test_v129g_actual_final.py`, `frontend/src/v129g-final.test.tsx`.
+
+| Quy tắc | Cách triển khai |
+|---|---|
+| Ngày được chốt | Ngày nghiệp vụ Việt Nam T (= `demand_daily.order_date`, tức `created_date` của nguồn). Không bao giờ là hôm nay hay ngày tương lai. D-1 chạy ngày 20/10 nạp tới 19/10 (`today_vn() - 1`), nên T = 19/10 được chốt ngay sau lần đó. |
+| Bằng chứng | Một lần D-1 ghi trọn các ngày trong cửa sổ của nó trong một transaction, mọi dòng cùng `loaded_at` = `synced_at` của lần nạp, và `audit_log` `D1_SYNC` của lần nạp nằm trong cùng transaction. T chỉ được chốt khi: mọi dòng của T có cùng một `loaded_at`; có đúng một `D1_SYNC` của scope với `synced_at` đó; chế độ là `SIGNAL`, `FALLBACK_TIME_VERIFIED` hoặc `BACKFILL` (quy tắc kiểm tra nguồn đủ dữ liệu sẵn có: tín hiệu hoàn tất, hoặc sau giờ dự phòng với số dòng ≥ tỷ lệ × trung bình 7 ngày, hoặc backfill có preview READY); cửa sổ của lần nạp bao trùm T; ngày Việt Nam của lần nạp sau T; mọi dòng có SKU, FC, số lượng ≥ 0. D-1 thất bại không commit gì nên không bao giờ dẫn tới chốt. |
+| Chưa chốt được | Ghi `BLOCKED` kèm lý do (`NO_VERIFIED_D1_LOAD`, `MIXED_LOADS`, `LOAD_WINDOW_DOES_NOT_COVER_DAY`, `LOADED_BEFORE_DAY_ENDED`, `D1_MODE_NOT_ELIGIBLE`, `AMBIGUOUS_D1_LOAD`, `INVALID_ROWS`); ngày đó vẫn hiện số sống, trạng thái tạm tính / đã chốt 23:59. Một lần nạp hợp lệ sau đó có thể chốt nó (`BLOCKED` → `FINALIZED`, không bao giờ ngược lại). Ngày không có dòng nào không phải ứng viên (màn hình ghi "chưa có dữ liệu thực tế", không tính 0). |
+| Đóng băng | Mỗi ngày một transaction `BEGIN IMMEDIATE`: đầu mục + toàn bộ SKU × FC (số lượng, số đơn) + provenance (load id, job, `synced_at`, chế độ, cửa sổ, watermark, mapping hash, preview), số dòng, tổng, sha256; kiểm lại số dòng và tổng (so với chính nó và với `demand_daily`) rồi mới niêm phong (`sealed = 1`). Sai thì cả ngày rollback, không còn dòng nào. |
+| Bất biến | Trigger 0009: không xóa, không đổi khóa, không `INSERT OR REPLACE`; ngày `FINALIZED` chỉ được niêm phong một lần, sau đó không cột nào đổi; giá trị không sửa / xóa được và không thêm được sau niêm phong; niêm phong bị từ chối khi số dòng / tổng không khớp. Lần D-1 sau báo số khác, nguồn sửa lịch sử, đơn hủy, SKU × FC vắng, nạp lại hay huấn luyện lại đều không đổi bản đóng băng. Sửa một ngày đã chốt cần một quy trình riêng có kiểm soát và audit — chưa có, không tự động. |
+| Idempotent, thử lại | Ngày đã chốt không bao giờ được xét lại; chạy lại với cùng dữ liệu không ghi gì; ngày `BLOCKED` chỉ ghi lại khi lý do hoặc lần nạp đổi. Một ngày lỗi giữa chừng rollback riêng (alert ERROR `ACTUAL_FINALIZE_FAILED`), các ngày khác vẫn chốt; lần chạy sau (sau D-1 kế tiếp, hoặc lệnh dưới đây) thử lại. |
+| Khi nào chạy | Ngay sau mỗi lần D-1 thành công đã commit (`sync._after_d1`), không bao giờ làm D-1 thất bại. Lệnh `python -m app.cli actual-finalize` = chạy thử chỉ đọc (cả trên DB trước migration 0009, để đo tác động nâng cấp; `--db <file>` cho một bản sao); `--apply` = chốt trên DB đang cấu hình. Không gọi BigQuery, không ghi `demand_daily`, forecast, lịch sử D+1 hay bản chốt 23:59. |
+| Phạm vi | Chỉ nguồn BIGQUERY (D-1). DEMO / Excel không có D-1: không bao giờ chốt (màn hình nói rõ). |
+| Chốt 23:59 | Giữ nguyên quy tắc 1.2.6 (mục 12), kể cả `CLOSED_VERIFIED` theo tín hiệu và revision khi dữ liệu đến muộn. Ngày đã chốt từ D-1 hiện "Đã hoàn tất" và số của bản đóng băng; `actual_close.current` không áp dụng (`null`). |
+
+**Dữ liệu cũ khi nâng cấp.** Migration 0009 chỉ tạo bảng rỗng, không gán trạng thái cho dòng nào. Ngày cũ chỉ được chốt
+ở lần chạy đầu tiên sau nâng cấp (D-1 kế tiếp hoặc `--apply`), và chỉ khi các dòng của nó truy được về một lần D-1 đã
+xác minh như trên; không ngày nào được coi là chốt chỉ vì đã qua. Đo trên bản sao DB production lúc 20:19 ngày
+20/10/2026 (schema 6 → 9):
+
+- Chạy thử trước migration: 292/292 ngày (01/01–19/10) truy được về lần nạp đã xác minh; 0 ngày bị chặn.
+  - 285 ngày đến từ lần D-1 nạp lại toàn bộ (`JOB-20261017125803-0ED367`, 17/10 20:00 giờ VN,
+    `FALLBACK_TIME_VERIFIED`, `full_reload`).
+  - 7 ngày (13/10–19/10) đến từ các lần D-1 tăng dần (18/10, 19/10, 20/10).
+  - Các lần nạp của 1.2.8 không ghi `load_id`; provenance của chúng là `synced_at` + `job_id` (cùng audit `D1_SYNC`).
+- Migration 28,6 giây (kèm sao lưu `pre-migration-v6`). Chỉ thêm hai bảng rỗng. `demand_daily` chỉ thêm cột NULL của
+  0007 / 0008; không bảng nào khác đổi.
+- Chốt 292 ngày:
+  - 1.358.317 dòng, 42.023.217 đơn vị;
+  - khoảng 38 giây ghi, cộng khoảng 35 giây lập kế hoạch ở lần đầu;
+  - DB tăng khoảng 81 MB;
+  - 100% dòng của bản đóng băng bằng `demand_daily` tại thời điểm chốt.
+- Chạy lại: không ghi gì, 0,3 giây.
+- `data-check`: `actual_final_sealed` và `actual_final_protection_triggers` đều OK.
+- Màn hình (cùng bản sao): 18/10 và 19/10 chuyển từ "Đã chốt – cần xác minh" sang "Đã hoàn tất".
+  - KPI đã chốt: WAPE 73,0%, bias +14,8% trên 34.252 dòng.
+  - 20/10 (hôm nay) vẫn tạm tính và nằm ở nhóm riêng.
+
+Hệ quả cần biết: các ngày cũ được chốt theo số mà lần nạp đã xác minh gần nhất của ngày đó ghi (với production: lần nạp
+lại toàn bộ ngày 17/10, cộng các lần nạp tăng dần sau đó). Nguồn đã sửa lịch sử khoảng −0,03% từ đó (báo cáo đợt 5).
+Nếu muốn các ngày cũ phản ánh nguồn mới nhất, backfill có preview phải chạy **trước** lần chốt đầu tiên. Đây là quyết định
+phát hành (thứ tự backfill / chốt), không phải quy tắc code.
+
+**Quyết định của chủ hệ thống (20/10/2026 tối): backfill trước, rồi mới chốt lần đầu.** Diễn tập trên bản sao cô lập của DB
+production lúc 21:22 (đợt 8, báo cáo `reports/demandforecast_upgrade_backfill_rehearsal_20261020.md`):
+
+- **Nâng cấp 6 → 9:** 89,8 giây, gần như toàn bộ là sao lưu `pre-migration-v6`. Chỉ thêm 2 bảng và 10 trigger; mọi bảng cũ
+  giữ nguyên nội dung trên các cột cũ.
+- **Backfill 01/01–19/10:** preview READY mất 483 giây, ghi mất 804 giây.
+  - Nguồn khác số đang lưu: 344 khóa mới, 213 khóa đổi số, 772 khóa nguồn đã bỏ; tổng −12.109 (−0,029%).
+  - Sau backfill, 292/292 ngày truy về đúng một lần nạp `BACKFILL`; 0 ngày bị chặn.
+- **Chốt:** 292 ngày, 1.357.889 dòng, 42.011.108 đơn vị; DB tăng khoảng 81 MB.
+  - Đường CLI (`--apply`) và đường production (hook sau backfill) cho cùng giá trị và cùng sha256 từng ngày.
+- **Khôi phục:** khôi phục bản sao lưu bằng mã 1.2.8 đưa DB về đúng trạng thái trước nâng cấp.
+
+Lưu ý vận hành: **code không tự giữ thứ tự này.**
+
+- Lần đầu tiên một D-1 (theo lịch hoặc bấm tay) hoặc một backfill chạy xong sau khi nâng cấp, hook sau D-1 chốt ngay mọi
+  ngày truy được.
+- Backfill tự chốt ngay sau khi ghi, không có khoảng dừng để xem lại. Phần xem trước tác động là preview của backfill.
+- Vì vậy phải chạy preview + backfill **trước** lần D-1 kế tiếp sau nâng cấp. Nếu không, các ngày cũ sẽ bị chốt theo các
+  lần nạp cũ.
+
+| Bảng (migration 0009, chỉ thêm) | Vai trò | Khóa |
+|---|---|---|
+| `actual_finals` | Đầu mục mỗi scope × ngày: `FINALIZED` (niêm phong) hoặc `BLOCKED` + lý do; provenance của lần D-1; số dòng, tổng, số đơn, sha256; người / job chạy; số lần thử; thời điểm | PK `id`; UNIQUE `(scope_key, business_date)` |
+| `actual_final_values` | SKU × FC × số lượng, số đơn của ngày đã chốt; bất biến | PK `(final_id, sku_id, fc_id)`, WITHOUT ROWID |
+
+`data-check` thêm `actual_final_sealed` (đầu mục đã niêm phong, đủ số dòng / tổng; sha256 của 14 ngày gần nhất; ngày
+`BLOCKED` không có giá trị) và `actual_final_protection_triggers` (đủ 10 trigger). Rollback về 1.2.8: khôi phục bản sao
+lưu trước nâng cấp như với 0004–0008.

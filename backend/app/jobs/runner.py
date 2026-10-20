@@ -42,7 +42,8 @@ def _handlers():
 
     def d1(job_id, params):
         progress.set_stage(job_id, "SYNCING")
-        return run_d1_sync(job_id, params.get("fallback_mode"), params.get("backfill_start"), params.get("backfill_end"))
+        return run_d1_sync(job_id, params.get("fallback_mode"), params.get("backfill_start"), params.get("backfill_end"),
+                           params.get("backfill_preview_id"))
 
     def train(job_id, params, cancel=None):
         return train_and_publish(job_id, force=bool(params.get("force")), cancel=cancel,

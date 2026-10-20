@@ -11,7 +11,9 @@ from openpyxl.styles import Alignment, Font
 
 from .export_i18n import fmt_date, fmt_vn_time, labels
 from .ml.methods import label as method_label
+from .weekday import iso_weekday
 
+# indexed by app/weekday.iso_weekday - 1 (1 = Monday ... 7 = Sunday)
 WEEKDAYS = {"vi": ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"],
             "en": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]}
 STATUS = {"vi": {"ORDERS": "Có đơn", "ZERO_ORDERS": "Có dữ liệu, 0 đơn", "NO_DATA": "Không có dữ liệu (không rõ)",
@@ -104,7 +106,7 @@ def history_xlsx(ex: dict, lang: str) -> bytes:
             note = X["note_used"]
         else:
             note = X["note_outside"] if calc else ""
-        ws.append([date.fromisoformat(d["date"]), WEEKDAYS[lang][d["weekday"]], d["qty"], STATUS[lang][d["status"]],
+        ws.append([date.fromisoformat(d["date"]), WEEKDAYS[lang][iso_weekday(d["date"]) - 1], d["qty"], STATUS[lang][d["status"]],
                    X["yes"] if d["in_calc"] else X["no"], ", ".join(d.get("used_by") or []), note])
     for r in range(2, ws.max_row + 1):
         ws.cell(row=r, column=1).number_format = "DD/MM/YYYY"
@@ -129,7 +131,7 @@ def backtest_points_xlsx(res: dict, lang: str) -> bytes:
     ws.append(X["bt_cols"])
     for p in res["points"]:
         d = date.fromisoformat(p["date"])
-        ws.append([p["fold"], date.fromisoformat(p["origin"]), d, WEEKDAYS[lang][d.weekday()], p["sku_id"], p["fc_id"],
+        ws.append([p["fold"], date.fromisoformat(p["origin"]), d, WEEKDAYS[lang][iso_weekday(d) - 1], p["sku_id"], p["fc_id"],
                    p["day_of_fold"], method_label(p["method"], lang), p["method"], p["actual"], p["forecast"],
                    abs(p["actual"] - p["forecast"]), p["baseline"]])
     for r in range(2, ws.max_row + 1):

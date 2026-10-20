@@ -18,9 +18,10 @@ from app.messages import AppError
 pytestmark = pytest.mark.skipif(os.environ.get("DF_REAL_BQ") != "1",
                                 reason="real BigQuery (ADC of this Windows account): set DF_REAL_BQ=1")
 
+# 1.2.9: total_open_hours is a mandatory D-1 input; the same value on every line changes no duplicate group
 COLS = ("so_code STRING, created_date DATE, sku_code STRING, fc_code STRING, demand_quantity FLOAT64, "
         "outbound_quantity FLOAT64, sales_price FLOAT64, order_status STRING, seller_code STRING, seller_class STRING, "
-        "refresh_time STRING")
+        "refresh_time STRING, total_open_hours FLOAT64")
 D1, D2, OUT = "DATE '2026-10-01'", "DATE '2026-10-02'", "DATE '2026-09-30'"
 ROWS = [  # so_code, day, sku, qty, outbound, price, status
     ("'O1'", D1, "A", 5, 5, 10.0, "COMPLETED"), ("'O2'", D1, "A", 8, 8, 10.0, "COMPLETED"),
@@ -42,7 +43,7 @@ EXTRA = {10, 15}          # second copy of the two exact duplicates (indexes in 
 def _sql(rows) -> str:
     def v(x):
         return "NULL" if x is None else repr(x)
-    body = ",\n  ".join(f"({so}, {d}, '{sku}', 'F1', {v(q)}, {v(ob)}, {v(p)}, '{st}', 'SE1', 'X', 'r')"
+    body = ",\n  ".join(f"({so}, {d}, '{sku}', 'F1', {v(q)}, {v(ob)}, {v(p)}, '{st}', 'SE1', 'X', 'r', 24.0)"
                         for so, d, sku, q, ob, p, st in rows)
     return f"SELECT * FROM UNNEST(ARRAY<STRUCT<{COLS}>>[\n  {body}\n])"
 

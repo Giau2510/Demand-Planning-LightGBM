@@ -1,4 +1,4 @@
-# Data model, lifecycle and data rules (current state, schema 6 since 1.2.6: end-of-day forecast backup, actual close and the 90-day backup retention added; schema 4 since 1.2.5: D+1 forecast history)
+# Data model, lifecycle and data rules (current state, schema 6 since 1.2.6: end-of-day forecast backup, actual close and the 90-day backup retention added; schema 4 since 1.2.5: D+1 forecast history; source after 1.2.8, not deployed: schema 8, SKU open hours (0007) and customer counts (0008) on `demand_daily`)
 
 Status: verified against the code in `backend/app` and a read-only copy of the live database on 2026-10-15
 (application 1.1.6 deployed, 1.1.7 source; schema version 3). Column-level detail: [DATA-DICTIONARY.md](DATA-DICTIONARY.md).
@@ -19,6 +19,7 @@ Anything marked **UNKNOWN** could not be verified from the code or the database 
 | End-of-day forecast backup (1.2.6, schema 5) | `forecast_eod_snapshots` + `forecast_eod_snapshot_values` | Per scope and business day S, a copy of S+1..S+7 of the official session of the newest run date <= S; values only for a COMPLETE snapshot; never changed. Used for display only for a run date without an official session. NOT a source of truth: `forecast_values` stays it. Kept 90 days (schema 6, below): deleted only by the operator's retention run |
 | Backup retention record (1.2.6, schema 6) | `forecast_eod_snapshot_retention` | One permanent row per deleted snapshot (what, when, cutoff, backup). Its DELETING row is also the only permit the triggers accept for a DELETE, for a business date older than today (Vietnam) - 90 days. Never deleted; DELETING -> DELETED once (`eod_retention.py`, LICH-SU-FORECAST.md section 14) |
 | Actual close at 23:59 (1.2.6, schema 5) | `actual_closes` + `actual_close_values` | Independent copy of the day's actual as shown at the close (revision 1) and immutable, consecutive revisions for late data. The figure on screen is still read from `demand_daily` / `d0_snapshots`; the close adds the status CLOSED and the trace |
+| Finalized actual (1.2.9, schema 9) | `actual_finals` + `actual_final_values` | Frozen copy of a completed day's actual (SKU x FC) written from the verified D-1 load that wrote it, with that load's provenance; sealed, immutable (triggers). BLOCKED days carry the reason. The history page shows a finalized day from this copy only (docs/LICH-SU-FORECAST.md section 15) |
 | Settings | `app_settings` (+ `settings_history`) **and code defaults** | See section 9 |
 | Storage location | `%LOCALAPPDATA%\DemandForecast\storage.json` + `storage-id.json` in the data folder | Per Windows user; `paths.py` is the only resolver |
 | Google OAuth client secret + refresh token | Windows Credential Manager of the Windows user running the app | Never in the DB, files, logs or backups (`bq/secret_store.py`) |
@@ -49,6 +50,7 @@ erDiagram
     forecast_eod_snapshots ||--o{ forecast_eod_snapshot_values : "snapshot_id (FK)"
     actual_closes ||--o{ actual_close_values : "close_id (FK, 1.2.6)"
     actual_closes |o--o| actual_closes : "previous_id (revision n-1)"
+    actual_finals ||--o{ actual_final_values : "final_id (FK, 1.2.9)"
     import_batches ||..o{ demand_daily : "id = scope_key (logical)"
     import_batches ||..o{ training_runs : "id = scope_key (logical)"
     import_batches ||..o{ d0_snapshots : "DEMO id = scope_key (logical)"
@@ -100,6 +102,16 @@ Guarantees verified in code and tests:
   (`test_v111.py::test_publish_failure_after_training_keeps_previous_forecast`).
 * The D-1 sync writes the date window in one transaction and rolls back unless the written rows and quantity equal what
   was read (`BQ_SYNC_RECONCILIATION_FAILED`). A change of mapping, range or history SQL forces a full reload of the scope.
+* 1.2.9: a history **backfill** (user request) replaces only its window and only after a READY read-only preview of the
+  same window, mapping and SQL (`sync_state bq_backfill_preview`, at most 6 h old, used once). Inside the write
+  transaction the job checks again that the preview is still READY, that no D-1 load ran since, and that the
+  new / updated / removed rows equal the previewed counts; otherwise `BACKFILL_PREVIEW_REQUIRED` and nothing is written.
+  A verified online backup is made right before the write (`BACKFILL_BACKUP_FAILED` = nothing written). A backfill never
+  moves the D-1 watermark and never triggers a training. Tests: `test_v129_backfill_history_patterns.py`.
+* 1.2.9: a backup zip is written under a temporary name, checked (`testzip`) and only then renamed `backup-*.zip`.
+* 1.2.9b: a reload (backfill, full D-1 reload) that would turn stored OK open hours into another status or remove the row
+  is announced by the preview (`OPEN_HOURS_WOULD_BE_LOST`) and counted in the result (`open_hours_lost`): the source keeps
+  open hours for about its last 7 months only, so re-reading older days replaces stored values by MISSING.
 * A D0 snapshot is written only after a successful read; a retried job never writes a second snapshot (`job_id`).
 
 ## 4. Keys, uniqueness and deduplication
@@ -121,6 +133,25 @@ of an active series as zero demand (business rule of the original specification:
 creation, cancellations not subtracted). Invalid input rows are never converted to zero: they are rejected and listed in
 `import_row_errors` (Excel) or counted as `rows_error` / `excluded_by_reason` (BigQuery).
 
+SKU open hours (schema 7, migration 0007, `app/data/open_hours.py`): a day without a row has **unknown** open hours
+(never 0). `demand_daily.open_hours` holds a value only with `open_hours_status = 'OK'` (every order line of the day x
+SKU x FC has a value, all equal, within 0..24); MISSING / OUT_OF_RANGE / CONFLICT rows keep NULL; a NULL status means
+not loaded (rows written before 1.2.9) or not applicable (DEMO / Excel sources have no such column). The BigQuery
+training stops (`OPEN_HOURS_INVALID`) while any row of the data window is not OK. `data-check` verifies the status
+values, value-only-when-OK, BIGQUERY-only and reports the window state (`open_hours_*`).
+1.2.9b: `MULTI_ITEM` = the lines differ only between items (open hours are measured per item code `<sku_code>.<n>` and
+day; several items of the SKU served by the FC that day). The suffix `<n>` is the order in which the SKU was opened for
+sale in the regions, not a region code (owner, 20/10/2026): nothing (FC, region, hours) is inferred from it. No value at
+this grain, still not OK for the training until an aggregation rule is approved. Model-input start rule `data_policy.training_start_rule`:
+`OPEN_HOURS_COVERAGE` starts training, backtest, forecast panel and the checks at the first STORED day with open hours
+(computed from the rows at each use); the earlier days stay stored and loaded (never deleted), each run records what was
+left out (`data_window.excluded_summary`).
+
+Customer counts (schema 8, migration 0008, `app/data/customers.py`): `customer_count`, `repeat_customer_count`,
+`repeat_interval_days_sum` per day x SKU x FC, computed inside BigQuery from the optional `bigquery.customer_id_column`
+(default none); NULL = unknown. No customer identifier is stored or fetched. Used as model input only with
+`model.feature_customer` ON (default OFF) and enough coverage. `data-check customer_counts_consistent`.
+
 ## 5. Time and timezone
 
 | Item | Interpretation | Where |
@@ -130,6 +161,8 @@ creation, cancellations not subtracted). Invalid input rows are never converted 
 | Excel `created_at` without offset | Asia/Ho_Chi_Minh; with offset converted to VN | `data/validation.py` |
 | Excel `order_date` | taken as given; else date of `created_at` in VN | `data/validation.py` |
 | BigQuery history `order_date` | `DATE(order_date_column)` if mapped, else from `created_at`: `DATE(TIMESTAMP(col), 'Asia/Ho_Chi_Minh')` when `created_at_is_utc=true` (default), else `DATE(col)` | `connector._order_date_expr` |
+| Day of `total_open_hours` (1.2.9) | the `order_date` of its order line (production: the DATE column `created_date`). The source's own day basis for the hours is **UNKNOWN until confirmed** by the table owner | `connector._daily_sql` |
+| Day of week (1.2.9) | 1 = Monday ... 7 = Sunday of the business date itself (never a timestamp); models before 1.2.9 keep dow 0..6 | `app/weekday.py`, `ml/features.dow_value` |
 | BigQuery D0 SQL v1 (user, verbatim) | `DATE(a.created_at)` - correct only if `created_at` is a VN-local DATETIME. **UNKNOWN until the real column type is read** | `bq/d0_user_sql_20261015.sql` |
 | BigQuery D0 SQL v2 (proposal) | `DATE(a.created_at, 'Asia/Ho_Chi_Minh')` - correct only if `created_at` is TIMESTAMP | `bq/d0_proposed_v2_20261015.sql` |
 | Scheduler slots, `scheduled_for` | VN local time (`+07:00`) | `jobs/scheduler.py`, `timeutil.vn_slot` |

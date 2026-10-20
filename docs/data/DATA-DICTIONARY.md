@@ -146,6 +146,11 @@ Code: `data/demand.py, sync.py` - rows in copy: 38533
 | `promo_share` | REAL | yes |  |  |  |
 | `voucher_share` | REAL | yes |  |  |  |
 | `loaded_at` | TEXT | no |  |  | UTC time the row was (re)built |
+| `open_hours` | REAL | yes |  |  | 1.2.9 (migration 0007): hours (0..24) of the day the SKU was open for sale - BigQuery `total_open_hours` of the day x SKU x FC; only when `open_hours_status = 'OK'`, never 0 / carried / averaged for unknown |
+| `open_hours_status` | TEXT | yes |  |  | 1.2.9: OK / MISSING (a line without value) / OUT_OF_RANGE (< 0 or > 24) / CONFLICT (lines disagree, not explained by the items) / MULTI_ITEM (1.2.9b: one value per item, several items of the SKU in the FC that day - valid, no value at this grain); NULL = loaded before 1.2.9 or not applicable (DEMO, Excel) |
+| `customer_count` | INTEGER | yes |  |  | 1.2.9b (migration 0008): distinct customers of the day x SKU x FC, counted inside BigQuery from the optional `bigquery.customer_id_column`; NULL = unknown (no column mapped / no identifier that day), never 0 for unknown; no identifier is stored |
+| `repeat_customer_count` | INTEGER | yes |  |  | 1.2.9b: of those, customers who had ordered the same SKU x FC on an earlier day within the 90 days before; 0..customer_count |
+| `repeat_interval_days_sum` | REAL | yes |  |  | 1.2.9b: sum of the days since their previous order day over the repeat customers (0 when none) |
 
 ## `forecast_eod_snapshots` (1.2.6, migration 0005)
 
@@ -457,7 +462,7 @@ Indexes: `ix_settings_history_section`(section, id)
 
 ## `sync_state`
 
-Small key/value state: bq_status, bq_validation (full-period check bound to a mapping hash), oauth_status, scheduler_heartbeat, last_d1_sync:<scope> (D-1 watermark + mapping hash).  
+Small key/value state: bq_status, bq_validation (full-period check bound to a mapping hash), oauth_status, scheduler_heartbeat, last_d1_sync:<scope> (D-1 watermark + mapping hash); 1.2.9: bq_backfill_preview (latest read-only backfill preview: id, window, mapping hash, SQL identity, READY / BLOCKED / FAILED / USED, what the load would change; a backfill needs its id).  
 Code: `sync.py, bq/connector.py, jobs/scheduler.py` - rows in copy: 2
 
 | Column | Type | Null | Key | Default | Meaning / rule |

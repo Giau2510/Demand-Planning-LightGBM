@@ -24,6 +24,7 @@ from .. import settings_service as ss
 from ..data import identity
 from ..data.demand import panel_for_run
 from ..messages import AppError
+from ..weekday import iso_weekday
 from . import model
 from . import feature_catalog
 from .features import LAGS, LAST_SALE_WINDOW, ROLL_WINDOWS, is_direct
@@ -45,7 +46,8 @@ FEATURE_INFO = {
     "zero_share_28": ("Tỷ lệ ngày = 0 trong 28 ngày trước.", "Share of zero days in the previous 28 days."),
     "days_since_last_sale": (f"Số ngày từ lần có đơn gần nhất (tối đa {LAST_SALE_WINDOW + 1}).", f"Days since the last order (capped at {LAST_SALE_WINDOW + 1})."),
     "roll_max_28": ("Số lượng lớn nhất trong 28 ngày trước.", "Maximum quantity in the previous 28 days."),
-    "dow": ("Thứ trong tuần của ngày dự báo (0 = Thứ Hai).", "Day of week of the target day (0 = Monday)."),
+    "dow": ("Thứ trong tuần của ngày dự báo: 1 = Thứ 2 … 7 = Chủ nhật (model huấn luyện từ 1.2.9); model cũ hơn: 0 = Thứ 2 … 6 = Chủ nhật.",
+            "Day of week of the target day: 1 = Monday … 7 = Sunday (models trained from 1.2.9); older models: 0 = Monday … 6 = Sunday."),
     "dom": ("Ngày trong tháng.", "Day of month."),
     "month": ("Tháng.", "Month."),
     "weekofyear": ("Tuần ISO trong năm.", "ISO week of year."),
@@ -56,6 +58,9 @@ FEATURE_INFO = {
     "disc_last": ("Tỷ lệ giảm giá gần nhất đã biết.", "Last known discount rate."),
     "promo_last": ("Tỷ lệ dòng có khuyến mãi hôm trước.", "Promotion share on the previous day."),
     "promo_mean_7": ("Tỷ lệ khuyến mãi trung bình 7 ngày trước.", "Mean promotion share over the previous 7 days."),
+    "open_hours_last": ("Số giờ SKU mở bán (0–24) của ngày trước ngày dự báo / mốc dự báo; không có giá trị = chưa biết.",
+                        "Hours the SKU was open for sale (0–24) on the day before the target day / origin; no value = unknown."),
+    "open_hours_mean_7": ("Giờ mở bán trung bình các ngày đã biết trong 7 ngày trước.", "Mean open hours of the known days among the previous 7 days."),
 }
 
 
@@ -84,6 +89,9 @@ def _input_source(name: str, t: int, T: int, direct: bool = False) -> str:
         return "HELD_CONSTANT" if t - 1 >= T else "ACTUAL"
     if name == "promo_last":
         return "ASSUMED_ZERO" if t - 1 >= T else "ACTUAL"
+    if name in ("open_hours_last", "open_hours_mean_7"):    # 1.2.9: nothing is known after the origin (never filled)
+        w = 1 if name == "open_hours_last" else 7
+        return "ACTUAL" if t <= T else ("UNKNOWN_AFTER_ORIGIN" if t - w >= T else "PARTLY_KNOWN")
     windows = {"roll_std_7": 7, "promo_mean_7": 7, "roll_std_28": 28, "zero_share_28": 28, "roll_max_28": 28,
                "price_rel_28": 28, "days_since_last_sale": LAST_SALE_WINDOW}
     w = int(name.rsplit("_", 1)[1]) if name.startswith("roll_mean_") else windows.get(name, 0)
@@ -266,7 +274,7 @@ def explain(run_id: str, sku: str, fc_id: str, target_date: str) -> dict:
             else:
                 used_by = []
                 in_calc = calc_lo is not None and i >= calc_lo and not np.isnan(y)
-            days.append({"date": str(p.dates[i].date()), "weekday": int(p.dates[i].dayofweek),
+            days.append({"date": str(p.dates[i].date()), "weekday": iso_weekday(p.dates[i]),     # 1 Mon ... 7 Sun
                          "qty": None if np.isnan(y) else float(y), "status": st, "in_calc": bool(in_calc),
                          "used_by": used_by})
         summ = {k: sum(1 for d in days if d["status"] == k) for k in ("ORDERS", "ZERO_ORDERS", "NO_DATA", "BEFORE_START")}

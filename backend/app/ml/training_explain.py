@@ -111,6 +111,9 @@ def overview(training_run_id: str | None = None) -> dict:
         bm = _json(bt["metrics_json"], {}) or {}
         out["backtest"] = {"id": bt["id"], "config": _json(bt["config_json"], {}), "reliable": bool(bt["reliable"]),
                            "folds": _json(bt["folds_json"], []), "by_method": bm.get("by_method"),
+                           # 1.2.9: per demand-pattern group / volume tier / spike day / horizon days / 7-15-30 day
+                           # totals (None for runs trained before 1.2.9)
+                           "segments": bm.get("segments"),
                            "notes": _json(bt["notes_json"], [])}
     return out
 

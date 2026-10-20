@@ -68,7 +68,8 @@ def test_window_is_2026_01_01_to_yesterday_and_stored_history_is_kept(client, fa
     assert (tr["train_start"], tr["train_end"]) == ("2026-01-01", "2026-03-14"), res
     assert json.loads(tr["feature_config_json"])["data_window"]["start"] == "2026-01-01"
     rep = quality.latest_report(bid)
-    assert rep["stats"]["data_window"] == {"start": "2026-01-01", "end": "2026-03-14"}
+    assert rep["stats"]["data_window"] == {"start": "2026-01-01", "end": "2026-03-14", "start_rule": "WINDOW_START",
+                                           "configured_start": "2026-01-01", "excluded": None}     # 1.2.9b: rule shown
     assert rep["stats"]["demand_rows_before_window"] == 61 * 6           # Nov + Dec 2025, 6 series
     assert rep["stats"]["demand_rows_after_window_end"] == 6 + 1         # today's partial day + the future row
     assert rep["stats"]["min_date"] == "2026-01-01" and rep["stats"]["max_date"] == "2026-03-14"

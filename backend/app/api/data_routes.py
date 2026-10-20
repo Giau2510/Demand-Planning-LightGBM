@@ -43,6 +43,12 @@ def put_settings(section: str, body: dict):
         if cur.production_enabled and any(getattr(new, k) != getattr(cur, k) for k in keys):
             new.production_enabled = False
         return ss.save("bigquery", new, note="updated via UI").model_dump()
+    if section == "model":
+        # 1.2.9: open hours are a MANDATORY input of the BIGQUERY source and the dow encoding belongs to each training
+        # run: both are decided by the training, never saved as user settings (a switch-off is refused, not ignored)
+        if body.get("feature_open_hours") is not None:
+            raise AppError("OPEN_HOURS_MANDATORY", 422, detail=f"feature_open_hours={body.get('feature_open_hours')!r}")
+        body = {**body, "feature_open_hours": None, "weekday_encoding": None}
     if section == "schedule":
         # flow switches (and their switch-on time) change only through /api/schedules, where readiness is checked
         cur = ss.get("schedule").model_dump()

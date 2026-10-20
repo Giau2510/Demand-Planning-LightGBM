@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { get, qs } from "../api";
 import { useI18n } from "../i18n";
-import { Card, CompareChart, DateInput, Empty, ErrorBox, Field, FilterBar, Loading, PageHeader, Pager, Pill, SearchInput, SourceBadge, Stat, fmtDate, fmtNum, fmtPct, fmtTime, useAsync } from "../components/ui";
+import { Card, CompareChart, DateInput, Empty, ErrorBox, Field, FilterBar, Loading, PageHeader, Pager, Pill, SearchInput, SourceBadge, Stat, fmtDate, fmtNum, fmtPct, fmtPctX, fmtTime, useAsync } from "../components/ui";
 import { Icon } from "../components/icons";
 import { ProductName } from "./Results";
 
@@ -96,8 +96,12 @@ export default function ForecastHistory() {
   const official = (s?.sessions ?? []).filter((x: any) => x.official);
   const backups: any[] = s?.backup_days ?? [];
   const missing = (s?.daily ?? []).filter((d: any) => !d.has_history).length;
-  // the KPI says when its actual is not final: provisional (intraday / not closed) or closed but not verified
-  const provTag = k?.status === "PROVISIONAL" || k?.status === "CLOSED" ? <> <Pill status={k.status} label={t(`fh.st.${k.status}`)} /></> : null;
+  // 1.2.9 (seventh batch): the main cards are the FINALIZED rows only; provisional and end-of-day closed rows are shown
+  // apart (their own totals and WAPE), never mixed into the finalized figures
+  const cov = k?.coverage;
+  const groups: [string, any][] = ([["PROVISIONAL", k?.provisional], ["CLOSED", k?.closed]] as [string, any][])
+    .filter(([, g]) => g && g.n_rows > 0);
+  const fin = o.finalization;
   const tb = o.today_backup;
   const scopeChoices = [...(o.scopes ?? [])];
   if (o.active_scope_key && !scopeChoices.some((x: any) => x.scope_key === o.active_scope_key))
@@ -176,14 +180,45 @@ export default function ForecastHistory() {
               <Stat icon="chart" label={t("fh.kpi.forecast")} value={fmtNum(k.forecast_total)}
                 sub={<>{t("fh.kpi.rows").replace("{n}", fmtNum(k.n_rows)).replace("{d}", fmtNum(k.days_with_history))}
                   {k.days_backup > 0 && <span data-testid="fh-kpi-backup"> · {t("fh.kpi.backup_days").replace("{n}", fmtNum(k.days_backup))}</span>}</>} />
-              <Stat icon="actual" label={t("fh.kpi.actual")} value={<>{k.actual_total === null ? "—" : fmtNum(k.actual_total)}{provTag}</>}
-                sub={k.actual_total === null ? t("fh.kpi.no_actual") : t("fh.kpi.on_rows").replace("{n}", fmtNum(k.n_rows_compared))} />
-              <Stat icon="deviation" label={t("fh.kpi.deviation")} value={<>{signed(k.deviation, 0)}{k.deviation !== null && provTag}</>}
-                sub={k.deviation === null ? t("fh.kpi.no_actual") : t("fh.kpi.forecast_cmp").replace("{v}", fmtNum(k.forecast_compared))} />
-              <Stat icon="percent" label={t("fh.kpi.wape")} value={<>{k.wape === null ? "—" : fmtPct(k.wape)}{k.wape !== null && provTag}</>}
-                sub={k.wape !== null ? t("fh.kpi.on_rows").replace("{n}", fmtNum(k.n_rows_compared))
-                  : (k.notes ?? []).includes("SUM_ACTUAL_ZERO") ? t("fh.kpi.zero") : t("fh.kpi.no_actual")} />
+              <Stat icon="actual" label={t("fh.kpi.actual_final")} value={k.actual_total === null ? "—" : fmtNum(k.actual_total)}
+                sub={k.actual_total === null ? <span data-testid="fh-no-final">{t("fh.kpi.no_final")}</span>
+                  : t("fh.kpi.final_on").replace("{n}", fmtNum(k.n_rows_compared)).replace("{d}", fmtNum(k.days_compared))} />
+              <Stat icon="deviation" label={t("fh.kpi.deviation_final")} value={signed(k.deviation, 0)}
+                sub={k.deviation === null ? t("fh.kpi.no_final") : t("fh.kpi.forecast_cmp").replace("{v}", fmtNum(k.forecast_compared))} />
+              <Stat icon="percent" label={t("fh.kpi.wape_final")} value={k.wape === null ? "—" : fmtPct(k.wape)}
+                sub={k.wape !== null ? t("fh.kpi.bias").replace("{v}", fmtPctX(k.bias, true))
+                  : (k.notes ?? []).includes("SUM_ACTUAL_ZERO") ? t("fh.kpi.zero") : t("fh.kpi.no_final")} />
             </div>
+          )}
+          {cov && (
+            <p className="small muted" data-testid="fh-coverage">
+              {t("fh.coverage").replace("{f}", fmtNum(cov.rows_final)).replace("{df}", fmtNum(cov.days_final))
+                .replace("{p}", fmtNum(cov.rows_provisional)).replace("{c}", fmtNum(cov.rows_closed)).replace("{n}", fmtNum(cov.rows_no_actual))}
+              {k.n_zero_absent > 0 && t("fh.coverage_zero").replace("{z}", fmtNum(k.n_zero_absent))}
+            </p>
+          )}
+          {groups.length > 0 && (
+            <Card icon="info" title={t("fh.prov.title")}>
+              <p className="small muted">{t("fh.prov.note")}</p>
+              <div className="scroll">
+                <table className="tbl" data-testid="fh-prov">
+                  <thead><tr><th>{t("fh.status")}</th><th className="num">{t("fh.prov.rows")}</th><th className="num">{t("fh.prov.actual")}</th>
+                    <th className="num">{t("fh.prov.forecast")}</th><th className="num">{t("fh.prov.deviation")}</th><th className="num">{t("fh.prov.wape")}</th></tr></thead>
+                  <tbody>
+                    {groups.map(([st, g]) => (
+                      <tr key={st}>
+                        <td><Pill status={st} label={t(`fh.st.${st}`)} /></td>
+                        <td className="num">{t("fh.prov.rows_v").replace("{n}", fmtNum(g.n_rows)).replace("{d}", fmtNum(g.days))}</td>
+                        <td className="num">{g.actual_total === null ? "—" : fmtNum(g.actual_total)}</td>
+                        <td className="num">{g.forecast_compared === null ? "—" : fmtNum(g.forecast_compared)}</td>
+                        <td className="num">{signed(g.deviation, 0)}</td>
+                        <td className="num">{g.wape === null ? "—" : fmtPct(g.wape)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
           )}
 
           {s && (
@@ -193,11 +228,11 @@ export default function ForecastHistory() {
                   x: d.target_date, forecast: d.has_history && d.n_rows ? d.forecast : null, actual: d.actual,
                   provisional: d.actual_status === "PROVISIONAL" || d.actual_status === "CLOSED", backup: d.forecast_source === "SNAPSHOT",
                   tip: [`${t("fh.target_date")}: ${fmtDate(d.target_date)}`, `${t("fh.run_date")}: ${fmtDate(d.run_date)}`,
-                    !d.has_history ? t("fh.no_history_day") : `${t("fh.tip.forecast")}: ${d.n_rows ? fmtNum(d.forecast, 1) : t("fh.filtered_out")}`,
+                    !d.has_history ? t("fh.no_history_day") : `${t("fh.tip.forecast")}: ${d.n_rows ? fmtNum(d.forecast) : t("fh.filtered_out")}`,
                     ...(d.forecast_source === "SNAPSHOT" ? [`${t("fh.src")}: ${t("fh.src.SNAPSHOT")} ${fmtDate(d.snapshot.snapshot_business_date)} · ${d.forecast_run_id}`] : []),
                     ...(d.has_history && d.n_rows ? [d.actual === null ? `${t("fh.tip.actual")}: ${t("fh.st.NO_ACTUAL")}`
                       : `${t("fh.tip.actual")}: ${fmtNum(d.actual, 1)} (${t(`fh.st.${d.actual_status}`)})`] : []),
-                    ...(d.deviation !== null && d.deviation !== undefined ? [`${t("fh.tip.dev")}: ${signed(d.deviation)}`] : [])],
+                    ...(d.deviation !== null && d.deviation !== undefined ? [`${t("fh.tip.dev")}: ${signed(d.deviation, 0)}`] : [])],
                 }))} />
               {missing > 0 && <p className="small muted" data-testid="fh-missing-days">{t("fh.days_without").replace("{n}", String(missing))}</p>}
             </Card>
@@ -275,10 +310,11 @@ export default function ForecastHistory() {
                           <td className="sku">{r.sku_id}</td><td className="pname"><ProductName name={r.product_name} /></td><td>{r.fc_id}</td>
                           <td className="nowrap">{fmtDate(r.run_date)}</td><td className="nowrap">{fmtDate(r.target_date)}</td>
                           <td className="src-cell"><ForecastSource r={r} /></td>
-                          <td className="num">{fmtNum(r.yhat, 1)}</td>
-                          <td className="num" title={r.actual === null ? t("fh.st.NO_ACTUAL") : `${t("actual.as_of")} ${fmtTime(r.actual_as_of)}`}>
+                          <td className="num" data-testid="fh-forecast-qty" title={`${t("fh.model_value")}: ${fmtNum(r.yhat, 3)}`}>{fmtNum(r.forecast_qty)}</td>
+                          <td className="num" title={r.actual === null ? t("fh.st.NO_ACTUAL")
+                            : `${t(r.actual_source === "FINAL" ? "fh.final_at" : "actual.as_of")} ${fmtTime(r.actual_as_of)}`}>
                             {r.actual === null ? <span className="muted">—</span> : fmtNum(r.actual, 1)}</td>
-                          <td className="num">{signed(r.deviation)}</td>
+                          <td className="num">{signed(r.deviation, 0)}</td>
                           <td className="num">{r.row_wape === null ? <span className="muted" title={r.actual === null ? t("fh.st.NO_ACTUAL") : t("fh.wape_row_na")}>—</span> : fmtPct(r.row_wape)}</td>
                           <td className="st"><ActualStatus status={r.actual_status} reason={r.actual_reason} /></td>
                         </tr>
@@ -297,9 +333,14 @@ export default function ForecastHistory() {
         <ul className="small" data-testid="fh-rules">
           <li>{t("fh.rule_d1")}</li>
           <li>{t("fh.rule_actual")}</li>
+          <li>{t("fh.rule_qty")}</li>
           <li>{t("fh.rule_backup")}</li>
           <li>{t("fh.rule_close")}</li>
-          <li>{o.completion_signal_configured ? t("fh.signal_ok") : o.data_source === "BIGQUERY" ? t("fh.signal_missing") : t("fh.signal_none")}</li>
+          <li>{t("fh.rule_final")}</li>
+          <li data-testid="fh-final-state">{fin?.applicable
+            ? t("fh.final_state").replace("{n}", fmtNum(fin.finalized_days)).replace("{d}", fin.last_finalized_date ? fmtDate(fin.last_finalized_date) : "—")
+              .replace("{b}", fmtNum(fin.blocked_days))
+            : t("fh.final_none")}</li>
         </ul>
       </Card>
     </div>

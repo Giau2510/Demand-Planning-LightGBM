@@ -38,10 +38,11 @@ def _bq_history(days=140, n_sku=5, n_fc=2, seed=7, lam=1.0):
             for f in range(n_fc):
                 q = float(rng.poisson(lam))
                 if q > 0:                       # like a sync: a day without orders has no row
-                    rows.append((scope, "BIGQUERY", str(d), f"S{s}", f"F{f}", q, 1, timeutil.now_iso()))
+                    # 1.2.9: a D-1 sync also writes the SKU open hours of the day (mandatory BIGQUERY input)
+                    rows.append((scope, "BIGQUERY", str(d), f"S{s}", f"F{f}", q, 1, timeutil.now_iso(), 24.0, "OK"))
     with db.tx() as c:
         c.executemany("INSERT INTO demand_daily(scope_key, data_source, order_date, sku_id, fc_id, qty, n_orders, "
-                      "loaded_at) VALUES (?,?,?,?,?,?,?,?)", rows)
+                      "loaded_at, open_hours, open_hours_status) VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
     return scope
 
 

@@ -469,7 +469,9 @@ def test_d1_is_independent_backfill_is_bounded_and_counts_new_updated(client, mo
         sync.run_d1_sync("J3", backfill_start="2025-01-01", backfill_end="2025-01-02")
     assert e.value.code == "VALIDATION_ERROR"
     assert client.post("/api/sync/backfill", json={"start": str(y), "end": str(timeutil.today_vn())}).status_code == 422
-    b = sync.run_d1_sync("J4", backfill_start=str(y), backfill_end=str(y))
+    pv = sync.backfill_preview(str(y), str(y))                         # 1.2.9: a backfill follows a READY preview
+    assert pv["status"] == "READY" and pv["compare"]["series_days_unchanged"] == 1
+    b = sync.run_d1_sync("J4", backfill_start=str(y), backfill_end=str(y), backfill_preview_id=pv["preview_id"])
     assert b["backfill"] and b["mode"] == "BACKFILL" and b["series_days_unchanged"] == 1
     # D0 never calls the history query, and syncing never starts a training
     monkeypatch.setattr(connector, "fetch_daily", lambda *a, **k: (_ for _ in ()).throw(AssertionError("history called")))

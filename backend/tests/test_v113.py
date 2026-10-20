@@ -112,7 +112,8 @@ def test_feature_values_windows_and_no_future_data(client, demo_run):
     w28 = [v for v in (q(t - timedelta(days=k)) for k in range(1, 29)) if v is not None]
     assert f["zero_share_28"]["value"] == pytest.approx(sum(1 for v in w28 if v == 0) / len(w28))
     assert f["roll_std_28"]["value"] == pytest.approx(float(np.std(w28)), rel=1e-5)       # population std
-    assert f["dow"]["value"] == t.weekday() and f["dow"]["window"] == {"from": str(t), "to": str(t)}
+    # 1.2.9: models trained from 1.2.9 encode the weekday 1 = Monday ... 7 = Sunday (app/weekday.py)
+    assert f["dow"]["value"] == t.isoweekday() and f["dow"]["window"] == {"from": str(t), "to": str(t)}
     for x in f.values():                                                                    # nothing after data_as_of
         if x["window"] and not x["includes_target_day"]:
             assert x["window"]["to"] <= run["data_as_of"]
@@ -135,7 +136,7 @@ def test_history_weekday_and_excel_export(client, demo_run):
         e = _explain(client, demo_run, r)
         h = e["history"]
         for d in h["days"]:
-            assert d["weekday"] == date.fromisoformat(d["date"]).weekday()
+            assert d["weekday"] == date.fromisoformat(d["date"]).isoweekday()     # 1.2.9: 1 = Monday ... 7 = Sunday
         if method == "LIGHTGBM":
             day1 = next(d for d in h["days"] if d["date"] == e["identity"]["data_as_of"])
             assert {"lag_1", "roll_mean_7", "days_since_last_sale"} <= set(day1["used_by"])

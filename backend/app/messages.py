@@ -348,6 +348,15 @@ CATALOG: dict[str, tuple[str, str]] = {
                            "The field mapping does not match the source schema (required field missing, column gone or wrong type) — nothing is read or written. See the field list in the detail and fix the mapping."),
     "BQ_AGGREGATE_INVALID": ("Dữ liệu sau tổng hợp ngày × SKU × FC không hợp lệ (ngày sai, thiếu SKU/FC, trùng khóa đầu ra hoặc số lượng không hợp lệ) — không ghi dữ liệu.",
                              "The aggregated day × SKU × FC rows are invalid (bad date, missing SKU/FC, repeated output key or invalid quantity) — nothing was written."),
+    # 1.2.9: SKU open hours (total_open_hours), mandatory model input of the BigQuery source
+    "OPEN_HOURS_INVALID": ("Giờ mở bán (total_open_hours) là đặc trưng BẮT BUỘC của nguồn BigQuery nhưng có dòng nhu cầu trong cửa sổ dữ liệu chưa có giá trị hợp lệ (chưa nạp cột này, thiếu, các dòng đơn cùng ngày × SKU × FC khác nhau, hoặc ngoài 0–24) — không huấn luyện, không tự điền giá trị. Chi tiết: số dòng và khoảng ngày theo từng trạng thái. Cách xử lý: NOT_LOADED = dòng nạp trước 1.2.9 — đọc lại khoảng ngày đó ở trang 'SQL nguồn & đồng bộ', thẻ 'Đọc lại lịch sử (backfill) có kiểm soát' (tối đa 400 ngày); MISSING / CONFLICT / OUT_OF_RANGE = dữ liệu nguồn — chủ hệ thống quyết định quy tắc, sửa nguồn hoặc dời ngày bắt đầu cửa sổ dữ liệu.",
+                           "Open hours (total_open_hours) are a MANDATORY input of the BigQuery source, but some demand rows of the data window have no valid value (column not loaded yet, missing, order lines of the same day × SKU × FC disagree, or outside 0–24) — no training, nothing filled in. Detail: rows and day range per status. Fix: NOT_LOADED = rows loaded before 1.2.9 — re-read that period on the 'Source SQL & sync' page, card 'Controlled history backfill' (at most 400 days); MISSING / CONFLICT / OUT_OF_RANGE = source data — the owner decides a rule, corrects the source or moves the data-window start."),
+    "OPEN_HOURS_MANDATORY": ("Giờ mở bán là đặc trưng bắt buộc của nguồn BigQuery — không tắt được trong cấu hình mô hình.",
+                             "Open hours are a mandatory input of the BigQuery source — they cannot be switched off in the model settings."),
+    "BACKFILL_PREVIEW_REQUIRED": ("Đọc lại lịch sử (backfill) chỉ chạy sau bước 'Xem trước' của ĐÚNG khoảng ngày đó, với cùng mapping và SQL nguồn, trong vòng 6 giờ, và mỗi lần xem trước chỉ dùng cho một lần đọc lại. Bấm 'Xem trước (không ghi)', kiểm tra số dòng sẽ thay đổi rồi mới đọc lại.",
+                                  "A history backfill runs only after a 'Preview' of EXACTLY that window, with the same mapping and source SQL, within 6 hours; each preview is used for one backfill. Click 'Preview (no write)', check the rows that would change, then run the backfill."),
+    "BACKFILL_BACKUP_FAILED": ("Không tạo được bản sao lưu cơ sở dữ liệu trước khi đọc lại lịch sử — không ghi gì. Kiểm tra dung lượng và thư mục sao lưu rồi thử lại.",
+                               "The database backup before the history backfill could not be made — nothing was written. Check free space and the backup folder, then try again."),
 }
 
 
@@ -360,7 +369,7 @@ def category(code: str) -> str:
     """Stable error category for the UI: INPUT | DATABASE | CONFIG | BIGQUERY | MODEL | STORAGE | INTERNAL."""
     if code.startswith(("BQ_", "SQL_", "OAUTH_")):
         return "BIGQUERY"
-    if code.startswith("DATABASE_") or code in ("DATA_CONSISTENCY",):
+    if code.startswith("DATABASE_") or code in ("DATA_CONSISTENCY", "BACKFILL_BACKUP_FAILED"):
         return "DATABASE"
     if code.startswith("STORAGE_"):
         return "STORAGE"
@@ -368,7 +377,8 @@ def category(code: str) -> str:
                 "MODEL_ARTIFACT_MISSING", "DATA_CHANGED_SINCE_TRAINING", "REPRODUCTION_MISMATCH", "NOTHING_TO_EXTEND",
                 "NOT_LIGHTGBM", "TRACE_TOO_LARGE", "TRACE_TIMEOUT", "UNSUPPORTED_MODEL", "PROMOTION_REVIEW_REQUIRED",
                 "PROMOTION_NOT_ALLOWED", "DIRECT_HORIZON_EXCEEDS_TRAINING", "QUALITY_GATE_EXCEPTION_ACTIVE",
-                "RELEASED_WITH_GATE_EXCEPTION", "FORECAST_PUBLISHED_WITH_WARNING", "NO_FORECAST_FOR_ACTIVE_SOURCE"):
+                "RELEASED_WITH_GATE_EXCEPTION", "FORECAST_PUBLISHED_WITH_WARNING", "NO_FORECAST_FOR_ACTIVE_SOURCE",
+                "OPEN_HOURS_INVALID"):
         return "MODEL"
     if code in ("NO_ACTIVE_DATASET", "ACTIVE_DATASET_INCONSISTENT", "SOURCE_NOT_READY", "SCHEDULER_DISABLED",
                 "FLOW_NOT_READY", "D0_SCHEDULE_DISABLED", "D1_SCHEDULE_DISABLED", "TRAIN_SCHEDULE_DISABLED",
