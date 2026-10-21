@@ -704,3 +704,22 @@ BLOCKED_EXTERNAL_SETUP.
 | Training | BLOCKED | OPEN_HOURS_INVALID (6 MULTI_ITEM rows); an operator click at 16:35 (train Run now) failed at the gate, nothing written |
 | Open | OWNER | open-hours rule (or source SKU x FC hours); D-1 / training schedule (4/4 scheduled D-1 failed, source ~07:10); public link provider + access + autostart; push |
 | Checkpoint after | DONE | `checkpoints/checkpoint-20261021-release1211-after.zip` SHA-256 96084B02FD550A3FD37931DF8BE612B66F438B13F3A72C7107B8DB33AF51B5F1 (76 entries: reports + workbook, scratchpad p28 scripts / results / state; verified) |
+
+# Release 1.2.12 READY, NOT DEPLOYED (2026-10-21 21:13 - 22/10 00:45): six-key open-hours MAX rule, weekday, customer_id experiment
+
+Owner prompts "URGENT - RELEASE 1.2.12 ..." and "CRITICAL COMPLETION GATE - WEEKDAY FEATURE AND CUSTOMER_ID" (owner approved
+the MAX rule for the six blocked keys; deploy when every gate passes; no push, no schedule / target / Price / customer_id /
+promotion change). Reports: `reports/release-1.2.12-20261021/` (FINAL_REPORT, TEST_RESULTS, DATA_RECONCILIATION,
+RESUME_CHECKPOINT, OPEN_HOURS_OVERRIDE_EVIDENCE.xlsx, TRAINING_FORECAST_REPORT.xlsx, candidate/). Release
+READY_FOR_PRODUCTION; production deploy BLOCKED (permission classifier); training done on an isolated production copy.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Six-key rule | DONE + TESTS | `app/data/open_hours_override.py`: MAX of valid listing values (24, 24, 24, 24, 24, 22.85), key scope x date x SKU x FC, stored row must still be MULTI_ITEM with approved qty / orders / load (`loaded_at` 2026-10-21T05:36:47Z), otherwise it keeps blocking with a reason; demand_daily and D-1 classification unchanged; recorded with the run + audit; 22 tests; independent review SAFE WITH CONDITIONS (S1-S4 handled) |
+| Weekday | VERIFIED + UI | dow / is_weekend of the target date (ISO 1..7) in every training row, fold and predict() row (8 parity tests; real model: 5,206,698 rows, 0 mismatch); UI one form "Thu 2 ... Chu nhat" incl. history page, chart tooltip, SHAP subtitle |
+| customer_id | OFFLINE ONLY | INTEGER, 0 NULL, 35,075 customers, 1 per order (not an order key); app SQL aggregates cover 100 % keys; A 0.8053 vs B 0.8019 pooled WAPE (5 / 7 folds better, latest fold worse, bias +0.0019); production OFF |
+| Release | DONE | commits fe4ca9b + a601f4c (local); first QA failed on fe4ca9b (ROW_NOT_FOUND blocked every test scope with the production table name) -> fixed, no package from fe4ca9b; QA a601f4c 716 passed / 19 skipped, vitest 159, real BQ 14; package SHA-256 10BF50BF...4C05 |
+| Rehearsal | PASS | r13 36/36: upgrade 1.2.11 -> 1.2.12 (no migration), gate open (6 covered, nothing else not OK), stored rows unchanged, D-1 dry run READY, rollback 14.8 s, 1.2.11 blocks the six keys again |
+| Production | NOT DEPLOYED | gates PASS 22/10 00:03:44; verified backup `backup-20261022-000431-manual.zip` (ED0F8EC6...E7A7); the deploy command was refused by the Claude Code permission classifier 00:06 -> production still 1.2.11 (PID 7316), still OPEN_HOURS_INVALID; EOD / close of 21/10 SUCCEEDED |
+| Candidate (copy) | DONE | copy of production 00:06 + models; TRN-20261021170704-F58EB8 / MV-20261022-003132-8EB8 (33 features), CANDIDATE, WAPE 0.80535 vs model in use 0.80555 on the same 7 folds (BETTER by 0.0002), WAPE_MAX FAIL -> not promoted; forecast FCR-20261021173318-869CF1 on the copy only (15 days, 256,935 values); artifacts in the report folder |
+| Open | OWNER | run / allow deploy-upgrade 1.2.12 then "Chay ngay" training; promotion decision; public link provider + access + autostart; D-1 schedule vs source ~07:10; push |
