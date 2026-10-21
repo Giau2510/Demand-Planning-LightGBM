@@ -157,9 +157,13 @@ def feature_set_version(names: list[str]) -> str:
 
 
 def coverage(conn, scope_key: str) -> dict:
-    """Share of the scope's demand rows that carry each optional value (rows = SKU × FC × day)."""
+    """Share of the scope's demand rows that carry each optional value (rows = SKU × FC × day).
+    Master audit 21/10/2026: ONE sequential scan (NOT INDEXED, as ops_routes 1.2.7 and demand.fingerprint 1.2.8). Through
+    the key index SQLite fetched every row again for the counted columns: 8.3 s median (26 s cold) on a copy of
+    production (1.36 M rows), 13.5 s median on the Feature registry page; 0.47 s now. Same counts."""
     r = conn.execute("SELECT COUNT(*), COUNT(avg_unit_price), COUNT(avg_discount_rate), COUNT(promo_share), "
-                     "COUNT(open_hours), COUNT(customer_count) FROM demand_daily WHERE scope_key=?", (scope_key,)).fetchone()
+                     "COUNT(open_hours), COUNT(customer_count) FROM demand_daily NOT INDEXED WHERE scope_key=?",
+                     (scope_key,)).fetchone()
     n = r[0] or 0
     return {"rows": n, "avg_unit_price": (r[1] / n) if n else None, "avg_discount_rate": (r[2] / n) if n else None,
             "promo_share": (r[3] / n) if n else None, "open_hours": (r[4] / n) if n else None,

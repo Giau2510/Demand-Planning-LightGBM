@@ -10,6 +10,9 @@ name is never overwritten, a suffix -2, -3, ... is added). Sheets:
   Duplicate_Rows    EVERY row of every duplicated group. The n rows of a group are identical in every compared column
                     (that is the definition), so the group is written n times with duplicate_occurrence 1..n
   Duplicate_Groups  one row per group: duplicate_group_id, occurrences and the compared values (to look the group up)
+Both row sheets end with compared_on: "mapped columns", or "whole source row" for a pending order without order code
+(connector.PENDING_STATUSES) whose rows are identical in every source column - the values written are still only the
+mapped columns.
 duplicate_group_id (DUP-00001, ...) follows the order of the compared values (BigQuery ORDER BY on every compared
 column), so it is stable for the same data. Column headers are the SOURCE column names of the mapping.
 If the .xlsx cannot be written, the same three tables are written as UTF-8 CSV files with the same base name.
@@ -40,6 +43,18 @@ RULE_VI = ("Hai dòng là trùng hoàn toàn khi MỌI cột được so sánh b
 RULE_EN = ("Two rows are exact duplicates when EVERY compared column is equal (BigQuery GROUP BY on the native "
            "values, no text serialisation): NULL equals NULL and nothing else; numbers by value in the column type; "
            "dates/times by value, no time-zone conversion; strings exactly (case and spaces significant).")
+PENDING_VI = ("Ngoại lệ (chủ hệ thống, 21/10/2026): đơn chờ xác nhận (WAIT_TO_CONFIRM) chưa được cấp mã đơn, nên so_code "
+              "NULL là bình thường. Các dòng này được so sánh trên TOÀN BỘ dòng nguồn (mọi cột của bảng, kể cả cột "
+              "không ánh xạ): khác nhau ở bất kỳ cột nguồn nào là đơn riêng - giữ nguyên, đếm riêng, không chặn ingest, "
+              "không bị DROP_EXACT loại bỏ; giống nhau ở MỌI cột nguồn thì không phân biệt được với trùng thật / nhân "
+              "dòng do join nên vẫn là trùng hoàn toàn (chặn). Không cột nào được dùng làm mã đơn.")
+PENDING_EN = ("Exception (owner, 21/10/2026): an order waiting for confirmation (WAIT_TO_CONFIRM) has no order code yet, "
+              "so a NULL so_code is normal. Such rows are compared on the WHOLE source row (every column of the table, "
+              "mapped or not): rows differing in any source column are separate orders - kept, counted apart, never "
+              "blocking, never dropped by DROP_EXACT; rows identical in EVERY source column cannot be told apart from a "
+              "real duplicate or a join fan-out and stay exact duplicates (blocking). No column is used as an order key.")
+WHOLE_ROW = "whole source row"
+MAPPED = "mapped columns"
 
 
 def folder() -> Path:
@@ -63,9 +78,10 @@ def tables(chk: dict) -> dict[str, pd.DataFrame]:
     for i, g in enumerate(chk.get("groups") or [], start=1):
         gid = f"DUP-{i:05d}"
         vals = [_cell(g["values"].get(c["alias"])) for c in cols]
-        groups.append([gid, g["occurrences"], *vals])
+        on = WHOLE_ROW if g.get("pending_whole_row") else MAPPED
+        groups.append([gid, g["occurrences"], *vals, on])
         for k in range(1, int(g["occurrences"]) + 1):
-            rows.append([gid, k, *vals])
+            rows.append([gid, k, *vals, on])
     summary = [
         ("Thời điểm kiểm tra (giờ Việt Nam) / Checked at", chk.get("checked_at_vn")),
         ("Bảng nguồn / Source table", chk.get("table")),
@@ -83,6 +99,17 @@ def tables(chk: dict) -> dict[str, pd.DataFrame]:
          ", ".join(chk.get("not_compared") or []) or "-"),
         ("Quy tắc so sánh", RULE_VI),
         ("Comparison rule", RULE_EN),
+        ("Đơn chờ xác nhận chưa có mã đơn", PENDING_VI),
+        ("Pending orders without order code", PENDING_EN),
+        ("Số dòng đơn chờ xác nhận chưa có mã (giữ nguyên, không tính trùng) / pending_no_order_code rows",
+         (chk.get("pending_no_order_code") or {}).get("rows", 0)),
+        ("Trong đó: nhóm / dòng giống nhau ở mọi cột so sánh / of which identical groups / rows",
+         f"{(chk.get('pending_no_order_code') or {}).get('identical_groups', 0)} / "
+         f"{(chk.get('pending_no_order_code') or {}).get('identical_rows', 0)}"),
+        ("Trong đó: nhóm / dòng giống nhau ở MỌI cột nguồn (trùng, chặn) / of which identical in every source column "
+         "(duplicates, blocking)",
+         f"{(chk.get('pending_no_order_code') or {}).get('duplicate_groups', 0)} / "
+         f"{(chk.get('pending_no_order_code') or {}).get('duplicate_rows', 0)}"),
         ("Số nhóm có trong báo cáo / Groups in this report", len(groups)),
         ("Số dòng có trong báo cáo / Rows in this report", len(rows)),
     ]
@@ -90,8 +117,9 @@ def tables(chk: dict) -> dict[str, pd.DataFrame]:
         summary.append(("CẢNH BÁO / WARNING", "Báo cáo bị giới hạn kích thước: chỉ có một phần các nhóm. Số đếm ở trên "
                                               "là đầy đủ. / The report is size-limited: only part of the groups."))
     return {"Summary": pd.DataFrame(summary, columns=["Mục / Item", "Giá trị / Value"]),
-            "Duplicate_Rows": pd.DataFrame(rows, columns=["duplicate_group_id", "duplicate_occurrence", *names]),
-            "Duplicate_Groups": pd.DataFrame(groups, columns=["duplicate_group_id", "occurrences", *names])}
+            "Duplicate_Rows": pd.DataFrame(rows, columns=["duplicate_group_id", "duplicate_occurrence", *names,
+                                                          "compared_on"]),
+            "Duplicate_Groups": pd.DataFrame(groups, columns=["duplicate_group_id", "occurrences", *names, "compared_on"])}
 
 
 def _xlsx_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:

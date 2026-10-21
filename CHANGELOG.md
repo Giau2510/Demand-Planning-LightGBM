@@ -5,6 +5,48 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.2.10 - 2026-10-21 (restore D-1: pending orders without order code compared on the whole source row; faster whole-scope reads) [reports/master-audit-20261021/FINAL_REPORT.md, release: reports/fix71-restore-d1-20261021/FINAL_REPORT.md]
+
+Contains everything of 1.2.9 (never installed) plus the master audit of 21/10/2026 and fix 7.1. No migration beyond
+1.2.9 (schema 9; upgrade from 1.2.8 runs 0007-0009), no settings change, no change of any default. Rollback to 1.2.8 =
+restore the pre-upgrade backup (1.2.8 refuses schema 9), as for 1.2.9.
+
+* **Fix 7.1 - a pending order is a duplicate only when identical in EVERY source column** (`connector._pending_raw_expr`,
+  `_src_cte` column `_praw`): the 21/10 rule below exempted every pending row without order code from the exact-duplicate
+  check, so a real duplicate or a join fan-out among them (rows identical in every source column) could never be found.
+  Such rows are now compared on their whole source row (every column of the table / user SQL, mapped or not; the row
+  never leaves BigQuery): rows that differ in any source column (e.g. another `customer_id`) are separate orders, kept and
+  counted apart as before; rows identical in every source column stay exact duplicates (BLOCK stops, `DROP_EXACT` drops,
+  report column `compared_on = whole source row`, `pending_no_order_code.duplicate_groups / duplicate_rows`, BigQuery page
+  line). No column is used as an order key; non-pending rows keep the mapped-column rule unchanged. Cost: when both
+  `order_id` and `order_status` are mapped, the gate and the aggregation read every column (production table 21/10:
+  1.70 GB instead of 1.35 GB per query). Real source 21/10 07:10 (01/01-20/10, 8,979,752 rows): 0 duplicate groups;
+  904 pending rows, 46 groups / 136 rows identical in the 15 mapped columns, every row a different customer, 0 identical
+  in every source column. Tests: `test_v129h_pending_orders_grain.py` (+2), `test_v129h_real_bq_pending_grain.py` (+2:
+  whole-row duplicates block; the customer-count join never multiplies demand), `test_bq_real_semantics.py` (inline rows
+  carry a customer column), `test_v118_bq_ingest.py` (GROUP BY ends with `_praw`), `v129h-pending.test.tsx` (+1).
+* **Pending orders without order code are never exact duplicates** (owner rule 21/10/2026, `connector.PENDING_STATUSES`;
+  refined by fix 7.1 above):
+  an order `WAIT_TO_CONFIRM` has no `so_code` yet. Rows with a NULL order reference and that status were compared like
+  any row (NULL = NULL), so pending orders of different customers for the same day x SKU x FC x quantity x price looked
+  like exact duplicates and the BLOCK policy stopped every D-1 / backfill read that contains them (source rebuilt 20/10
+  22:18: 18 groups / 67 rows on 16/10 and 19/10, every row of a group from a different customer). The duplicate gate
+  (`_dup_sql`), the full-period validation summary and the D-1 control rows now leave these rows out of the duplicate
+  count; `DROP_EXACT` keeps them; they are counted apart (`pending_no_order_code`: rows, qty, identical groups / rows) on
+  the BigQuery page and in the Summary sheet of the duplicate report. Every other row keeps the exact-duplicate rule
+  (a NULL `so_code` with another status still compares equal). Only when both `order_id` and `order_status` are mapped.
+  The expectations of the opt-in real-BigQuery test `test_bq_real_semantics.py` changed accordingly (its WAIT_TO_CONFIRM
+  pair is now kept; a new non-pending NULL pair keeps the NULL = NULL check).
+* **Regression tests** for the grain rules (FC only from `fc_code`, item suffixes never create or merge a key, full SKU
+  codes never merged, no quantity duplicated or lost) and the pending rule: `test_v129h_pending_orders_grain.py`
+  (offline), `test_v129h_real_bq_pending_grain.py` (opt-in, inline rows, 0 bytes), `v129h-pending.test.tsx`.
+* **Faster whole-scope reads** (same results, measured on a copy of production with 1.36 M demand rows): three reads now
+  run as ONE sequential scan (`NOT INDEXED`, as `ops_routes` 1.2.7 and `demand.fingerprint` 1.2.8) instead of the key
+  index that fetched every row again: `feature_registry.coverage` 8.3 s -> 0.47 s (Feature registry page
+  `GET /api/features/registry` 9.0 s -> 1.5 s on the same copy, identical response; 13.5 s median on the production PC),
+  `pipeline.data_lineage` 8.6 s -> 1.0 s, `demand.load_demand` 15.3 s -> 6.2 s (now sorted in the key order: identical
+  DataFrame). Test: `test_v129h_perf_scans.py`.
+
 ## 1.2.9 - 2026-10-20 (day of week 1-7, SKU open hours as a mandatory BigQuery input, roles of every D-1 column, weekday names, controlled backfill, finalized actual on the history page; migrations 0007-0009, schema 9) [reports/weekday_total_open_hours_mapping_fix.md ... reports/demandforecast_upgrade_backfill_rehearsal_20261020.md, release: reports/demandforecast_release_20261020_final_report.md]
 
 Released 2026-10-20 from the eight source batches below (first batch text kept as written). Upgrade from 1.2.8 runs

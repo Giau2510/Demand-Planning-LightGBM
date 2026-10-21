@@ -282,8 +282,11 @@ def _publish_run(c, *, fr_id: str, training_run_id: str, version: str, scope: di
 def data_lineage(c, scope: dict) -> dict:
     """Where the training data of a scope comes from. Metadata only: no credentials, no raw records."""
     sk = scope["scope_key"]
+    # master audit 21/10/2026: ONE sequential scan (NOT INDEXED); through the key index every row was fetched again for
+    # qty / loaded_at: 8.6 s median on a copy of production (1.36 M rows), 1.0 s now, same values (a sum of whole
+    # numbers is exact in any order; this is display metadata of the run, not its data identity - see fingerprint)
     r = c.execute("SELECT MIN(order_date), MAX(order_date), COUNT(*), COALESCE(SUM(qty), 0), COUNT(DISTINCT sku_id), "
-                  "COUNT(DISTINCT fc_id), MAX(loaded_at) FROM demand_daily WHERE scope_key=?", (sk,)).fetchone()
+                  "COUNT(DISTINCT fc_id), MAX(loaded_at) FROM demand_daily NOT INDEXED WHERE scope_key=?", (sk,)).fetchone()
     out = {"data_source": scope["data_source"], "scope_key": sk, "label": scope.get("label"),
            "grain": "SKU × FC × ngày (target = Σ order_qty của các dòng hợp lệ)",
            "demand_daily": {"min_date": r[0], "max_date": r[1], "rows": r[2], "qty_sum": r[3], "n_sku": r[4],

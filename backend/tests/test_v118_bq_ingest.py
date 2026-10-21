@@ -179,7 +179,9 @@ def test_duplicate_query_compares_every_mapped_column_and_filters_no_row():
                                            "item_code", "product_id"}
     sql = connector._dup_sql(bq, {"mode": "TABLE", "key_columns": [], "key_duplicate_policy": "SUM_ALL"})
     group_by = sql.split("GROUP BY ", 1)[1].split("\n", 1)[0]
-    assert [x.strip() for x in group_by.split(",")] == [c["alias"] for c in cols]        # native values, all columns
+    # native values, all columns; + _praw (fix 7.1): the whole source row of a pending order without order code, NULL
+    # for every other row
+    assert [x.strip() for x in group_by.split(",")] == [c["alias"] for c in cols] + ["_praw"]
     where = sql.split(" WHERE ", 1)[1].split("\n", 1)[0]
     assert "IS NOT NULL" not in where and "order_status" not in where                    # only the date window
     assert "ORDER BY " + ", ".join(c["alias"] for c in cols) in sql                       # stable group numbering

@@ -212,7 +212,7 @@ Toàn bộ quy tắc nằm ở đây; không có quy tắc nào khác.
    Mỗi lý do có số dòng và tổng số lượng riêng. Dòng thiếu ngày nằm ngoài mọi khoảng ngày nên được đếm riêng (`NULL_DATE`).
 3. **Tổng hợp về SKU × FC × ngày:** `qty = Σ demand_quantity` của các dòng hợp lệ. `n_orders = số so_code khác nhau`. Không cộng cột số nào khác; giá không được cộng.
 4. **Dòng trùng hoàn toàn** là dòng giống nhau ở **mọi cột đã ánh xạ**. Chính sách xử lý (`exact_duplicate_policy`):
-   - `BLOCK` (mặc định): báo cáo và chặn kiểm tra/đồng bộ;
+   - `BLOCK` (mặc định): báo cáo và chặn kiểm tra/đồng bộ (trừ đơn chờ xác nhận chưa có mã đơn, mục 13);
    - `KEEP`: cộng như dữ liệu nguồn;
    - `DROP_EXACT`: loại bỏ và báo cáo số dòng đã loại.
 5. **Đối chiếu bắt buộc:**
@@ -528,6 +528,21 @@ Chưa có trong bản cài 1.1.8; cần một bản phát hành mới (xem `CHAN
   (không âm thầm so ít cột hơn).
 - Số đếm: `duplicate_groups` (số nhóm), `duplicate_rows` (tổng số dòng thuộc các nhóm), `extra_duplicate_rows`
   (số dòng dư nếu mỗi nhóm giữ 1).
+- **Ngoại lệ - đơn chờ xác nhận chưa có mã đơn** (chủ hệ thống, 21/10/2026; phát hành ở 1.2.10): đơn `WAIT_TO_CONFIRM`
+  chưa được cấp mã nên `so_code` NULL là bình thường. Nguồn dựng lại 20/10 22:18 có 307 dòng như vậy; 67 dòng (18 nhóm,
+  16/10 và 19/10) giống nhau ở cả 15 cột ánh xạ; nguồn dựng lại 21/10 07:10 có 904 dòng, 136 dòng (46 nhóm, 16/10, 19/10,
+  20/10) giống nhau ở 15 cột - trong mọi nhóm mỗi dòng thuộc một khách khác nhau và khác nhau ở toàn bộ dòng nguồn (kiểm toán
+  chỉ đọc). Dòng có trường đơn hàng (`order_id`) NULL **và** trạng thái (`order_status`) thuộc `connector.PENDING_STATUSES`
+  (`WAIT_TO_CONFIRM`) được so sánh trên **toàn bộ dòng nguồn** (mọi cột của bảng / SQL, kể cả cột không ánh xạ như
+  `customer_id`; sửa 7.1): khác nhau ở bất kỳ cột nguồn nào là **đơn riêng** - giữ và cộng như mọi dòng, không chặn,
+  `DROP_EXACT` không loại, đếm riêng (`pending_no_order_code`: số dòng, số lượng, số nhóm / dòng chỉ giống ở cột ánh xạ);
+  giống nhau ở **mọi** cột nguồn thì không phân biệt được với trùng thật hay nhân dòng do join nên **vẫn là trùng hoàn toàn**
+  (`pending_no_order_code.duplicate_*`, chặn, báo cáo ghi `compared_on = whole source row`). Không cột nào (kể cả
+  `customer_id`) được dùng làm mã đơn; dòng nguồn không rời BigQuery (chỉ nhóm / đếm). Mọi dòng khác (có `so_code`, hoặc
+  `so_code` NULL ở trạng thái khác) giữ nguyên quy tắc trên các cột ánh xạ. Chỉ áp dụng khi cả `order_id` và `order_status`
+  được ánh xạ (khi đó cổng trùng và truy vấn tổng hợp đọc cả các cột không ánh xạ: 1,70 GB thay vì 1,35 GB mỗi truy vấn trên
+  bảng 21/10, bảng nguồn không phân vùng). Rủi ro còn lại: hai dòng nhân do join mà khác nhau ở một cột của bảng được join vẫn
+  là hai dòng khác nhau (app không có dòng gốc để so) - kiểm tra định kỳ bằng truy vấn kiểm toán.
 
 **Thứ tự xử lý của D-1 (`sync.run_d1_sync` → `connector.fetch_daily`):**
 1. Cấu hình + xác thực; chế độ sản xuất và kiểm tra toàn kỳ đạt cho ánh xạ hiện tại.

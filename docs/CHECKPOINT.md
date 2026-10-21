@@ -630,3 +630,22 @@ evening). Commit authorized for the release scope only; no push. Price ON, custo
 | Deploy / backfill / finalize | NOT DONE (held at Gate 3) | without a backfill plan A cannot hold (first successful D-1 would freeze old loads; KPI empty; training blocked) -> production stays 1.2.8 |
 | Secondary (read only) | DONE | 6 MULTI_ITEM keys re-verified (156 units, values per item); 931 combo keys: 98% of units via combo (combo table to 09/07 + calibrated signal after), CSV in reports/; customer_id profile (0 NULL, 35,055 customers, 1 customer per order) - offline experiments NOT RUN (reload blocked by the same duplicates) |
 | Report | DONE | reports/demandforecast_release_20261020_final_report.md (not versioned): PARTIAL / BLOCKED_DATA_SAFETY |
+
+# Master audit (2026-10-21 00:54 - 02:00): grain, duplicates, MULTI_ITEM, combo, customer_id, performance - NOT committed
+
+Owner prompt "MASTER BATCH: RA SOAT, SUA LOI, KIEM THU HOI QUY VA TOI UU HIEU NANG". No push, no deploy, no backfill, no
+finalization, no training, no schedule / mapping / config change. Production 1.2.8 (schema 6) unchanged. Commit not
+authorized: the changes below are uncommitted on top of a9486bb. Reports: `reports/master-audit-20261021/` (FINAL_REPORT,
+FINDINGS_REGISTER, TEST_RESULTS, PERFORMANCE_REPORT, DATA_RECONCILIATION, RESUME_CHECKPOINT + 4 anomaly workbooks).
+
+| Step | Status | Evidence |
+|---|---|---|
+| Checkpoint before | DONE | `checkpoints/source-1.2.9-before-master-audit-20261021-010045.zip` SHA-256 86BBDF6C...C429 (git archive a9486bb, 358 files) |
+| SKU suffix -> FC | VERIFIED, no violation | code sweep + BigQuery audit: suffixes .1-.4 present in both BD and HN; FC only from fc_code |
+| Duplicates | FIXED_LOCAL | 18 groups / 67 rows = WAIT_TO_CONFIRM without so_code, each row a different customer (snapshot 20/10 22:18); `connector.PENDING_STATUSES`: never exact duplicates, counted apart; isolated full-range preview with the fix READY (BFP-20261020181139-18A4F4) |
+| MULTI_ITEM 6 keys | BLOCKED (business rule) | unchanged before/after (39 lines, 156 units); hours are per item x day |
+| Combo 931 | VERIFIED (part INFERRED) | 3,017 lines / 931 keys / 25,542 units match the CSV line by line; 98.25 % via combo |
+| Source vs app | UNRESOLVED (source team) | 344 new / 308 changed / 785 removed keys, -13,255 units |
+| Performance | FIXED_LOCAL | NOT INDEXED: registry coverage 8.3 s -> 0.47 s (endpoint 9.0 s -> 1.5 s, identical body), lineage 8.6 s -> 1.0 s, load_demand 15.3 s -> 6.2 s (identical frame) |
+| Tests | PASS | backend 661 passed / 13 skipped / 0 failed (342 s); vitest 154; typecheck + build OK; inline real BigQuery 8 passed |
+| Checkpoint after | DONE | `checkpoints/checkpoint-20261021-master-audit.zip` SHA-256 C3D5D5B2CBB86FC52B8B75E25891576C0F6DB9A6E418A25DD321D5FCBAEDEAAC (108 entries: diff + 16 files + reports + scratchpad p25; verified) |

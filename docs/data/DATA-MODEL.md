@@ -122,7 +122,7 @@ Guarantees verified in code and tests:
 | One ACTIVE DEMO batch | `data_source='DEMO' AND status='ACTIVE'` | partial UNIQUE index (0002) |
 | Order line | grain order_id x SKU x FC within a batch | import validation: exact duplicates -> `DUPLICATE`, grain conflicts -> ERROR or SUM (`import.grain_conflict_policy`, default ERROR). Not a DB constraint |
 | Daily demand | scope_key x order_date x SKU x FC | PK |
-| BigQuery rows | candidate key (order, SKU, FC, date) derived from the mapping, or `sql_sources.*.key_columns` | key gate in `bq/connector.py` (BLOCK by default -> `BQ_KEY_NOT_UNIQUE`); exact duplicates per `exact_duplicate_policy` (BLOCK/KEEP/DROP_EXACT) |
+| BigQuery rows | candidate key (order, SKU, FC, date) derived from the mapping, or `sql_sources.*.key_columns` | key gate in `bq/connector.py` (BLOCK by default -> `BQ_KEY_NOT_UNIQUE`); exact duplicates per `exact_duplicate_policy` (BLOCK/KEEP/DROP_EXACT); rows with a NULL order reference and status `WAIT_TO_CONFIRM` (`connector.PENDING_STATUSES`) are compared on the whole source row: rows that differ in any source column are separate orders, kept and counted apart (owner rule 21/10/2026); rows identical in every source column stay exact duplicates (1.2.10, fix 7.1) |
 | Forecast value | run x SKU x FC x target_date | PK + immutability triggers |
 | D0 value | snapshot x SKU x FC | PK + no-update trigger |
 | Job | `idempotency_key` (e.g. `D0_SYNC:2026-10-15T16:00`) | UNIQUE |

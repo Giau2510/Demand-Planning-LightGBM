@@ -151,9 +151,12 @@ def aggregate_batch(conn, batch_id: str, data_source: str) -> int:
 def load_demand(scope_key: str, conn=None, start: str | None = None, end: str | None = None) -> pd.DataFrame:
     # open_hours (1.2.9): value of status OK only (NULL otherwise, never replaced) - data/open_hours.py
     # customer counts (1.2.9b): NULL = unknown (no customer column mapped / no identifier that day) - data/customers.py
+    # master audit 21/10/2026: ONE sequential scan (NOT INDEXED) sorted in the key order, instead of the key index that
+    # fetched every row again for the non-key columns: 15.3 s -> 6.2 s for 1.36 M rows on a copy of production, the
+    # same DataFrame (values, dtypes and row order: the ORDER BY is the order of the key index)
     sql = ("SELECT order_date, sku_id, fc_id, qty, n_orders, avg_unit_price, avg_discount_rate, promo_share, "
            "voucher_share, open_hours, customer_count, repeat_customer_count, repeat_interval_days_sum "
-           "FROM demand_daily WHERE scope_key=?")
+           "FROM demand_daily NOT INDEXED WHERE scope_key=?")
     params: list = [scope_key]
     if start:
         sql += " AND order_date>=?"
@@ -161,6 +164,7 @@ def load_demand(scope_key: str, conn=None, start: str | None = None, end: str | 
     if end:
         sql += " AND order_date<=?"
         params.append(end)
+    sql += " ORDER BY order_date, sku_id, fc_id"
     def _q(c):
         return pd.read_sql_query(sql, c, params=params)
     if conn is not None:
