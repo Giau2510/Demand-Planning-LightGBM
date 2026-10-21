@@ -649,3 +649,21 @@ FINDINGS_REGISTER, TEST_RESULTS, PERFORMANCE_REPORT, DATA_RECONCILIATION, RESUME
 | Performance | FIXED_LOCAL | NOT INDEXED: registry coverage 8.3 s -> 0.47 s (endpoint 9.0 s -> 1.5 s, identical body), lineage 8.6 s -> 1.0 s, load_demand 15.3 s -> 6.2 s (identical frame) |
 | Tests | PASS | backend 661 passed / 13 skipped / 0 failed (342 s); vitest 154; typecheck + build OK; inline real BigQuery 8 passed |
 | Checkpoint after | DONE | `checkpoints/checkpoint-20261021-master-audit.zip` SHA-256 C3D5D5B2CBB86FC52B8B75E25891576C0F6DB9A6E418A25DD321D5FCBAEDEAAC (108 entries: diff + 16 files + reports + scratchpad p25; verified) |
+
+# Fix 7.1 - restore D-1: release 1.2.10 DEPLOYED (2026-10-21 07:57 - 13:00)
+
+Owner prompt "EXECUTE: FIX 7.1 - RESTORE D-1 SAFELY" (deploy, preview, backfill, reconciliation, finalization authorized if
+every gate passes; no push, no training, no promotion, no schedule change). Reports: `reports/fix71-restore-d1-20261021/`
+(FINAL_REPORT, TEST_RESULTS, DATA_RECONCILIATION, RESUME_CHECKPOINT + 7-sheet workbook). Status READY_FOR_PRODUCTION
+(DEPLOYED_AND_VERIFIED).
+
+| Step | Status | Evidence |
+|---|---|---|
+| Checkpoint before | DONE | `checkpoints/checkpoint-20261021-fix71-before.zip` SHA-256 C0BBE916...4713 (uncommitted master-audit tree) |
+| Source | VERIFIED | D-1 table rebuilt 21/10 07:10:38 (8,979,752 rows, has 20/10); 46 groups / 136 rows identical in the 15 mapped columns = WAIT_TO_CONFIRM without so_code, every row another customer and another full source row; 0 true duplicates, 0 rows identical in every source column. Production 1.2.8 manual D-1 09:36 FAILED BQ_DATA_DUPLICATES (46 / 136 / 90) |
+| Fix 7.1 | DONE | pending rows without order code compared on the WHOLE source row (`_praw`): separate orders kept, rows identical in every source column still blocked; tests +4 offline / +2 real-BQ inline, 4 test files updated for the new SQL |
+| Release | DONE | commit dd0dfa1 "Release 1.2.10" (20 files, not pushed); release.ps1 QA 663 passed / 15 skipped, vitest 155; package SHA-256 326E3587...4E62 |
+| Rehearsal | PASS | r10 28/31 (3 script FAILs explained), r11 40/40: upgrade, preview READY = independent recon, backfill, app = source, 292 finalized, D-1 dry run + real D-1, rollback by restore -> identical |
+| Production | DEPLOYED | verified backup backup-20261021-120556-manual.zip (6DE2BA71...BC46); deploy-upgrade 12:09-12:18 exit 0 (backup 121031 AEFEA751...601F); preview BFP-20261021051921-51731D READY; backfill JOB-20261021052939-2D9CCE (pre-backfill backup 123506 978F86D2...C14E); app = source 1,357,876 keys / 42,009,957 qty; 292 days finalized; close revisions 18/10 r4, 19/10 r3; D-1 dry run READY |
+| Open | OWNER | 6 MULTI_ITEM keys block BIGQUERY training (OPEN_HOURS_INVALID) from 22/10 07:00; 20/10 not loaded until the next D-1 (06:00 may hit SOURCE_INCOMPLETE if the source rebuilds after 06:38) |
+| Checkpoint after | DONE | `checkpoints/checkpoint-20261021-fix71-after.zip` SHA-256 190F1A205D8E8B364884016E7A99CC3312EF22D501286A4F2215D5BDE6CC9F1D (115 entries, verified) |
