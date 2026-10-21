@@ -359,7 +359,6 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
         oh_chk = (open_hours.window_check(c, scope["scope_key"], window["start"], window["end"],
                                           overrides=oh_ovr["applied"]) if oh_ovr is not None else None)
         if oh_chk is not None:
-            oh_chk = open_hours_override.add_missing(oh_chk, oh_ovr)     # an approved key whose row is gone blocks
             oh_chk["override"] = open_hours_override.summary(oh_ovr)
     if not force and last_ok and last_ok["data_fingerprint"] == fp:
         return {"status": "SKIPPED", "reason_code": "NO_NEW_DATA", "training_run_id": last_ok["id"]}
@@ -456,8 +455,8 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
         if mcfg.feature_open_hours and (ovr_problems or demand["open_hours"].isna().any()):
             # 1.2.9: the rows really loaded must all carry their open hours - a D-1 load may have run since the check
             with db.read() as c:
-                chk = open_hours_override.add_missing(open_hours.window_check(
-                    c, scope["scope_key"], window["start"], window["end"], overrides=(oh_ovr or {}).get("applied")), oh_ovr)
+                chk = open_hours.window_check(c, scope["scope_key"], window["start"], window["end"],
+                                              overrides=(oh_ovr or {}).get("applied"))
                 if oh_chk is not None:
                     chk["override"] = {**(oh_chk.get("override") or {}), "fill_problems": ovr_problems}
                 det = open_hours.blocking_detail(chk)

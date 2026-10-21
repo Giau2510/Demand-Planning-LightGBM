@@ -94,10 +94,10 @@ def _open_hours_checks(c) -> list[dict]:
                 f"(VALUES {', '.join(['(?, ?, ?)'] * len(keys))}))")
         skip_p = [ovr["scope_key"], *(x for k in keys for x in k)]
     has_scope = c.execute("SELECT 1 FROM demand_daily WHERE scope_key=? LIMIT 1", (ovr["scope_key"],)).fetchone()
-    # outside the window or OK on its own (the source now gives one value): nothing to cover, nothing blocks
+    # outside the window, no such row, or OK on its own (the source now gives one value): nothing to cover, nothing
+    # blocks; the warning is for an approved row that exists but no longer matches its approval (it still blocks)
     uncovered = [[a["business_date"], a["sku_id"], a["fc_id"], a["not_applied_reason"]] for a in ovr["not_applied"]
-                 if has_scope and a["not_applied_reason"] not in ("NOT_IN_WINDOW", "STORED_STATUS_OK")]
-    gone = sorted(a["business_date"] for a in ovr["not_applied"] if has_scope and a["not_applied_reason"] == "ROW_NOT_FOUND")
+                 if has_scope and a["not_applied_reason"] not in ("NOT_IN_WINDOW", "ROW_NOT_FOUND", "STORED_STATUS_OK")]
     out.append(_check("open_hours_owner_override",
                       "1.2.12 owner-approved adhoc rule (data/open_hours_override.py): exactly the approved MULTI_ITEM "
                       "keys get the maximum of their valid listing values at training time, stored rows unchanged; "
@@ -124,8 +124,6 @@ def _open_hours_checks(c) -> list[dict]:
                      "FROM demand_daily NOT INDEXED WHERE data_source='BIGQUERY' AND order_date BETWEEN ? AND ? "
                      "AND IFNULL(open_hours_status, '') != 'OK'" + skip + " GROUP BY 1, 2", (start, end, *skip_p))
         rule = f"every BIGQUERY demand row of the data window {start}..{end} has open hours (status OK)"
-    if gone:            # an approved key whose row is gone blocks the training too (open_hours_override.add_missing)
-        rows.append((ovr["scope_key"], open_hours_override.MISSING, len(gone), gone[0], gone[-1]))
     out.append(_check("open_hours_window_ready",
                       rule + "; otherwise the BigQuery training stops with OPEN_HOURS_INVALID (NOT_LOADED = loaded "
                       "before 1.2.9)", sum(r[2] for r in rows), fail=False, examples=rows))

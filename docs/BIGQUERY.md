@@ -521,9 +521,9 @@ Trên DuckDB với dữ liệu tổng hợp, phiên bản 2 cho cùng các dòng
   - chỉ áp dụng khi dòng lưu vẫn `MULTI_ITEM`, không có giá trị, cùng số lượng, số đơn và **cùng lần nạp** đã đối chiếu
     (`loaded_at` 2026-10-21T05:36:47Z, backfill đọc đúng bản 07:10:38); nếu không, khóa đó **vẫn chặn** với lý do
     (`CONTENT_CHANGED`, `RELOADED_SINCE_APPROVAL`, `STORED_STATUS_*`, `LISTING_VALUE_*`) trong chi tiết `OPEN_HOURS_INVALID`;
-    khóa đã duyệt mà dòng biến mất cũng chặn (`OVERRIDE_KEY_NOT_FOUND`); khung dữ liệu được kiểm lại khi gán (số lượng,
-    số đơn, giá trị là MAX hợp lệ). Nạp lại các ngày này (backfill / nạp lại toàn bộ) cần đối chiếu lại giá trị listing
-    (truy vấn chỉ đọc) và duyệt lại trong bản sau;
+    khóa đã duyệt mà không còn dòng (`ROW_NOT_FOUND`) không được gán gì (không có dòng nào cần giá trị) và được ghi kèm
+    lần huấn luyện; khung dữ liệu được kiểm lại khi gán (số lượng, số đơn, giá trị là MAX hợp lệ). Nạp lại các ngày này
+    (backfill / nạp lại toàn bộ) cần đối chiếu lại giá trị listing (truy vấn chỉ đọc) và duyệt lại trong bản sau;
   - `demand_daily` **không** đổi (6 dòng giữ `MULTI_ITEM` / NULL), phân loại D-1 không đổi; giá trị áp vào khung dữ liệu
     huấn luyện đọc ra, ghi kèm lần huấn luyện (`feature_decisions.open_hours.override`: giá trị từng listing, MAX, quy
     tắc, phiên bản, lý do, thời điểm) và nhật ký `OPEN_HOURS_OVERRIDE_APPLIED`; dựng lại panel của lần đó (promote, giải

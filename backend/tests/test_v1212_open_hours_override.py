@@ -136,14 +136,9 @@ def test_a_changed_fixed_or_missing_approved_row_is_not_covered_and_says_why():
     assert len(res["applied"]) == 3
     assert chk["not_ok"] == {"MULTI_ITEM": {"rows": 1, "first": "2026-03-02", "last": "2026-03-02"}}   # the changed row
     assert chk["override_rows"] == 3 and chk["ok_rows"] == 1
-    # an approved key whose row is gone cannot be matched: it blocks too, never passes silently
-    ovr.add_missing(chk, res)
-    assert chk["not_ok"][ovr.MISSING] == {"rows": 1, "first": "2026-08-26", "last": "2026-08-26"} and not chk["ok"]
+    # the key whose row is gone gets nothing (no row to give a value: nothing guessed) and is reported, not counted
+    assert ovr.summary(res)["not_applied"][-1] == ["2026-08-26", "MEDX.COU-STR-001", "BD", "ROW_NOT_FOUND"]
     assert {a["not_applied_reason"] for a in late["not_applied"] if a["business_date"] < "2026-03-01"} == {"NOT_IN_WINDOW"}
-    with db.read() as c:                                                       # outside the window: nothing to block
-        late_chk = ovr.add_missing(open_hours.window_check(c, SCOPE, "2026-08-27", "2026-10-20"), ovr.resolve(
-            c, SCOPE, "2026-08-27", "2026-10-20"))
-    assert ovr.MISSING not in late_chk["not_ok"]
 
 
 def test_a_reloaded_approved_row_is_not_covered_the_listing_values_were_verified_for_the_earlier_load_only():
@@ -152,9 +147,10 @@ def test_a_reloaded_approved_row_is_not_covered_the_listing_values_were_verified
     _insert(rows)
     with db.read() as c:
         res = ovr.resolve(c, SCOPE, "2026-01-01", "2026-10-20")
-        chk = ovr.add_missing(open_hours.window_check(c, SCOPE, "2026-01-01", "2026-10-20", overrides=res["applied"]), res)
+        chk = open_hours.window_check(c, SCOPE, "2026-01-01", "2026-10-20", overrides=res["applied"])
     assert [(a["sku_id"], a["not_applied_reason"]) for a in res["not_applied"]] == [("MEDX.D6TABCV8", "RELOADED_SINCE_APPROVAL")]
     assert chk["not_ok"] == {"MULTI_ITEM": {"rows": 1, "first": "2026-08-26", "last": "2026-08-26"}} and chk["override_rows"] == 5
+    assert not chk["ok"]                                                       # the reloaded key keeps blocking
 
 
 def test_fill_checks_the_loaded_frame_again_and_never_writes_an_unchecked_value():
@@ -301,18 +297,24 @@ def test_a_changed_approved_row_blocks_the_training_with_its_reason(client, fast
         assert det["override"]["not_applied"] == [["2026-08-26", "MEDX.COU-STR-001", "BD", "CONTENT_CHANGED"]]
 
 
-def test_an_approved_key_whose_row_is_gone_stops_the_training(client, fast_model, monkeypatch):
+def test_an_approved_key_without_a_row_gets_nothing_and_is_reported_with_the_run(client, fast_model, monkeypatch):
+    # no stored row = no model-input row for that key: nothing to give a value, nothing guessed; the other five apply.
+    # (A BIGQUERY scope with this key whose data never had the six rows - e.g. the default test settings - trains.)
+    from app import data_checks
     from app.ml import pipeline
     with monkeypatch.context() as m:
         _scope_with_six(m)
         with db.tx() as c:
             c.execute("DELETE FROM demand_daily WHERE scope_key=? AND sku_id='MEDX.SOP-NEO-001'", (SCOPE,))
-        with pytest.raises(AppError) as e:
-            pipeline.train_and_publish(force=True, source="BIGQUERY")
-        det = json.loads(e.value.detail)
-        assert e.value.code == "OPEN_HOURS_INVALID"
-        assert det["not_ok"] == {ovr.MISSING: {"rows": 1, "first": "2026-03-02", "last": "2026-03-02"}}
-        assert det["override"]["not_applied"] == [["2026-03-02", "MEDX.SOP-NEO-001", "BD", "ROW_NOT_FOUND"]]
+        res = pipeline.train_and_publish(force=True, source="BIGQUERY")
+        assert res["status"] == "PUBLISHED", res
+        with db.read() as c:
+            tr = db.one(c, "SELECT feature_config_json FROM training_runs WHERE id=?", (res["training_run_id"],))
+        rec = json.loads(tr["feature_config_json"])["feature_decisions"]["open_hours"]["override"]
+        assert len(rec["applied"]) == 5
+        assert [(a["sku_id"], a["not_applied_reason"]) for a in rec["not_applied"]] == [("MEDX.SOP-NEO-001", "ROW_NOT_FOUND")]
+        chk = {x["check"]: x for x in data_checks.run(paths.db_path())["checks"]}
+        assert chk["open_hours_window_ready"]["status"] == "OK" and chk["open_hours_owner_override"]["status"] == "OK"
 
 
 def test_feature_registry_and_data_check_agree_with_the_training_gate(client, fast_model, monkeypatch):

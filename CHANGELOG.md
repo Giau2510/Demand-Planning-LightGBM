@@ -18,9 +18,11 @@ No migration (schema 9, as 1.2.11), no settings change, no change of any default
   were loaded from) are validated at every use (present, numeric, finite, 0..24, at least two) and the maximum computed
   in code; applied only while the stored row is still `MULTI_ITEM` without a value with the approved quantity and
   number of orders, from the very D-1 load the evidence was verified against (`APPROVED_LOADED_AT`; a later reload of
-  those days needs a new read-only verification) - otherwise that key keeps blocking with its reason; an approved key of
-  the window whose row is gone blocks too (`OVERRIDE_KEY_NOT_FOUND`), and the loaded frame is checked again when the
-  value is applied (independent data review 21/10, findings S1-S3). Not a general rule: every other multi-listing,
+  those days needs a new read-only verification) - otherwise that key keeps blocking with its reason; an approved key
+  without a stored row gets nothing and is reported with the run (`ROW_NOT_FOUND`: no row, nothing guessed), and the
+  loaded frame is checked again when the value is applied (independent data review 21/10, findings S1-S3; a first
+  variant that blocked on `ROW_NOT_FOUND` stopped every BIGQUERY test scope with the production table name and was
+  withdrawn before any package). Not a general rule: every other multi-listing,
   conflicting or missing row still blocks; the D-1 classification and `demand_daily` are unchanged (the six rows stay
   `MULTI_ITEM` / NULL). Applied to the frame the training reads, recorded with the run
   (`feature_decisions.open_hours.override`: listing values, maximum, rule, version, reason, time) and in the audit log

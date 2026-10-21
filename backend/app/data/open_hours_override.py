@@ -21,8 +21,9 @@ Scope and safety:
   approved quantity and number of orders AND from the very D-1 load the evidence was verified against (APPROVED_LOADED_AT:
   the load that read the 07:10:38 snapshot; the listing values are not stored, so a reload of the day could carry other
   values - it needs a new read-only verification and approval). Otherwise the key is NOT overridden: its row keeps
-  blocking with its reason in the OPEN_HOURS_INVALID detail, and an approved key of the window whose row is gone blocks
-  too (OVERRIDE_KEY_NOT_FOUND, add_missing); the loaded frame is checked again when the value is applied (fill);
+  blocking with its reason in the OPEN_HOURS_INVALID detail. An approved key without a stored row (ROW_NOT_FOUND) gets
+  nothing - there is no row to give a value, so nothing is guessed and nothing blocks - and is reported with the run
+  (not_applied); the loaded frame is checked again when the value is applied (fill);
 * reversible: removing a key (or emptying APPROVED_KEYS) in a later version restores the block; nothing stored needs a
   repair, and a version without this module (1.2.11) blocks the six keys again.
 
@@ -48,7 +49,6 @@ SOURCE_SNAPSHOT = "2026-10-21T00:10:38.658000+00:00"
 # demand_daily.loaded_at of the six rows = backfill JOB-20261021052939-2D9CCE, which read that same source snapshot
 APPROVED_LOADED_AT = "2026-10-21T05:36:47+00:00"
 STATUS = "MULTI_ITEM"              # the stored status the approval was made for
-MISSING = "OVERRIDE_KEY_NOT_FOUND"  # window-check label of an approved key whose row is gone (blocks)
 
 # (business date, sku_code, fc_code, approved qty, approved orders, {listing item_code: listing total_open_hours})
 APPROVED_KEYS = (
@@ -99,8 +99,9 @@ def resolve(conn, scope_key: str, start: str, end: str) -> dict:
     """Which approved keys apply to the stored rows of [start, end] of a scope (read-only, one primary-key read per key).
     applied: the stored row exists, is still MULTI_ITEM without a value, has the approved quantity, number of orders and
     load, and its listing values are valid. Every other approved key is listed in not_applied with its reason:
-    NOT_IN_WINDOW (no row of the model input) and STORED_STATUS_OK (the source now gives one value: nothing to replace)
-    do not block; ROW_NOT_FOUND blocks through add_missing; every other reason leaves the stored MULTI_ITEM row blocking."""
+    NOT_IN_WINDOW / ROW_NOT_FOUND (no such row in the model input: nothing to give a value) and STORED_STATUS_OK (the
+    source now gives one value: nothing to replace) do not block; every other reason leaves the stored row blocking
+    (it is still MULTI_ITEM or another not-OK status, counted by window_check)."""
     out = {"rule": RULE_ID, "version": RULE_VERSION, "approved_on": APPROVED_ON, "reason": REASON,
            "source_snapshot": SOURCE_SNAPSHOT, "approved_loaded_at": APPROVED_LOADED_AT, "scope_key": scope_key,
            "applies_to_scope": scope_key == SCOPE_KEY, "window": [start, end], "checked_at": now_iso(),
@@ -136,16 +137,6 @@ def resolve(conn, scope_key: str, start: str, end: str) -> dict:
         else:
             out["applied"].append(rec)
     return out
-
-
-def add_missing(chk: dict, res: dict | None) -> dict:
-    """An approved key of the window whose stored row is gone cannot be matched: it blocks the training like a not-OK row
-    (window-check label MISSING, with its day range), never passes silently. Returns chk (changed in place)."""
-    gone = sorted(a["business_date"] for a in (res or {}).get("not_applied", []) if a["not_applied_reason"] == "ROW_NOT_FOUND")
-    if gone:
-        chk["not_ok"][MISSING] = {"rows": len(gone), "first": gone[0], "last": gone[-1]}
-        chk["ok"] = False
-    return chk
 
 
 def summary(res: dict | None) -> dict | None:

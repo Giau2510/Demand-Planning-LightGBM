@@ -319,8 +319,7 @@ def view(conn, source: str | None = None) -> dict:
         w = data_window(conn, scope=scope)       # 1.2.9b: same start rule as the training
         # 1.2.12: same check as the training, with the owner's adhoc rule for six exact keys
         ovr = open_hours_override.resolve(conn, scope["scope_key"], w["start"], w["end"])
-        chk = open_hours_override.add_missing(
-            open_hours.window_check(conn, scope["scope_key"], w["start"], w["end"], overrides=ovr["applied"]), ovr)
+        chk = open_hours.window_check(conn, scope["scope_key"], w["start"], w["end"], overrides=ovr["applied"])
         chk["override"] = open_hours_override.summary(ovr) if ovr["applies_to_scope"] else None
     decisions["open_hours"] = {"mandatory": mand, "ok": bool(chk and chk["ok"]), "window_check": chk,
                                "used": bool(chk and chk["ok"]), "reason": ("NOT_IN_SOURCE" if not mand else
