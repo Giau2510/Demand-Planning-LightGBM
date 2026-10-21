@@ -1,13 +1,15 @@
-"""REAL BigQuery check (master audit, 21/10/2026) of the grain and pending-order rules on INLINE rows through the
-history-SQL path (a literal `UNNEST(ARRAY<STRUCT<...>>[...])`: 0 bytes, no table read, nothing written anywhere).
-Opt-in: ADC of this Windows account and `DF_REAL_BQ=1`.
+"""REAL BigQuery check (master audit, fix 7.1 and the consolidated release 1.2.11, 21/10/2026) of the grain and the
+duplicate rule by order status on INLINE rows through the history-SQL path (a literal `UNNEST(ARRAY<STRUCT<...>>[...])`:
+0 bytes, no table read, nothing written anywhere). Opt-in: ADC of this Windows account and `DF_REAL_BQ=1`.
 
 * grain day x SKU x FC: the FC is the fc_code column; item suffixes (.1/.2, swapped) never create or merge a key;
   different full SKU codes are never merged; no quantity is duplicated or lost;
-* pending orders without order code (WAIT_TO_CONFIRM, so_code NULL; owner rule 21/10/2026) identical in every mapped
-  column but told apart by another source column (customer_id, unmapped) are NOT exact duplicates: they pass the gate,
-  are counted apart and all their quantity is kept (DROP_EXACT too); pending rows identical in EVERY source column, and
-  a real duplicate (an order code, or a NULL code with another status, whatever the customers), still block (fix 7.1);
+* pending orders (WAIT_TO_CONFIRM, with or without so_code; owner rule 21/10/2026, 1.2.11) are EXEMPT: rows identical
+  in every compared column - even in every source column, even with the same customer - pass the gate, are counted
+  apart and all their quantity is kept (DROP_EXACT too);
+* every other status keeps the protection: a real duplicate (an order code, or a NULL code with another status,
+  whatever the customers) blocks; item_code is not compared, so an order line fanned out over the SKU's listings blocks;
+  mixed statuses never form one group;
 * join fan-out: the gate reads the raw rows; the customer counts join (customer column mapped) never multiplies a
   demand row.
 
@@ -41,8 +43,16 @@ BASE = [  # so_code, sku, fc, item, status, qty, open hours
 ]
 REAL_DUP = [("O20", "R", "F1", "R.1", "COMPLETED", 1, 24.0)] * 2
 NULL_CODE_OTHER_STATUS = [(None, "S", "F1", "S.1", "COMPLETED", 1, 24.0)] * 2
-# fix 7.1: two pending rows with nothing that tells them apart (same customer: identical in every source column)
+# two pending rows with nothing that tells them apart (same customer: identical in every source column) - exempt
 PENDING_SAME_ROW = [(None, "T", "F1", "T.1", W, 2, 24.0, 900)] * 2
+# 1.2.11: a pending order WITH an order code, twice identical, and a repeated customer on pending orders - exempt
+PENDING_WITH_CODE = [("O30", "U", "F1", "U.1", W, 3, 24.0, 901)] * 2 + [(None, "U", "F1", "U.1", W, 1, 24.0, 901)]
+# 1.2.11: an order line fanned out over the SKU's two listings (identical except item_code) - a duplicate
+ITEM_FANOUT = [("O40", "V", "F1", "V.1", "COMPLETED", 2, 24.0, 902), ("O40", "V", "F1", "V.2", "COMPLETED", 2, 24.0, 902)]
+# 1.2.11: the same order line seen as pending and as completed (a status transition): two statuses, never one group;
+# lower case / spaces of the status are the same pending status
+MIXED = [("O50", "M", "F1", "M.1", W, 4, 24.0, 903), ("O50", "M", "F1", "M.1", "COMPLETED", 4, 24.0, 903),
+         ("O51", "N", "F1", "N.1", " wait_to_confirm ", 1, 24.0, 904), ("O51", "N", "F1", "N.1", " wait_to_confirm ", 1, 24.0, 904)]
 
 
 def _sql(rows) -> str:
@@ -75,9 +85,9 @@ def test_real_bigquery_grain_and_pending_orders_pass_with_every_unit_kept():
     snap = _setup(BASE)
     chk = connector.duplicate_check(DAY, DAY, snap, "test")
     assert (chk["duplicate_groups"], chk["extra_duplicate_rows"], chk["ingest_status"]) == (0, 0, "PASSED")
-    assert chk["pending_no_order_code"] == {"applies": True, "statuses": [W], "rows": 4, "qty": 7.0,
-                                            "identical_groups": 1, "identical_rows": 3, "duplicate_groups": 0,
-                                            "duplicate_rows": 0}
+    assert chk["pending_orders"] == {"applies": True, "statuses": [W], "exempt": True, "rows": 4, "qty": 7.0,
+                                     "without_order_code_rows": 4, "identical_groups": 1, "identical_rows": 3,
+                                     "whole_row_groups": 0, "whole_row_rows": 0}
     res = connector.fetch_daily(DAY, DAY, snap)
     assert res["estimated_bytes"] == 0 and res["exact_duplicate_rows"] == 0 and res["rows_dropped_duplicates"] == 0
     got = {(r["sku_id"], r["fc_id"]): r for r in res["rows"]}
@@ -101,24 +111,48 @@ def test_real_bigquery_a_real_duplicate_still_blocks():
         assert e.value.code == "BQ_DATA_DUPLICATES"
         chk = connector.dup_state()
         assert (chk["duplicate_groups"], chk["extra_duplicate_rows"]) == (1, 1)
-        assert chk["pending_no_order_code"]["identical_rows"] == 3
-        assert chk["pending_no_order_code"]["duplicate_rows"] == 0
+        assert chk["pending_orders"]["identical_rows"] == 3
+        assert chk["pending_orders"]["whole_row_rows"] == 0
 
 
-def test_real_bigquery_pending_rows_identical_in_every_source_column_still_block():
-    snap = _setup(BASE + PENDING_SAME_ROW)
-    with pytest.raises(AppError) as e:              # the gate, before any aggregation
+def test_real_bigquery_pending_rows_are_exempt_even_identical_in_every_source_column():
+    # 1.2.11 (owner rule; fix 7.1 blocked these): kept, every unit summed, reported as identical in every source column
+    snap = _setup(BASE + PENDING_SAME_ROW + PENDING_WITH_CODE)
+    res = connector.fetch_daily(DAY, DAY, snap)                       # the gate passes
+    chk = connector.dup_state()
+    assert (chk["duplicate_groups"], chk["duplicate_rows"], chk["extra_duplicate_rows"]) == (0, 0, 0)
+    assert chk["pending_orders"] == {"applies": True, "statuses": [W], "exempt": True, "rows": 9, "qty": 18.0,
+                                     "without_order_code_rows": 7, "identical_groups": 3, "identical_rows": 7,
+                                     "whole_row_groups": 2, "whole_row_rows": 4}
+    got = {(r["sku_id"], r["fc_id"]): float(r["qty"]) for r in res["rows"]}
+    assert got[("T", "F1")] == 4 and got[("U", "F1")] == 7 and got[("P", "F1")] == 6
+    assert res["exact_duplicate_rows"] == 0 and res["qty_read"] == sum(r[5] for r in BASE + PENDING_SAME_ROW + PENDING_WITH_CODE)
+
+
+def test_real_bigquery_an_order_line_fanned_out_over_item_codes_blocks():
+    # item_code is never a uniqueness criterion: the two rows differ only in their item code -> one duplicate group
+    snap = _setup(BASE + ITEM_FANOUT)
+    with pytest.raises(AppError) as e:
         connector.fetch_daily(DAY, DAY, snap)
     assert e.value.code == "BQ_DATA_DUPLICATES"
     chk = connector.dup_state()
     assert (chk["duplicate_groups"], chk["duplicate_rows"], chk["extra_duplicate_rows"]) == (1, 2, 1)
-    assert chk["pending_no_order_code"] == {"applies": True, "statuses": [W], "rows": 6, "qty": 11.0,
-                                            "identical_groups": 2, "identical_rows": 5, "duplicate_groups": 1,
-                                            "duplicate_rows": 2}
-    # the control row of the aggregation query counts it the same way (no gate: KEEP)
-    ss.update("bigquery", {"exact_duplicate_policy": "KEEP"})
-    res = connector.fetch_daily(DAY, DAY, snap)
-    assert res["exact_duplicate_rows"] == 1 and res["rows_dropped_duplicates"] == 0
+    assert "item_code" in chk["not_compared"]
+    ss.update("bigquery", {"exact_duplicate_policy": "KEEP"})        # the control row counts it the same way
+    assert connector.fetch_daily(DAY, DAY, snap)["exact_duplicate_rows"] == 1
+
+
+def test_real_bigquery_mixed_statuses_never_form_one_group_and_pending_spelling_is_normalised():
+    snap = _setup(BASE + MIXED)
+    res = connector.fetch_daily(DAY, DAY, snap)                       # no duplicate: O50 has two statuses, O51 pending
+    chk = connector.dup_state()
+    assert chk["duplicate_groups"] == 0 and chk["pending_orders"]["rows"] == 4 + 1 + 2
+    got = {(r["sku_id"], r["fc_id"]): float(r["qty"]) for r in res["rows"]}
+    assert got[("M", "F1")] == 8 and got[("N", "F1")] == 2            # every unit kept
+    snap = _setup(BASE + MIXED + [MIXED[1]])                          # the completed line twice: blocks
+    with pytest.raises(AppError) as e:
+        connector.fetch_daily(DAY, DAY, snap)
+    assert e.value.code == "BQ_DATA_DUPLICATES" and connector.dup_state()["duplicate_groups"] == 1
 
 
 def test_real_bigquery_customer_counts_join_never_multiplies_demand():
@@ -135,8 +169,9 @@ def test_real_bigquery_customer_counts_join_never_multiplies_demand():
 
 
 def test_real_bigquery_drop_exact_drops_the_real_duplicate_and_keeps_pending_orders():
-    snap = _setup(BASE + REAL_DUP + PENDING_SAME_ROW, policy="DROP_EXACT")
+    snap = _setup(BASE + REAL_DUP + PENDING_SAME_ROW + ITEM_FANOUT, policy="DROP_EXACT")
     res = connector.fetch_daily(DAY, DAY, snap)
     got = {(r["sku_id"], r["fc_id"]): float(r["qty"]) for r in res["rows"]}
-    assert got[("R", "F1")] == 1 and got[("P", "F1")] == 6 and got[("T", "F1")] == 2
+    # the real duplicate and the fanned-out line keep one row each; both identical pending rows are kept (1.2.11)
+    assert got[("R", "F1")] == 1 and got[("P", "F1")] == 6 and got[("T", "F1")] == 4 and got[("V", "F1")] == 2
     assert res["rows_dropped_duplicates"] == 2 and res["qty_dropped_duplicates"] == 3

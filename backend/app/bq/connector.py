@@ -634,67 +634,80 @@ def read_range(bq, end: date | None = None, conn=None) -> tuple[date, date]:
 
 
 def _src_cte(bq, with_refs: bool, start_param="start", end_param="end", distinct: bool = False,
-             snap: dict | None = None) -> str:
+             snap: dict | None = None, praw: bool = False) -> str:
     od = _order_date_expr(bq)
     key = _key_expr(snap) or "CAST(NULL AS STRING)"
-    # the source row has an alias so that a pending order without order code is compared on its WHOLE row (_praw)
+    # _pend: the row is a pending order (PENDING_STATUSES), exempt from the exact-duplicate rule. praw (duplicate check
+    # only): the WHOLE source row of a pending order as JSON, to count pending rows identical in every source column
+    # (informative, never blocking); the source row has an alias for it
     rel, row = (_rel(bq, snap), "_user_sql") if _is_sql(snap) else (f"{_table_ref(bq)} AS _src_row", "_src_row")
+    raw = f", {_pending_raw_expr(bq, row)} AS _praw" if praw else ""
     return (f"SELECT {'DISTINCT ' if distinct else ''}{_select_list(bq, with_refs)}, {od} AS _order_date, {key} AS _key, "
-            f"{_pending_raw_expr(bq, row)} AS _praw FROM {rel} WHERE {od} BETWEEN @{start_param} AND @{end_param}"
+            f"{_pending_src_expr(bq)} AS _pend{raw} FROM {rel} WHERE {od} BETWEEN @{start_param} AND @{end_param}"
             f"{_partition_filter(bq, start_param, end_param, snap)}")
 
 
 # ------------------------------------------------------------------ exact-duplicate gate (raw rows, BEFORE aggregation)
 DUP_MAX_GROUPS = 100_000        # groups listed in the report; the counts are always complete
-# Owner rule (21/10/2026): an order waiting for confirmation has no order code yet - so_code NULL is NORMAL for
-# WAIT_TO_CONFIRM. Pending orders of different customers for the same day x SKU x FC x quantity x price are then
-# identical in every mapped column (read-only audits of 21/10/2026: 18 groups / 67 rows on the 22:18 snapshot, 46
-# groups / 136 rows on the 07:10 snapshot, every row of a group from a different customer), so the mapped columns
-# cannot tell them apart. Such rows ("pending without order code") are compared on their WHOLE source row instead
-# (every column of the table / user SQL, mapped or not - fix 7.1): rows that differ in any source column are separate
-# orders - kept like every row, counted apart (pending_* of the duplicate check), never blocking and never dropped by
-# DROP_EXACT; rows identical in EVERY source column cannot be told apart from a real duplicate or a join fan-out and
-# stay exact duplicates (BLOCK reports them). No column is used as an order key. Every other row keeps the
-# exact-duplicate rule on the mapped columns unchanged. Applies only when both the order reference (order_id) and the
-# order status (reference order_status) are mapped; otherwise no extra column is read.
+# Owner rules on the exact-duplicate gate:
+# * 21/10/2026 (consolidated release 1.2.11, supersedes fix 7.1): a row of a PENDING order (order status
+#   WAIT_TO_CONFIRM, with or without so_code) is EXEMPT from the duplicate rule - never blocking, never dropped by
+#   DROP_EXACT, every row and its quantity kept; no order code is required or invented, rows are never merged, and a
+#   repeated customer_id or other matching columns are no reason to reject them. They are counted apart (pending_orders
+#   of the duplicate check), including the pending rows identical in the compared columns and those identical in EVERY
+#   source column (a possible join fan-out, reported, not blocking). Read-only audits of 21/10/2026: 46 groups / 136
+#   pending rows without so_code identical in the mapped columns, each row a different customer (separate orders).
+# * Rows of every other status keep the exact-duplicate protection: identical in every COMPARED column = a duplicate.
+#   The compared columns are the mapped columns except item_code (DUP_NOT_COMPARED_FIELDS): an item code (the SKU's
+#   listing) is never a uniqueness criterion - two otherwise identical order lines that differ only in their item code
+#   are duplicates (e.g. an order line fanned out over the SKU's listings by a join). No column is used as an order key.
+# The status rule applies only when the order status (reference order_status) is mapped; otherwise every row is compared.
 PENDING_STATUSES = ("WAIT_TO_CONFIRM",)
+DUP_NOT_COMPARED_FIELDS = ("item_code",)
 
 
-def _pending_cond(order_id: str, status: str) -> str:
+def _pending_cond(status: str) -> str:
     vals = ", ".join(f"'{s}'" for s in PENDING_STATUSES)
-    return f"COALESCE({order_id} IS NULL AND UPPER(TRIM(CAST({status} AS STRING))) IN ({vals}), FALSE)"
+    return f"COALESCE(UPPER(TRIM(CAST({status} AS STRING))) IN ({vals}), FALSE)"
 
 
 def _pending_expr(bq) -> str:
-    """SQL boolean (never NULL) on the source aliases: the row is a pending order without an order code. FALSE when
-    order_id or the order status is not mapped (then nothing changes)."""
-    if not (_col(bq, "order_id") and _ref_col(bq, "order_status")):
-        return "FALSE"
-    return _pending_cond("order_id", "ref_order_status")
+    """SQL boolean (never NULL) on the source aliases: the row is a pending order. FALSE when the order status is not
+    mapped (then nothing changes)."""
+    return _pending_cond("ref_order_status") if _ref_col(bq, "order_status") else "FALSE"
+
+
+def _pending_src_expr(bq) -> str:
+    """The same condition on the SOURCE column (inside the source relation of _src_cte)."""
+    st = _ref_col(bq, "order_status")
+    return _pending_cond(st) if st else "FALSE"
 
 
 def _pending_raw_expr(bq, row: str) -> str:
-    """SQL STRING in the source relation (`row` = its alias): the whole source row as JSON for a pending order without
-    order code, NULL for every other row; a constant NULL when the rule does not apply (no extra column is read). The
-    row never leaves BigQuery: it is only grouped / counted."""
-    oid, st = _col(bq, "order_id"), _ref_col(bq, "order_status")
-    if not (oid and st):
+    """SQL STRING in the source relation (`row` = its alias): the whole source row as JSON for a pending order, NULL
+    for every other row; a constant NULL when the rule does not apply. The row never leaves BigQuery: it is only
+    grouped / counted (pending rows identical in every source column, informative)."""
+    st = _ref_col(bq, "order_status")
+    if not st:
         return "CAST(NULL AS STRING)"
-    return f"IF({_pending_cond(oid, st)}, TO_JSON_STRING({row}), NULL)"
+    return f"IF({_pending_cond(st)}, TO_JSON_STRING({row}), NULL)"
 
 
-def _exact_dup_rows_expr(row: str) -> str:
-    """Extra exact-duplicate rows among the rows of the current FROM (`row` = its alias, serialised whole). The row
-    carries _praw (see _src_cte), NULL except for a pending order without order code: such a row is a duplicate only
-    of a row identical in every SOURCE column (see PENDING_STATUSES)."""
-    return f"COUNT(*) - COUNT(DISTINCT TO_JSON_STRING({row}))"
+def _exact_dup_rows_expr(bq) -> str:
+    """Extra exact-duplicate rows among the rows of the current FROM (columns: the source aliases + _pend): rows that
+    are not pending orders and are identical in every compared column (dup_columns), NULL = NULL. The same rule as the
+    gate (_dup_sql) and DROP_EXACT (_daily_sql)."""
+    st = ", ".join(c["alias"] for c in dup_columns(bq))
+    return f"COUNTIF(NOT _pend) - COUNT(DISTINCT IF(_pend, NULL, TO_JSON_STRING(STRUCT({st}))))"
 
 
 def dup_columns(bq) -> list[dict]:
-    """Every column read through the mapping (internal + reference fields): the full set the gate compares. A mapped
-    column that is missing from the source stops the run (require_mapping); it is never left out of the comparison."""
+    """The columns the gate compares: every column read through the mapping (internal + reference fields) except
+    DUP_NOT_COMPARED_FIELDS (item_code: never a uniqueness criterion). A mapped column that is missing from the source
+    stops the run (require_mapping); it is never left out of the comparison silently (not_compared lists the rest)."""
     out = [{"field": f, "alias": f, "column": bq.field_mapping[f].column} for f in _mapped_internal(bq)]
-    return out + [{"field": f, "alias": f"ref_{f}", "column": bq.reference_mapping[f].column} for f in _mapped_refs(bq)]
+    return out + [{"field": f, "alias": f"ref_{f}", "column": bq.reference_mapping[f].column} for f in _mapped_refs(bq)
+                  if f not in DUP_NOT_COMPARED_FIELDS]
 
 
 def require_mapping(bq, snap: dict | None) -> dict:
@@ -714,29 +727,31 @@ def require_mapping(bq, snap: dict | None) -> dict:
 
 
 def _dup_sql(bq, snap: dict | None, limit: int = DUP_MAX_GROUPS) -> str:
-    """Exact duplicates = source rows equal in EVERY compared column, found by GROUP BY on the native values (rule:
-    dup_report.RULE_EN): NULL = NULL, numbers by value in their type, dates/times without time-zone conversion, strings
-    exactly. No row is filtered out: a NULL so_code takes part like any value; a pending order without order code
-    (PENDING_STATUSES) is grouped on its whole source row too (_praw), so it forms a duplicate group only with rows
-    identical in every source column (pending_duplicate_*, blocking); pending_identical_* counts the pending rows the
-    mapped columns alone cannot tell apart (informative). Groups are listed ordered by every compared column, so their
-    numbering in the report is stable for the same data."""
+    """Exact duplicates = source rows equal in EVERY compared column (dup_columns: the mapped columns except item_code),
+    found by GROUP BY on the native values (rule: dup_report.RULE_EN): NULL = NULL, numbers by value in their type,
+    dates/times without time-zone conversion, strings exactly. No row is filtered out: a NULL so_code takes part like
+    any value. Rows of a pending order (PENDING_STATUSES; the status is a compared column, so a group is all pending or
+    all not) are exempt: never a duplicate group; pending_identical_* counts the pending rows identical in the compared
+    columns and pending_whole_row_* those identical in every SOURCE column (informative). Groups are listed ordered by
+    every compared column, so their numbering in the report is stable for the same data."""
     cols = ", ".join(c["alias"] for c in dup_columns(bq))
+    nocode = "COUNTIF(_pend AND order_id IS NULL)" if _col(bq, "order_id") else "0"
     return f"""WITH src AS (
-  {_src_cte(bq, True, snap=snap)}
+  {_src_cte(bq, True, snap=snap, praw=True)}
 ), g AS (
-  SELECT {cols}, {_pending_expr(bq)} AS _pending, COUNT(*) AS _n, SUM(order_qty) AS _q FROM src GROUP BY {cols}, _praw
-), pm AS (
-  SELECT COUNTIF(_m > 1) AS pending_identical_groups, SUM(IF(_m > 1, _m, 0)) AS pending_identical_rows
-  FROM (SELECT SUM(_n) AS _m FROM g WHERE _pending GROUP BY {cols})
+  SELECT {cols}, LOGICAL_OR(_pend) AS _pending, {nocode} AS _nocode, COUNT(*) AS _n,
+    SUM(order_qty) AS _q FROM src GROUP BY {cols}
+), pw AS (
+  SELECT COUNTIF(_m > 1) AS pending_whole_row_groups, SUM(IF(_m > 1, _m, 0)) AS pending_whole_row_rows
+  FROM (SELECT COUNT(*) AS _m FROM src WHERE _praw IS NOT NULL GROUP BY _praw)
 )
-SELECT SUM(_n) AS rows_checked, SUM(_q) AS qty_checked, COUNTIF(_n > 1) AS duplicate_groups,
-  SUM(IF(_n > 1, _n, 0)) AS duplicate_rows, SUM(IF(_n > 1, _n - 1, 0)) AS extra_duplicate_rows,
-  SUM(IF(_pending, _n, 0)) AS pending_rows, SUM(IF(_pending, _q, 0)) AS pending_qty,
-  ANY_VALUE(pm.pending_identical_groups) AS pending_identical_groups, ANY_VALUE(pm.pending_identical_rows) AS pending_identical_rows,
-  COUNTIF(_n > 1 AND _pending) AS pending_duplicate_groups, SUM(IF(_n > 1 AND _pending, _n, 0)) AS pending_duplicate_rows,
-  ARRAY_AGG(IF(_n > 1, STRUCT({cols}, _n AS _occurrences, _pending AS _pending), NULL) IGNORE NULLS ORDER BY {cols} LIMIT {int(limit)}) AS _groups
-FROM g CROSS JOIN pm"""
+SELECT SUM(_n) AS rows_checked, SUM(_q) AS qty_checked, COUNTIF(_n > 1 AND NOT _pending) AS duplicate_groups,
+  SUM(IF(_n > 1 AND NOT _pending, _n, 0)) AS duplicate_rows, SUM(IF(_n > 1 AND NOT _pending, _n - 1, 0)) AS extra_duplicate_rows,
+  SUM(IF(_pending, _n, 0)) AS pending_rows, SUM(IF(_pending, _q, 0)) AS pending_qty, SUM(_nocode) AS pending_without_code_rows,
+  COUNTIF(_n > 1 AND _pending) AS pending_identical_groups, SUM(IF(_n > 1 AND _pending, _n, 0)) AS pending_identical_rows,
+  ANY_VALUE(pw.pending_whole_row_groups) AS pending_whole_row_groups, ANY_VALUE(pw.pending_whole_row_rows) AS pending_whole_row_rows,
+  ARRAY_AGG(IF(_n > 1 AND NOT _pending, STRUCT({cols}, _n AS _occurrences), NULL) IGNORE NULLS ORDER BY {cols} LIMIT {int(limit)}) AS _groups
+FROM g CROSS JOIN pw"""
 
 
 def _dup_finish(bq, snap: dict | None, start: date, end: date, rows: list[dict], columns: list[dict],
@@ -745,8 +760,8 @@ def _dup_finish(bq, snap: dict | None, start: date, end: date, rows: list[dict],
     (without the rows) is kept in sync_state 'bq_duplicate_check' for the BigQuery page."""
     r = rows[0] if rows else {}
     cols = dup_columns(bq)
-    groups = [{"values": {c["alias"]: g.get(c["alias"]) for c in cols}, "occurrences": int(g.get("_occurrences") or 0),
-               "pending_whole_row": bool(g.get("_pending"))} for g in (r.get("_groups") or [])]
+    groups = [{"values": {c["alias"]: g.get(c["alias"]) for c in cols}, "occurrences": int(g.get("_occurrences") or 0)}
+              for g in (r.get("_groups") or [])]
     used = {c["column"] for c in cols}
     n_groups = int(r.get("duplicate_groups") or 0)
     blocked = bool(n_groups) and bq.exact_duplicate_policy == "BLOCK"
@@ -761,15 +776,17 @@ def _dup_finish(bq, snap: dict | None, start: date, end: date, rows: list[dict],
            "source_label": (f"SQL v{snap.get('version_id')} ({(snap.get('sha256') or '')[:12]})" if _is_sql(snap)
                             else "TABLE"),
            "checked_at": now_iso(), "checked_at_vn": now_vn().strftime("%d/%m/%Y %H:%M:%S"), "estimated_bytes": est,
-           # pending orders without order code (PENDING_STATUSES): identical_* = how many of them the mapped columns
-           # cannot tell apart (separate orders when they differ in another source column: kept, never blocking);
-           # duplicate_* = the ones identical in EVERY source column (already inside duplicate_groups: blocking)
-           "pending_no_order_code": {"applies": _pending_expr(bq) != "FALSE", "statuses": list(PENDING_STATUSES),
-                                     "rows": int(r.get("pending_rows") or 0), "qty": _num(r.get("pending_qty")) or 0.0,
-                                     "identical_groups": int(r.get("pending_identical_groups") or 0),
-                                     "identical_rows": int(r.get("pending_identical_rows") or 0),
-                                     "duplicate_groups": int(r.get("pending_duplicate_groups") or 0),
-                                     "duplicate_rows": int(r.get("pending_duplicate_rows") or 0)}}
+           # pending orders (PENDING_STATUSES), exempt from the rule: kept and counted apart, never in duplicate_groups.
+           # identical_* = pending rows identical in the compared columns, whole_row_* = identical in EVERY source
+           # column (a join fan-out would look like this: reported, not blocking - owner rule 21/10/2026)
+           "pending_orders": {"applies": _pending_expr(bq) != "FALSE", "statuses": list(PENDING_STATUSES),
+                              "exempt": True, "rows": int(r.get("pending_rows") or 0),
+                              "qty": _num(r.get("pending_qty")) or 0.0,
+                              "without_order_code_rows": int(r.get("pending_without_code_rows") or 0),
+                              "identical_groups": int(r.get("pending_identical_groups") or 0),
+                              "identical_rows": int(r.get("pending_identical_rows") or 0),
+                              "whole_row_groups": int(r.get("pending_whole_row_groups") or 0),
+                              "whole_row_rows": int(r.get("pending_whole_row_rows") or 0)}}
     if n_groups:
         chk["report"] = dup_report.write(chk)
     with db.tx() as c:
@@ -912,7 +929,7 @@ def _validation_sqls(bq, start: date, end: date, snap: dict | None = None) -> di
     refs = _mapped_refs(bq)
     al = _aliases(bq, with_refs=True)
     checked = (f"WITH src AS ({_src_cte(bq, True, snap=snap)}), checked AS (SELECT {', '.join(al)}, _order_date, _key, "
-               f"_praw, {_REASON} AS _reason FROM src)")
+               f"_pend, {_REASON} AS _reason FROM src)")
     upd = "source_updated_at" if _col(bq, "source_updated_at") else None
     excl = "".join(f"COUNTIF(_reason = '{r}') AS excl_rows_{r.lower()}, "
                    f"SUM(IF(_reason = '{r}', order_qty, 0)) AS excl_qty_{r.lower()}, " for r in EXCLUSION_REASONS)
@@ -936,7 +953,7 @@ def _validation_sqls(bq, start: date, end: date, snap: dict | None = None) -> di
                f"MIN(_order_date) AS min_date, MAX(_order_date) AS max_date, COUNT(DISTINCT _order_date) AS n_days, "
                f"COUNT(DISTINCT sku_id) AS n_sku, COUNT(DISTINCT fc_id) AS n_fc, "
                f"COUNT(DISTINCT CONCAT(CAST(sku_id AS STRING), '|', CAST(fc_id AS STRING))) AS n_series, "
-               f"{_exact_dup_rows_expr('c0')} AS exact_duplicate_rows, {dup_key}, "
+               f"{_exact_dup_rows_expr(bq)} AS exact_duplicate_rows, {dup_key}, "
                + (f"MAX(source_updated_at) AS max_source_updated_at" if upd else "NULL AS max_source_updated_at")
                + f"{ref_parts}\nFROM checked AS c0")
     days = (f"{checked}\nSELECT _order_date AS d, CAST(fc_id AS STRING) AS fc_id, COUNT(*) AS n_rows, "
@@ -1181,13 +1198,11 @@ def validation_ok_for_current(conn=None) -> bool:
 
 # ------------------------------------------------------------------ daily load
 def _daily_sql(bq, start: date, end: date, snap: dict | None = None) -> tuple[str, list]:
-    # reference columns are read too, so "exact duplicate" means the same thing as in validate_source:
-    # identical in EVERY mapped column (key + reference), not only in the key columns; a pending order without order
-    # code is compared on its whole source row (_praw, PENDING_STATUSES): counted, and dropped by DROP_EXACT, only
-    # when identical in every source column
+    # reference columns are read too, so "exact duplicate" means the same thing as in validate_source and the gate:
+    # identical in EVERY compared column (dup_columns: key + reference, except item_code), not only in the key columns;
+    # a pending order (PENDING_STATUSES, _pend) is exempt: never counted as a duplicate, never dropped by DROP_EXACT
     al = _aliases(bq, with_refs=True)
     drop = bq.exact_duplicate_policy == "DROP_EXACT"
-    pend = _pending_expr(bq)
     fnull = "CAST(NULL AS FLOAT64)"   # typed NULLs keep the UNION ALL column types unambiguous
     up = "unit_price" if _col(bq, "unit_price") else fnull
     disc = "discount_amount" if _col(bq, "discount_amount") else fnull
@@ -1213,9 +1228,14 @@ def _daily_sql(bq, start: date, end: date, snap: dict | None = None) -> tuple[st
         ", CAST(NULL AS INT64) AS open_hours_items, CAST(NULL AS INT64) AS open_hours_item_values, "
         "CAST(NULL AS INT64) AS open_hours_no_item_rows")
     cols = ", ".join(al) + ", _order_date, _key"
-    kept = f"SELECT {'DISTINCT ' if drop else ''}{cols} FROM src"
-    if drop and pend != "FALSE":
-        kept = f"SELECT {cols} FROM (SELECT DISTINCT {cols}, _praw FROM src)"
+    kept = f"SELECT {cols} FROM src"
+    if drop:
+        # one row per group of identical compared columns among the non-pending rows (the first by its full value, so
+        # the result is deterministic); every pending row is kept. PARTITION BY a STRING (FLOAT64 is not allowed there)
+        cmp = ", ".join(c["alias"] for c in dup_columns(bq))
+        kept = (f"SELECT {cols} FROM src WHERE _pend UNION ALL SELECT {cols} FROM (SELECT {cols}, ROW_NUMBER() OVER ("
+                f"PARTITION BY TO_JSON_STRING(STRUCT({cmp})) ORDER BY TO_JSON_STRING(STRUCT({cols}))) AS _rn "
+                f"FROM src WHERE NOT _pend) WHERE _rn = 1")
     nulls = "CAST(NULL AS DATE), CAST(NULL AS STRING), CAST(NULL AS STRING)"
     keydup = "CAST(COUNT(*) - COUNT(DISTINCT _key) AS STRING)" if _key_expr(snap) else "'NO_KEY'"
     valid = f"""SELECT 'VALID' AS _kind, CAST(NULL AS STRING) AS _reason, _order_date AS order_date, CAST(sku_id AS STRING) AS sku_id,
@@ -1255,7 +1275,7 @@ SELECT 'EXCLUDED', _reason, {nulls}, SUM(order_qty), NULL, NULL, NULL, NULL, NUL
   NULL, NULL, NULL{more_nulls}
 FROM checked WHERE _reason IS NOT NULL GROUP BY 2
 UNION ALL
-SELECT 'TOTAL_READ', CAST({_exact_dup_rows_expr('s')} AS STRING), {nulls}, SUM(order_qty),
+SELECT 'TOTAL_READ', CAST({_exact_dup_rows_expr(bq)} AS STRING), {nulls}, SUM(order_qty),
   NULL, NULL, NULL, NULL, NULL, NULL, NULL, COUNT(*), NULL, NULL, NULL, NULL, NULL, NULL{more_nulls} FROM src AS s
 UNION ALL
 SELECT 'TOTAL_KEPT', {keydup}, {nulls}, SUM(order_qty), NULL, NULL, NULL, NULL, NULL, NULL, NULL, COUNT(*),

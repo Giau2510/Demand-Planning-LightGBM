@@ -107,10 +107,12 @@ def test_daily_query_selects_mapped_columns_with_partition_filter():
     assert "`sku` AS sku_id" in sql and "SELECT *" not in sql.split("checked AS")[0]
     assert "DATE(`dt`) BETWEEN" in sql and "Asia/Ho_Chi_Minh" in sql
     # 1.1.5: exact duplicate rows are never dropped silently; only the explicit DROP_EXACT policy de-duplicates
-    assert "SELECT DISTINCT" not in sql
+    # (1.2.11: one row per group of identical compared columns, pending orders all kept - test_v129h_pending_orders_grain)
+    assert "SELECT DISTINCT" not in sql and "_rn = 1" not in sql
     ss.update("bigquery", {"exact_duplicate_policy": "DROP_EXACT"})
     connector.fetch_daily(date(2026, 1, 1), date(2026, 1, 2))
-    assert "SELECT DISTINCT" in fake.queries[-1][0]
+    assert "ROW_NUMBER() OVER (PARTITION BY TO_JSON_STRING(STRUCT(" in fake.queries[-1][0]
+    assert "WHERE _rn = 1" in fake.queries[-1][0]
 
 
 PASSING_VALIDATION = {

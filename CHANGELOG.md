@@ -5,6 +5,43 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.2.11 - 2026-10-21 (duplicate rule by order status; item_code never a uniqueness criterion) [reports/release-1.2.11-20261021/FINAL_REPORT.md]
+
+No migration (schema 9, as 1.2.10), no settings change, no change of any default. Rollback to 1.2.10 =
+`rollback-version.ps1 -To 1.2.10` without a restore (same schema).
+
+* **Pending orders are exempt from the exact-duplicate rule** (owner rule 21/10/2026; supersedes fix 7.1 of 1.2.10):
+  rows of status `WAIT_TO_CONFIRM` (`connector.PENDING_STATUSES`, compared after `UPPER(TRIM())`, **with or without**
+  `so_code`) are never a duplicate - the gate, the full-period validation and the D-1 control rows do not count them,
+  `DROP_EXACT` keeps all of them; no order code is required or invented, rows are never merged, a repeated
+  `customer_id` or other matching columns are no reason to reject them. They are counted apart (`pending_orders`: rows,
+  quantity, rows without order code, rows identical in every compared column, rows identical in EVERY source column -
+  informative, the sign of a possible join fan-out; BigQuery page, duplicate report Summary). Fix 7.1 blocked pending
+  rows identical in every source column; they are now exempt by the owner's rule.
+* **item_code is never a uniqueness criterion**: rows of every other status keep the exact-duplicate protection on the
+  compared columns = the mapped columns except `item_code` (`connector.DUP_NOT_COMPARED_FIELDS`); two order lines that
+  differ only in their item code (e.g. one line fanned out over the SKU's listings by a join) are duplicates. The
+  status is a compared column, so a group never mixes pending and other statuses. `DROP_EXACT` keeps one row per group
+  (`ROW_NUMBER` over the compared columns, deterministic) and every pending row. The D-1 aggregation and the validation
+  no longer read the whole source row (1.35 GB instead of 1.70 GB on the 21/10 table); the gate still does (1.70 GB).
+  Real table 01/01-20/10 (21/10 07:10 snapshot): 0 duplicate groups; 904 pending rows / 12,933 units exempt (46 groups /
+  136 rows identical in the compared columns, 0 identical in every source column); comparing item_code too also gives 0
+  non-pending groups.
+* Tests: `test_v129h_pending_orders_grain.py` rewritten for the rule (+ proof that whether an open-hours key blocks never
+  depends on its item codes), `test_v129h_real_bq_pending_grain.py` (+2 real BigQuery: an order line fanned out over item
+  codes blocks; mixed statuses / status spelling; pending rows identical in every source column, with an order code and
+  with a repeated customer are exempt; DROP_EXACT), `test_bq_real_semantics.py`, `test_v118_bq_ingest.py`,
+  `test_bigquery.py`, `v129h-pending.test.tsx`.
+* **The 6 `MULTI_ITEM` keys stay blocked (owner decision 21/10/2026).** Read-only check of the 21/10 07:10 source: each
+  key = two items of the SKU that are its listings in two sales regions (source column `sales_region_code`, never the
+  suffix), fulfilled by the same FC; an item's `total_open_hours` = time in status `NORMAL` or `LIMIT` that day (rebuilt
+  from the item status log on 2,190 / 2,191 item-days). No JOIN fan-out, no inconsistent value, no mapping error; no
+  aggregation rule exists in the source or the repository, so none is applied: the BIGQUERY training keeps stopping with
+  `OPEN_HOURS_INVALID`. New regression tests `test_v1210_multi_item_open_hours.py` (the six real patterns, the other-FC
+  keys, one value for valid keys, inconsistent hours detected, demand kept, training gate) and
+  `test_v1210_real_bq_multi_item_regions.py` (real BigQuery on inline rows: FC from `fc_code`, statuses, quantities, the
+  customer-count join changes nothing). Docs: [docs/BIGQUERY.md](docs/BIGQUERY.md) 11f, DATA-MODEL, `open_hours.py` note.
+
 ## 1.2.10 - 2026-10-21 (restore D-1: pending orders without order code compared on the whole source row; faster whole-scope reads) [reports/master-audit-20261021/FINAL_REPORT.md, release: reports/fix71-restore-d1-20261021/FINAL_REPORT.md]
 
 Contains everything of 1.2.9 (never installed) plus the master audit of 21/10/2026 and fix 7.1. No migration beyond

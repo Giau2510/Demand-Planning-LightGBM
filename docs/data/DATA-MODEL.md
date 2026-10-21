@@ -122,7 +122,7 @@ Guarantees verified in code and tests:
 | One ACTIVE DEMO batch | `data_source='DEMO' AND status='ACTIVE'` | partial UNIQUE index (0002) |
 | Order line | grain order_id x SKU x FC within a batch | import validation: exact duplicates -> `DUPLICATE`, grain conflicts -> ERROR or SUM (`import.grain_conflict_policy`, default ERROR). Not a DB constraint |
 | Daily demand | scope_key x order_date x SKU x FC | PK |
-| BigQuery rows | candidate key (order, SKU, FC, date) derived from the mapping, or `sql_sources.*.key_columns` | key gate in `bq/connector.py` (BLOCK by default -> `BQ_KEY_NOT_UNIQUE`); exact duplicates per `exact_duplicate_policy` (BLOCK/KEEP/DROP_EXACT); rows with a NULL order reference and status `WAIT_TO_CONFIRM` (`connector.PENDING_STATUSES`) are compared on the whole source row: rows that differ in any source column are separate orders, kept and counted apart (owner rule 21/10/2026); rows identical in every source column stay exact duplicates (1.2.10, fix 7.1) |
+| BigQuery rows | candidate key (order, SKU, FC, date) derived from the mapping, or `sql_sources.*.key_columns` | key gate in `bq/connector.py` (BLOCK by default -> `BQ_KEY_NOT_UNIQUE`); exact duplicates per `exact_duplicate_policy` (BLOCK/KEEP/DROP_EXACT); 1.2.11 (owner rule 21/10/2026, supersedes fix 7.1 of 1.2.10): rows of status `WAIT_TO_CONFIRM` (`connector.PENDING_STATUSES`, with or without order reference) are exempt from the exact-duplicate rule - kept and counted apart; every other row is compared on the mapped columns except `item_code` (never a uniqueness criterion) |
 | Forecast value | run x SKU x FC x target_date | PK + immutability triggers |
 | D0 value | snapshot x SKU x FC | PK + no-update trigger |
 | Job | `idempotency_key` (e.g. `D0_SYNC:2026-10-15T16:00`) | UNIQUE |
@@ -141,8 +141,12 @@ training stops (`OPEN_HOURS_INVALID`) while any row of the data window is not OK
 values, value-only-when-OK, BIGQUERY-only and reports the window state (`open_hours_*`).
 1.2.9b: `MULTI_ITEM` = the lines differ only between items (open hours are measured per item code `<sku_code>.<n>` and
 day; several items of the SKU served by the FC that day). The suffix `<n>` is the order in which the SKU was opened for
-sale in the regions, not a region code (owner, 20/10/2026): nothing (FC, region, hours) is inferred from it. No value at
-this grain, still not OK for the training until an aggregation rule is approved. Model-input start rule `data_policy.training_start_rule`:
+sale in the regions, not a region code (owner, 20/10/2026; 21/10/2026: the warehouse where the SKU was first created,
+not the one fulfilling the order): nothing (FC, region, hours) is inferred from it. No value at this grain, still not OK
+for the training until an aggregation rule is approved. 21/10/2026 (read-only, docs/BIGQUERY.md 11f): the 6 MULTI_ITEM
+keys of the source are two items = the SKU's listings in two sales regions (source column `sales_region_code`, not the
+suffix) fulfilled by the same FC; an item's hours = time in status NORMAL or LIMIT that day. The owner decided to keep
+them blocked (no aggregation rule). Model-input start rule `data_policy.training_start_rule`:
 `OPEN_HOURS_COVERAGE` starts training, backtest, forecast panel and the checks at the first STORED day with open hours
 (computed from the rows at each use); the earlier days stay stored and loaded (never deleted), each run records what was
 left out (`data_window.excluded_summary`).

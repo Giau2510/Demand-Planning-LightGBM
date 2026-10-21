@@ -22,8 +22,9 @@ spec.loader.exec_module(rp)
     ("GET", "/api/health", None), ("GET", "/api/dashboard?horizon=7", None), ("GET", "/api/system/status", None),
     ("GET", "/api/forecast-runs/FCR-20261017-1/values?limit=50", None),
     ("GET", "/api/forecast-runs/FCR-1/export.xlsx?lang=vi", None), ("GET", "/api/snapshots/SNP-1", None),
-    ("GET", "/api/schedules", None), ("GET", "/api/data-quality", None), ("GET", "/api/data-quality?refresh=false", None),
-    ("HEAD", "/api/health", None),
+    ("GET", "/api/schedules", None), ("GET", "/api/data-quality/history", None), ("HEAD", "/", None),
+    ("HEAD", "/api/health", (405, "REMOTE_READ_ONLY")),                     # 1.2.11: no /api handler for a HEAD
+    ("GET", "/api/data-quality", (403, "REMOTE_FORBIDDEN")),                # 1.2.11: can INSERT a report (cache miss)
     ("POST", "/api/training/run", (405, "REMOTE_READ_ONLY")), ("PUT", "/api/settings/model", (405, "REMOTE_READ_ONLY")),
     ("DELETE", "/api/imports/X", (405, "REMOTE_READ_ONLY")), ("POST", "/api/system/shutdown", (405, "REMOTE_READ_ONLY")),
     ("OPTIONS", "/api/health", (405, "REMOTE_READ_ONLY")),
@@ -65,7 +66,8 @@ def test_every_read_of_the_viewing_pages_passes():
     assert "/api/forecast-runs/X1/summary" in used and "/api/system/status" in used
     by_design = {"/api/settings/X1/history",                     # administration history: not remote
                  "/api/schedules/X1/preview",                    # 1.2.6 operator dry run: local only (proxy unchanged)
-                 "/api/sync/backfill/preview"}                   # 1.2.9 backfill preview: operator only (proxy unchanged)
+                 "/api/sync/backfill/preview",                   # 1.2.9 backfill preview: operator only (proxy unchanged)
+                 "/api/data-quality"}                            # 1.2.11: stores a report on a cache miss (history stays open)
     blocked = sorted(p for p in used - by_design if rp.classify("GET", p) is not None)
     assert blocked == [], blocked
     assert all(rp.classify("GET", p) for p in by_design)
@@ -156,8 +158,10 @@ def test_html_gets_the_read_only_banner_and_noindex(stack):
     html = data.decode("utf-8")
     assert st == 200 and 'id="df-remote-banner"' in html and "CHỈ ĐỌC" in html and 'name="robots"' in html
     assert int(h["Content-Length"]) == len(data)
-    st, h, data = _req(px, "HEAD", "/api/health")
+    st, h, data = _req(px, "HEAD", "/assets/index-abc.js")
     assert st == 200 and data == b""
+    st, h, data = _req(px, "HEAD", "/api/health")
+    assert st == 405
 
 
 def test_rate_limit_app_down_and_local_bind_only():

@@ -176,12 +176,12 @@ def test_duplicate_query_compares_every_mapped_column_and_filters_no_row():
     cols = connector.dup_columns(bq)
     assert {c["column"] for c in cols} >= {"so_code", "created_date", "sku_code", "fc_code", "demand_quantity",
                                            "sales_price", "outbound_quantity", "order_status", "seller_code",
-                                           "item_code", "product_id"}
+                                           "product_id"}
+    assert "item_code" not in {c["column"] for c in cols}        # 1.2.11: never a uniqueness criterion
     sql = connector._dup_sql(bq, {"mode": "TABLE", "key_columns": [], "key_duplicate_policy": "SUM_ALL"})
     group_by = sql.split("GROUP BY ", 1)[1].split("\n", 1)[0]
-    # native values, all columns; + _praw (fix 7.1): the whole source row of a pending order without order code, NULL
-    # for every other row
-    assert [x.strip() for x in group_by.split(",")] == [c["alias"] for c in cols] + ["_praw"]
+    # native values, every compared column (1.2.11: pending orders are exempt through _pending, not through the key)
+    assert [x.strip() for x in group_by.split(",")] == [c["alias"] for c in cols]
     where = sql.split(" WHERE ", 1)[1].split("\n", 1)[0]
     assert "IS NOT NULL" not in where and "order_status" not in where                    # only the date window
     assert "ORDER BY " + ", ".join(c["alias"] for c in cols) in sql                       # stable group numbering

@@ -667,3 +667,20 @@ every gate passes; no push, no training, no promotion, no schedule change). Repo
 | Production | DEPLOYED | verified backup backup-20261021-120556-manual.zip (6DE2BA71...BC46); deploy-upgrade 12:09-12:18 exit 0 (backup 121031 AEFEA751...601F); preview BFP-20261021051921-51731D READY; backfill JOB-20261021052939-2D9CCE (pre-backfill backup 123506 978F86D2...C14E); app = source 1,357,876 keys / 42,009,957 qty; 292 days finalized; close revisions 18/10 r4, 19/10 r3; D-1 dry run READY |
 | Open | OWNER | 6 MULTI_ITEM keys block BIGQUERY training (OPEN_HOURS_INVALID) from 22/10 07:00; 20/10 not loaded until the next D-1 (06:00 may hit SOURCE_INCOMPLETE if the source rebuilds after 06:38) |
 | Checkpoint after | DONE | `checkpoints/checkpoint-20261021-fix71-after.zip` SHA-256 190F1A205D8E8B364884016E7A99CC3312EF22D501286A4F2215D5BDE6CC9F1D (115 entries, verified) |
+
+# MULTI_ITEM open hours -> D-1 -> training (2026-10-21 14:10 - 15:40) - training BLOCKED by owner decision
+
+Owner prompt "EXECUTE NOW - FIX MULTI_ITEM OPEN HOURS -> RUN D-1 -> TRAIN TODAY" (no push, no schedule / target / grain /
+customer_id change, training candidate allowed only when every gate passes, no promotion). Reports:
+`reports/multi-item-d1-20261021/` (FINAL_REPORT, TEST_RESULTS, DATA_RECONCILIATION, RESUME_CHECKPOINT + 10-sheet workbook).
+Status BLOCKED_DATA_SAFETY at Gate D (training); Gates A-C passed. Uncommitted: 2 new test files, `open_hours.py` note,
+docs (BIGQUERY.md 11f, DATA-MODEL, CHANGELOG Unreleased, this section).
+
+| Step | Status | Evidence |
+|---|---|---|
+| Gate A | DONE | production 1.2.10 PID 30096, 0 active jobs, storage.json unchanged; source rebuilt 21/10 07:10:38 (table description: PIC giau.vo, refresh 07h00); backup `backup-20261021-145525-cli.zip` 8DB29115...D0F2 verified (integrity ok, schema 9); checkpoint `checkpoints/checkpoint-20261021-multiitem-d1-before.zip` 94FBBB73...288F |
+| Gate B | DONE (classification) | the 6 keys = two items = the SKU's listings in two sales regions (`sales_region_code`, not the suffix), same FC; item hours = time in NORMAL / LIMIT (rebuilt 2,190 / 2,191 item-days); no join fan-out, no inconsistency, no mapping error; no aggregation rule in source / repo -> owner decided: keep blocked. Tests +20 offline / +2 real-BQ inline; backend 683 passed / 17 skipped; vitest 155; typecheck + build OK |
+| Gate C | DONE | dry run READY = independent recon (3,037 new, 0 changed, 0 removed); D-1 `JOB-20261021081102-643FC7` 15:11:02-15:11:58 SUCCEEDED; app = source 16/10-20/10 (15,115 keys / 385,502) and 01/01-20/10 (1,360,913 / 42,088,223); 293 days finalized; close 20/10 r2 |
+| Gate D | BLOCKED | `OPEN_HOURS_INVALID` (6 MULTI_ITEM rows 09/02-26/08), shown on an isolated copy (409, nothing written); no training, model `TRN-20261020054540-D7EEF6` / forecast `FCR-20261020082402-A42C91` unchanged; 07:00 slot SKIPPED |
+| Open | OWNER | open-hours rule for multi-listing keys (or source value at SKU x FC); training 22/10 07:00 will fail OPEN_HOURS_INVALID; D-1 06:00 vs source refresh ~07:10; commit approval |
+| Checkpoint after | DONE | `checkpoints/checkpoint-20261021-multiitem-d1-after.zip` SHA-256 F0B2B69B240E653B596B5284A8BB870BE56287972B8A9FA75AD55162C548A80B (58 entries: diff, 2 new tests, 8 sources, reports + workbook, scratchpad p27; verified) |

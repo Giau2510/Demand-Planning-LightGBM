@@ -102,10 +102,10 @@ export function DupCounts({ d }: { d: any }) {
       <table className="tbl small"><tbody>
         <tr><td>{t("bq.dup_rows_checked")}</td><td className="num">{fmtNum(d.rows_checked)}</td><td>{t("bq.dup_groups")}</td><td className="num">{fmtNum(d.duplicate_groups)}</td></tr>
         <tr><td>{t("bq.dup_rows")}</td><td className="num">{fmtNum(d.duplicate_rows)}</td><td>{t("bq.dup_extra")}</td><td className="num">{fmtNum(d.extra_duplicate_rows)}</td></tr>
-        {d.pending_no_order_code?.rows > 0 && <tr data-testid="bq-dup-pending"><td>{t("bq.dup_pending")}</td><td className="num">{fmtNum(d.pending_no_order_code.rows)}</td><td>{t("bq.dup_pending_identical")}</td><td className="num">{fmtNum(d.pending_no_order_code.identical_rows)}</td></tr>}
-        {d.pending_no_order_code?.duplicate_rows > 0 && <tr data-testid="bq-dup-pending-whole"><td colSpan={3}>{t("bq.dup_pending_whole_row")}</td><td className="num">{fmtNum(d.pending_no_order_code.duplicate_rows)}</td></tr>}
+        {d.pending_orders?.rows > 0 && <tr data-testid="bq-dup-pending"><td>{t("bq.dup_pending")}</td><td className="num">{fmtNum(d.pending_orders.rows)}</td><td>{t("bq.dup_pending_identical")}</td><td className="num">{fmtNum(d.pending_orders.identical_rows)}</td></tr>}
+        {d.pending_orders?.whole_row_rows > 0 && <tr data-testid="bq-dup-pending-whole"><td colSpan={3}>{t("bq.dup_pending_whole_row")}</td><td className="num">{fmtNum(d.pending_orders.whole_row_rows)}</td></tr>}
       </tbody></table>
-      {d.pending_no_order_code?.rows > 0 && <p className="small muted">{t("bq.dup_pending_note")}</p>}
+      {d.pending_orders?.rows > 0 && <p className="small muted">{t("bq.dup_pending_note")}</p>}
       <p className="small muted">{t("bq.dup_compared")} ({d.columns?.length ?? 0}): <span className="mono">{(d.columns ?? []).map((c: any) => c.column).join(", ")}</span>
         {d.not_compared?.length > 0 && <> · {t("bq.dup_not_compared")}: <span className="mono">{d.not_compared.join(", ")}</span></>}</p>
       <DupReport rep={d.report} />

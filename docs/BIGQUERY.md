@@ -211,8 +211,9 @@ Toàn bộ quy tắc nằm ở đây; không có quy tắc nào khác.
 
    Mỗi lý do có số dòng và tổng số lượng riêng. Dòng thiếu ngày nằm ngoài mọi khoảng ngày nên được đếm riêng (`NULL_DATE`).
 3. **Tổng hợp về SKU × FC × ngày:** `qty = Σ demand_quantity` của các dòng hợp lệ. `n_orders = số so_code khác nhau`. Không cộng cột số nào khác; giá không được cộng.
-4. **Dòng trùng hoàn toàn** là dòng giống nhau ở **mọi cột đã ánh xạ**. Chính sách xử lý (`exact_duplicate_policy`):
-   - `BLOCK` (mặc định): báo cáo và chặn kiểm tra/đồng bộ (trừ đơn chờ xác nhận chưa có mã đơn, mục 13);
+4. **Dòng trùng hoàn toàn** là dòng giống nhau ở **mọi cột đã ánh xạ, trừ `item_code`** (1.2.11). Dòng của đơn chờ
+   xác nhận (`WAIT_TO_CONFIRM`) được miễn (mục 13). Chính sách xử lý (`exact_duplicate_policy`):
+   - `BLOCK` (mặc định): báo cáo và chặn kiểm tra/đồng bộ;
    - `KEEP`: cộng như dữ liệu nguồn;
    - `DROP_EXACT`: loại bỏ và báo cáo số dòng đã loại.
 5. **Đối chiếu bắt buộc:**
@@ -484,6 +485,34 @@ Trên DuckDB với dữ liệu tổng hợp, phiên bản 2 cho cùng các dòng
   xạ và thời điểm chụp, và chỉ với ngày trước mốc dự báo.
 - Mọi dòng của bảng nguồn có seller `MEDX` / `INTERNAL` (1 seller mỗi tháng).
 
+## 11f. Sáu khóa `MULTI_ITEM`: nguồn gốc giờ mở bán và quyết định giữ chặn (kiểm tra chỉ đọc 21/10/2026, bản làm mới 07:10:38)
+
+- Mô tả bảng nguồn: `PIC:giau.vo`, `created_date >= 2026-01-01`, `refresh 07h00`. Bản 21/10 07:10:38 (8.979.752 dòng,
+  01/01–20/10) có đúng 6 khóa ngày × SKU × FC nhiều giá trị giờ (09/02 HN, 10/02 HN, 02/03 BD × 2, 26/08 BD × 2; 39 dòng,
+  156 đơn vị); ngày 20/10 không có khóa nào.
+- **Giờ mở bán của một item** = số giờ trong ngày (giờ Việt Nam) item ở trạng thái `NORMAL` hoặc `LIMIT` theo nhật ký đổi
+  trạng thái `staging_sku_status_history` (`OUT_OF_STOCK` / `SUSPENDED` = đóng): dựng lại khớp `total_open_hours` ở
+  2.190 / 2.191 item-ngày năm 2026 của 6 SKU (tới 0,01 h; 2.191 / 2.191 trong 0,02 h); ngày 26/08 khớp cả với khoảng
+  `start_at` / `end_at` của `fact_sku_status_day_by_date`. Định nghĩa này là quan sát chỉ đọc, không phải tài liệu nguồn.
+- Theo cột nguồn `sales_region_code` của `fact_sku_status_day_by_date`, mỗi item của 6 SKU là listing của SKU ở **một miền
+  bán** (MIENNAM / MIENBAC); đơn của cả hai listing được xuất từ cùng `fc_code` trong ngày đó. Miền lấy từ cột nguồn,
+  **không** từ hậu tố (chủ hệ thống 21/10/2026: hậu tố `.1`, `.2`, `.3` cho biết kho nơi SKU được tạo ban đầu, không phải
+  kho thực hiện đơn; không suy ra FC, miền hay giờ từ hậu tố).
+- Phân loại cả 6 khóa: **nhiều item hợp lệ** trong cùng khóa. Không nhân dòng do join (số dòng = số đơn khác nhau, cổng
+  trùng đọc dòng thô), không có giờ mâu thuẫn (mỗi item một giá trị, giống nhau ở mọi FC), không lỗi ánh xạ / khóa (khóa
+  `sku_code` × `fc_code`; cùng SKU ở FC kia chỉ có một item nên `OK` đúng giá trị item đó).
+- Nguồn và repository **không** có quy tắc gộp giờ của hai listing về một giá trị SKU × FC. **Chủ hệ thống quyết định
+  21/10/2026: giữ chặn** - 6 khóa giữ `open_hours` NULL / `MULTI_ITEM`, số lượng giữ nguyên, huấn luyện BIGQUERY dừng
+  `OPEN_HOURS_INVALID`, model / forecast đang dùng giữ nguyên. Giá trị các quy tắc ứng viên (chỉ tham khảo, không áp dụng)
+  và toàn bộ dòng nguồn: `reports/multi-item-d1-20261021/` (ngoài Git). Test: `test_v1210_multi_item_open_hours.py`,
+  `test_v1210_real_bq_multi_item_regions.py` (BigQuery thật, opt-in).
+- **Kiểm tra lại cho bản 1.2.11 (chỉ đọc, cùng bản 07:10:38):** `item_code` không là khóa và không tự chặn: 101 khóa
+  ngày × SKU × FC có nhiều item (tháng 2: 35, tháng 3: 55, 26/08: 11), 95 khóa cùng giờ → `OK`; chỉ 6 khóa có giờ khác
+  nhau giữa các listing → không có giá trị SKU × FC. Bảng `fact_classification_sku_history` (PIC khác) gắn đúng **một**
+  listing cho mỗi FC × SKU × tháng (180.854 dòng) - nhưng thiếu 1-43% khóa D-1 mỗi tháng, 184 FC × SKU × tháng gắn listing
+  của miền kia, và dùng nó sẽ đổi giá trị của 19 khóa một item: **không** phải quy tắc đã xác minh cho giờ mở bán ngày.
+  Quy tắc gộp vẫn chờ chủ hệ thống; huấn luyện BIGQUERY vẫn dừng `OPEN_HOURS_INVALID`.
+
 ## 12. Bảng nguồn thật — kiểm tra chỉ đọc ngày 16/10/2026 (11:20, giờ Việt Nam)
 
 Đọc bằng đường xác thực của chính ứng dụng (ADC của tài khoản Windows chạy ứng dụng), trên bản sao DB; chỉ metadata và
@@ -528,21 +557,25 @@ Chưa có trong bản cài 1.1.8; cần một bản phát hành mới (xem `CHAN
   (không âm thầm so ít cột hơn).
 - Số đếm: `duplicate_groups` (số nhóm), `duplicate_rows` (tổng số dòng thuộc các nhóm), `extra_duplicate_rows`
   (số dòng dư nếu mỗi nhóm giữ 1).
-- **Ngoại lệ - đơn chờ xác nhận chưa có mã đơn** (chủ hệ thống, 21/10/2026; phát hành ở 1.2.10): đơn `WAIT_TO_CONFIRM`
-  chưa được cấp mã nên `so_code` NULL là bình thường. Nguồn dựng lại 20/10 22:18 có 307 dòng như vậy; 67 dòng (18 nhóm,
-  16/10 và 19/10) giống nhau ở cả 15 cột ánh xạ; nguồn dựng lại 21/10 07:10 có 904 dòng, 136 dòng (46 nhóm, 16/10, 19/10,
-  20/10) giống nhau ở 15 cột - trong mọi nhóm mỗi dòng thuộc một khách khác nhau và khác nhau ở toàn bộ dòng nguồn (kiểm toán
-  chỉ đọc). Dòng có trường đơn hàng (`order_id`) NULL **và** trạng thái (`order_status`) thuộc `connector.PENDING_STATUSES`
-  (`WAIT_TO_CONFIRM`) được so sánh trên **toàn bộ dòng nguồn** (mọi cột của bảng / SQL, kể cả cột không ánh xạ như
-  `customer_id`; sửa 7.1): khác nhau ở bất kỳ cột nguồn nào là **đơn riêng** - giữ và cộng như mọi dòng, không chặn,
-  `DROP_EXACT` không loại, đếm riêng (`pending_no_order_code`: số dòng, số lượng, số nhóm / dòng chỉ giống ở cột ánh xạ);
-  giống nhau ở **mọi** cột nguồn thì không phân biệt được với trùng thật hay nhân dòng do join nên **vẫn là trùng hoàn toàn**
-  (`pending_no_order_code.duplicate_*`, chặn, báo cáo ghi `compared_on = whole source row`). Không cột nào (kể cả
-  `customer_id`) được dùng làm mã đơn; dòng nguồn không rời BigQuery (chỉ nhóm / đếm). Mọi dòng khác (có `so_code`, hoặc
-  `so_code` NULL ở trạng thái khác) giữ nguyên quy tắc trên các cột ánh xạ. Chỉ áp dụng khi cả `order_id` và `order_status`
-  được ánh xạ (khi đó cổng trùng và truy vấn tổng hợp đọc cả các cột không ánh xạ: 1,70 GB thay vì 1,35 GB mỗi truy vấn trên
-  bảng 21/10, bảng nguồn không phân vùng). Rủi ro còn lại: hai dòng nhân do join mà khác nhau ở một cột của bảng được join vẫn
-  là hai dòng khác nhau (app không có dòng gốc để so) - kiểm tra định kỳ bằng truy vấn kiểm toán.
+- **Quy tắc theo trạng thái đơn (chủ hệ thống, 21/10/2026; phát hành ở 1.2.11, thay sửa 7.1 của 1.2.10):**
+  - Dòng của đơn **chờ xác nhận** (`order_status` thuộc `connector.PENDING_STATUSES` = `WAIT_TO_CONFIRM`, so sánh sau
+    `UPPER(TRIM(...))`, **có hoặc chưa có** `so_code`) được **miễn** kiểm tra trùng: không chặn, `DROP_EXACT` không loại,
+    giữ đủ mọi dòng và số lượng; không cần `so_code`, không tạo mã đơn, không gộp đơn; trùng `customer_id` hay các cột
+    khác không phải lý do loại dòng. Các dòng này được đếm riêng (`pending_orders`: số dòng, số lượng, số dòng chưa có
+    `so_code`, nhóm / dòng giống nhau ở mọi cột so sánh, nhóm / dòng giống nhau ở **mọi cột nguồn** - dấu hiệu có thể là
+    nhân dòng do join, chỉ để theo dõi, không chặn).
+  - Dòng ở **mọi trạng thái khác** giữ nguyên bảo vệ: giống nhau ở mọi **cột so sánh** = trùng hoàn toàn (BLOCK chặn).
+    Cột so sánh = các cột ánh xạ **trừ `item_code`** (`connector.DUP_NOT_COMPARED_FIELDS`): item code (listing của SKU)
+    không bao giờ là tiêu chí phân biệt - hai dòng chỉ khác `item_code` là trùng (ví dụ một dòng đơn bị join nhân ra theo
+    các listing của SKU). Trạng thái đơn là một cột so sánh nên một nhóm không bao giờ trộn đơn chờ xác nhận và đơn khác.
+  - Không cột nào (kể cả `customer_id`, `item_code`) được dùng làm mã đơn. Chỉ áp dụng khi `order_status` được ánh xạ.
+  - Kiểm tra chỉ đọc bằng chính SQL của app trên bảng thật 01/01-20/10 (bản 21/10 07:10:38, 8.979.752 dòng): 0 nhóm trùng;
+    904 dòng chờ xác nhận / 12.933 đơn vị (tất cả chưa có `so_code`), 46 nhóm / 136 dòng giống ở mọi cột so sánh (mỗi
+    dòng một khách), 0 dòng giống ở mọi cột nguồn; so cả `item_code` cũng 0 nhóm ngoài đơn chờ xác nhận - bỏ `item_code`
+    khỏi phép so không đổi kết quả trên dữ liệu hiện tại. Chi phí: cổng trùng 1,70 GB (đọc toàn dòng của đơn chờ xác nhận
+    để đếm), truy vấn tổng hợp D-1 và kiểm tra toàn kỳ 1,35 GB (1.2.10: 1,70 GB).
+  - Rủi ro còn lại: nhân dòng do join giữa các đơn chờ xác nhận không bị chặn (đã được miễn, chỉ được đếm); nhân dòng ở
+    trạng thái khác mà các bản sao khác nhau ở một cột so sánh (ví dụ giờ mở bán của listing) vẫn là các dòng khác nhau.
 
 **Thứ tự xử lý của D-1 (`sync.run_d1_sync` → `connector.fetch_daily`):**
 1. Cấu hình + xác thực; chế độ sản xuất và kiểm tra toàn kỳ đạt cho ánh xạ hiện tại.

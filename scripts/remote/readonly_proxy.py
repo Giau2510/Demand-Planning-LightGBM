@@ -4,7 +4,8 @@ The tunnel (cloudflared Quick Tunnel) points HERE - http://127.0.0.1:<listen por
   * only GET / HEAD; any other method -> 405 REMOTE_READ_ONLY (no training, import, settings, sync, backup, shutdown);
   * /api: an allow-list of the read endpoints the dashboard pages use; everything else -> 403 REMOTE_FORBIDDEN
     (system paths, diagnostics, backups, audit, settings history, Google identity / OAuth, BigQuery status, uploads,
-    duplicate-report files, OpenAPI docs) and no query that starts heavy work (data-quality refresh);
+    duplicate-report files, OpenAPI docs) and no read that can write: 1.2.11 audit - GET /api/data-quality stores a
+    report when none is cached, so only /api/data-quality/history is open; HEAD is refused on /api (UI only);
   * JSON answers are scrubbed: local paths and path / identity fields are replaced, so no folder, account or
     credential location leaves the PC (the app never returns secrets; this removes the locations too);
   * the UI (index.html, /assets, SPA routes) is forwarded; '..', backslashes and encoded separators are refused;
@@ -28,7 +29,7 @@ import time
 import urllib.parse
 from collections import defaultdict, deque
 
-VERSION = "1.2.5"
+VERSION = "1.2.11"
 ID = r"[A-Za-z0-9][A-Za-z0-9_.-]{0,80}"
 FR = r"/api/forecast-runs/" + ID
 ALLOWED_API = [re.compile(p + r"\Z") for p in (
@@ -42,13 +43,13 @@ ALLOWED_API = [re.compile(p + r"\Z") for p in (
     FR + r"/shap-trace\.(xlsx|csv|json)",
     r"/api/training-runs", r"/api/training-runs/" + ID, r"/api/training-runs/" + ID + r"/backtest-points\.xlsx",
     r"/api/model/training-explain", r"/api/features/(catalog|registry)",
-    r"/api/data-quality", r"/api/data-quality/history",
+    r"/api/data-quality/history",                 # 1.2.11: /api/data-quality can INSERT a report (cache miss)
     r"/api/sql-sources", r"/api/bigquery/source-tables", r"/api/bigquery/d0-mapping",
     r"/api/imports", r"/api/imports/" + ID,
     r"/api/history/(overview|summary|rows|export\.xlsx)",       # 1.2.5: Forecast & actual history (GET, read-only)
 )]
 # query parameters that would start heavy work on a read endpoint
-DENIED_QUERY = {"/api/data-quality": {"refresh"}, "/api/system/health-check": {"full"}}
+DENIED_QUERY = {"/api/system/health-check": {"full"}}
 FORWARD_HEADERS = ("accept", "accept-language", "accept-encoding", "if-none-match", "if-modified-since", "range")
 HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding",
        "upgrade", "content-length", "server", "date"}
@@ -103,6 +104,8 @@ def classify(method: str, raw_path: str) -> tuple[int, str] | None:
     if path == "/__remote/health":
         return None
     if path.startswith("/api/") or path == "/api":
+        if method == "HEAD":                                # 1.2.11: never run an /api handler for a HEAD
+            return 405, "REMOTE_READ_ONLY"
         if not any(p.match(path) for p in ALLOWED_API):
             return 403, "REMOTE_FORBIDDEN"
         q = urllib.parse.parse_qs(parts.query)

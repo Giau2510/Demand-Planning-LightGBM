@@ -32,9 +32,8 @@ ROWS = [  # so_code, day, sku, qty, outbound, price, status
     ("'O7'", D1, "E", 20, 20, 3.0, "COMPLETED"), ("'O7'", D1, "E", 20, 20, 3.0, "COMPLETED"),  # 5: exact duplicate
     ("NULL", D1, "F", 1, None, 9.0, "WAIT_TO_CONFIRM"), ("NULL", D1, "F", 2, None, 9.0, "WAIT_TO_CONFIRM"),
     ("NULL", D1, "F", 10, None, 9.0, "WAIT_TO_CONFIRM"),                             # 7: NULL so_code, kept, summed
-    # 8 (owner rule 21/10/2026): pending orders without order code identical in every mapped column are NOT exact
-    # duplicates when another source column tells them apart (here customer_id, unmapped - fix 7.1 compares their whole
-    # source row): kept and summed, counted apart (connector.PENDING_STATUSES)
+    # 8 (owner rule 21/10/2026, 1.2.11): pending orders (WAIT_TO_CONFIRM) are exempt from the duplicate rule - rows
+    # identical in every compared column are kept and summed, counted apart (connector.PENDING_STATUSES)
     ("NULL", D1, "G", 3, None, 4.0, "WAIT_TO_CONFIRM"), ("NULL", D1, "G", 3, None, 4.0, "WAIT_TO_CONFIRM"),
     ("'O8'", D1, "H", 1, None, 2.0, "COMPLETED"), ("'O8'", D1, "H", 1, 0, 2.0, "COMPLETED"),  # 8: NULL is not 0
     ("'O9'", D2, "A", 1, 1, 10.0, "COMPLETED"),                                      # another day
@@ -72,9 +71,9 @@ def test_real_bigquery_exact_duplicates_only_when_every_mapped_column_is_equal()
     assert (chk["duplicate_groups"], chk["duplicate_rows"], chk["extra_duplicate_rows"]) == (2, 4, 2)
     found = {(g["values"]["order_id"], g["values"]["sku_id"], g["occurrences"]) for g in chk["groups"]}
     assert found == {(None, "I", 2), ("O7", "E", 2)}         # a NULL so_code of another status still compares equal
-    assert chk["pending_no_order_code"] == {"applies": True, "statuses": ["WAIT_TO_CONFIRM"], "rows": 5, "qty": 19.0,
-                                            "identical_groups": 1, "identical_rows": 2, "duplicate_groups": 0,
-                                            "duplicate_rows": 0}
+    assert chk["pending_orders"] == {"applies": True, "statuses": ["WAIT_TO_CONFIRM"], "exempt": True, "rows": 5,
+                                     "qty": 19.0, "without_order_code_rows": 5, "identical_groups": 1,
+                                     "identical_rows": 2, "whole_row_groups": 0, "whole_row_rows": 0}
     assert [c["column"] for c in chk["columns"]][:5] == ["so_code", "created_date", "sku_code", "fc_code",
                                                           "demand_quantity"]
     assert {"sales_price", "outbound_quantity", "order_status", "seller_code"} <= {c["column"] for c in chk["columns"]}

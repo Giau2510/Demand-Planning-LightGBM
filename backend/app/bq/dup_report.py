@@ -10,9 +10,8 @@ name is never overwritten, a suffix -2, -3, ... is added). Sheets:
   Duplicate_Rows    EVERY row of every duplicated group. The n rows of a group are identical in every compared column
                     (that is the definition), so the group is written n times with duplicate_occurrence 1..n
   Duplicate_Groups  one row per group: duplicate_group_id, occurrences and the compared values (to look the group up)
-Both row sheets end with compared_on: "mapped columns", or "whole source row" for a pending order without order code
-(connector.PENDING_STATUSES) whose rows are identical in every source column - the values written are still only the
-mapped columns.
+Both row sheets end with compared_on: "mapped columns except item_code" (1.2.11: an item code is never a uniqueness
+criterion). Rows of a pending order (connector.PENDING_STATUSES) are exempt and never listed; the Summary counts them.
 duplicate_group_id (DUP-00001, ...) follows the order of the compared values (BigQuery ORDER BY on every compared
 column), so it is stable for the same data. Column headers are the SOURCE column names of the mapping.
 If the .xlsx cannot be written, the same three tables are written as UTF-8 CSV files with the same base name.
@@ -43,24 +42,31 @@ RULE_VI = ("Hai dòng là trùng hoàn toàn khi MỌI cột được so sánh b
 RULE_EN = ("Two rows are exact duplicates when EVERY compared column is equal (BigQuery GROUP BY on the native "
            "values, no text serialisation): NULL equals NULL and nothing else; numbers by value in the column type; "
            "dates/times by value, no time-zone conversion; strings exactly (case and spaces significant).")
-PENDING_VI = ("Ngoại lệ (chủ hệ thống, 21/10/2026): đơn chờ xác nhận (WAIT_TO_CONFIRM) chưa được cấp mã đơn, nên so_code "
-              "NULL là bình thường. Các dòng này được so sánh trên TOÀN BỘ dòng nguồn (mọi cột của bảng, kể cả cột "
-              "không ánh xạ): khác nhau ở bất kỳ cột nguồn nào là đơn riêng - giữ nguyên, đếm riêng, không chặn ingest, "
-              "không bị DROP_EXACT loại bỏ; giống nhau ở MỌI cột nguồn thì không phân biệt được với trùng thật / nhân "
-              "dòng do join nên vẫn là trùng hoàn toàn (chặn). Không cột nào được dùng làm mã đơn.")
-PENDING_EN = ("Exception (owner, 21/10/2026): an order waiting for confirmation (WAIT_TO_CONFIRM) has no order code yet, "
-              "so a NULL so_code is normal. Such rows are compared on the WHOLE source row (every column of the table, "
-              "mapped or not): rows differing in any source column are separate orders - kept, counted apart, never "
-              "blocking, never dropped by DROP_EXACT; rows identical in EVERY source column cannot be told apart from a "
-              "real duplicate or a join fan-out and stay exact duplicates (blocking). No column is used as an order key.")
-WHOLE_ROW = "whole source row"
-MAPPED = "mapped columns"
+PENDING_VI = ("Miễn trừ (chủ hệ thống, 21/10/2026): dòng của đơn chờ xác nhận (WAIT_TO_CONFIRM, có hoặc chưa có so_code) "
+              "KHÔNG bị kiểm tra trùng - không chặn ingest, không bị DROP_EXACT loại bỏ, giữ đủ mọi dòng và số lượng; "
+              "không cần so_code, không tạo mã đơn, không gộp đơn; trùng customer_id hay các cột khác không phải lý do "
+              "loại dòng. Các dòng này được đếm riêng (kể cả dòng giống nhau ở mọi cột so sánh / mọi cột nguồn - chỉ để "
+              "theo dõi). Dòng ở các trạng thái khác giữ nguyên kiểm tra trùng.")
+PENDING_EN = ("Exemption (owner, 21/10/2026): rows of an order waiting for confirmation (WAIT_TO_CONFIRM, with or without "
+              "so_code) are NOT checked for duplicates - never blocking, never dropped by DROP_EXACT, every row and its "
+              "quantity kept; no order code is required or invented, no order is merged; a repeated customer_id or other "
+              "matching columns are no reason to reject a row. They are counted apart (including rows identical in every "
+              "compared / every source column - informative only). Rows of every other status keep the duplicate check.")
+ITEM_VI = ("item_code (listing của SKU) không bao giờ là tiêu chí phân biệt: hai dòng giống nhau ở mọi cột khác, chỉ khác "
+           "item_code, là trùng (ví dụ một dòng đơn bị join nhân ra theo các listing của SKU).")
+ITEM_EN = ("item_code (the SKU's listing) is never a uniqueness criterion: two rows identical in every other compared column "
+           "that differ only in their item code are duplicates (e.g. an order line fanned out over the SKU's listings by a join).")
+MAPPED = "mapped columns except item_code"
 
 
 def folder() -> Path:
     p = paths.reports_dir() / FOLDER
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def _p(chk: dict, k: str):
+    return (chk.get("pending_orders") or {}).get(k, 0)
 
 
 def _cell(v):
@@ -78,7 +84,7 @@ def tables(chk: dict) -> dict[str, pd.DataFrame]:
     for i, g in enumerate(chk.get("groups") or [], start=1):
         gid = f"DUP-{i:05d}"
         vals = [_cell(g["values"].get(c["alias"])) for c in cols]
-        on = WHOLE_ROW if g.get("pending_whole_row") else MAPPED
+        on = MAPPED
         groups.append([gid, g["occurrences"], *vals, on])
         for k in range(1, int(g["occurrences"]) + 1):
             rows.append([gid, k, *vals, on])
@@ -95,21 +101,21 @@ def tables(chk: dict) -> dict[str, pd.DataFrame]:
         ("Số dòng dư (mỗi nhóm giữ 1) / extra_duplicate_rows", chk.get("extra_duplicate_rows")),
         ("Trạng thái ingest / Ingest status", chk.get("ingest_status", "BLOCKED")),
         (f"Cột được so sánh ({len(names)}) / Compared columns", ", ".join(names)),
-        ("Cột nguồn không nằm trong ánh xạ (không so sánh) / Source columns not mapped",
+        ("Cột nguồn không so sánh (không ánh xạ, hoặc item_code) / Source columns not compared (not mapped, or item_code)",
          ", ".join(chk.get("not_compared") or []) or "-"),
         ("Quy tắc so sánh", RULE_VI),
         ("Comparison rule", RULE_EN),
-        ("Đơn chờ xác nhận chưa có mã đơn", PENDING_VI),
-        ("Pending orders without order code", PENDING_EN),
-        ("Số dòng đơn chờ xác nhận chưa có mã (giữ nguyên, không tính trùng) / pending_no_order_code rows",
-         (chk.get("pending_no_order_code") or {}).get("rows", 0)),
-        ("Trong đó: nhóm / dòng giống nhau ở mọi cột so sánh / of which identical groups / rows",
-         f"{(chk.get('pending_no_order_code') or {}).get('identical_groups', 0)} / "
-         f"{(chk.get('pending_no_order_code') or {}).get('identical_rows', 0)}"),
-        ("Trong đó: nhóm / dòng giống nhau ở MỌI cột nguồn (trùng, chặn) / of which identical in every source column "
-         "(duplicates, blocking)",
-         f"{(chk.get('pending_no_order_code') or {}).get('duplicate_groups', 0)} / "
-         f"{(chk.get('pending_no_order_code') or {}).get('duplicate_rows', 0)}"),
+        ("item_code", ITEM_VI),
+        ("item_code (EN)", ITEM_EN),
+        ("Đơn chờ xác nhận (WAIT_TO_CONFIRM)", PENDING_VI),
+        ("Pending orders (WAIT_TO_CONFIRM)", PENDING_EN),
+        ("Số dòng đơn chờ xác nhận (miễn trừ, giữ nguyên) / pending_orders rows", _p(chk, "rows")),
+        ("Trong đó chưa có so_code / of which without order code", _p(chk, "without_order_code_rows")),
+        ("Trong đó: nhóm / dòng giống nhau ở mọi cột so sánh (không chặn) / identical in every compared column (not blocking)",
+         f"{_p(chk, 'identical_groups')} / {_p(chk, 'identical_rows')}"),
+        ("Trong đó: nhóm / dòng giống nhau ở MỌI cột nguồn (không chặn, cần xem nếu nghi nhân dòng) / identical in every "
+         "source column (not blocking; review for a possible join fan-out)",
+         f"{_p(chk, 'whole_row_groups')} / {_p(chk, 'whole_row_rows')}"),
         ("Số nhóm có trong báo cáo / Groups in this report", len(groups)),
         ("Số dòng có trong báo cáo / Rows in this report", len(rows)),
     ]

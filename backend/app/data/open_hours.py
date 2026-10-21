@@ -13,8 +13,12 @@ D-1 aggregation to the model grain (day x SKU x FC), per group of valid order li
                 value, several items of the SKU sold through the same FC that day -> no value (no aggregation rule
                 approved). Open hours are measured per item and day (read-only checks of 20/10/2026: the same item has
                 the same hours in every FC that day). The suffix <n> is the order in which the SKU was opened for sale
-                in the regions (owner, 20/10/2026): it is NOT a region code and never tells the FC, the region or the
-                hours. Only with the item_code reference column mapped; without it -> CONFLICT
+                in the regions (owner, 20/10/2026; 21/10/2026: the warehouse where the SKU was first created, not the
+                one fulfilling the order): it is NOT a region code and never tells the FC, the region or the hours.
+                Only with the item_code reference column mapped; without it -> CONFLICT. Read-only check of 21/10/2026
+                (docs/BIGQUERY.md 11f): the 6 such keys of the source are the SKU's listings in two sales regions
+                (source column sales_region_code, not the suffix) fulfilled by the same FC, an item's hours = time in
+                status NORMAL or LIMIT that day; the owner decided to keep them blocked (no aggregation rule)
   CONFLICT      lines of the same day x SKU x FC disagree and it cannot be explained by different items (the same item
                 with two values, or lines without an item code)          -> no value, to be investigated
 No value is ever replaced by 0, by a neighbour day or by an estimate. A row without a status was loaded before 1.2.9
