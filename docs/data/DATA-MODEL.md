@@ -146,7 +146,10 @@ not the one fulfilling the order): nothing (FC, region, hours) is inferred from 
 for the training until an aggregation rule is approved. 21/10/2026 (read-only, docs/BIGQUERY.md 11f): the 6 MULTI_ITEM
 keys of the source are two items = the SKU's listings in two sales regions (source column `sales_region_code`, not the
 suffix) fulfilled by the same FC; an item's hours = time in status NORMAL or LIMIT that day. The owner decided to keep
-them blocked (no aggregation rule). Model-input start rule `data_policy.training_start_rule`:
+them blocked (no aggregation rule). 1.2.12 (owner decision, 21/10/2026 evening): for exactly these six keys the training
+uses the MAXIMUM of the valid listing-level values (app/data/open_hours_override.py; checked at each use, applied to the
+frame the training reads, recorded with the run); the stored rows stay `MULTI_ITEM` / NULL and every other not-OK row still
+blocks. Model-input start rule `data_policy.training_start_rule`:
 `OPEN_HOURS_COVERAGE` starts training, backtest, forecast panel and the checks at the first STORED day with open hours
 (computed from the rows at each use); the earlier days stay stored and loaded (never deleted), each run records what was
 left out (`data_window.excluded_summary`).

@@ -16,7 +16,7 @@ import numpy as np
 
 from .. import db, forecast_history, paths
 from .. import settings_service as ss
-from ..data import identity, open_hours
+from ..data import identity, open_hours, open_hours_override
 from ..data.demand import data_window, excluded_summary, fingerprint, load_demand, panel_for_run, resolve_scope
 from ..data.quality import build_report
 from ..messages import AppError
@@ -351,9 +351,16 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
         window = data_window(c, scope=scope)
         if window.get("excluded"):
             window["excluded_summary"] = excluded_summary(c, scope["scope_key"], window)
-        # 1.2.9: SKU open hours, mandatory input of the BIGQUERY source: status of every demand row of the window
-        oh_chk = (open_hours.window_check(c, scope["scope_key"], window["start"], window["end"])
+        # 1.2.9: SKU open hours, mandatory input of the BIGQUERY source: status of every demand row of the window.
+        # 1.2.12: except the rows of the owner's adhoc rule for six exact keys, re-checked here at every training
+        # (data/open_hours_override.py); every other row still has to be OK
+        oh_ovr = (open_hours_override.resolve(c, scope["scope_key"], window["start"], window["end"])
                   if open_hours.mandatory(scope["data_source"]) else None)
+        oh_chk = (open_hours.window_check(c, scope["scope_key"], window["start"], window["end"],
+                                          overrides=oh_ovr["applied"]) if oh_ovr is not None else None)
+        if oh_chk is not None:
+            oh_chk = open_hours_override.add_missing(oh_chk, oh_ovr)     # an approved key whose row is gone blocks
+            oh_chk["override"] = open_hours_override.summary(oh_ovr)
     if not force and last_ok and last_ok["data_fingerprint"] == fp:
         return {"status": "SKIPPED", "reason_code": "NO_NEW_DATA", "training_run_id": last_ok["id"]}
     if oh_chk is not None and oh_chk["not_ok"]:
@@ -368,7 +375,10 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
     mcfg = mcfg.model_copy(update={"feature_open_hours": oh_chk is not None, "weekday_encoding": "ISO"})
     decisions["open_hours"] = {"mandatory": oh_chk is not None, "used": oh_chk is not None,
                                "reason": "MANDATORY_DATA_OK" if oh_chk is not None else "NOT_IN_SOURCE",
-                               "window_check": oh_chk, "features": list(OPEN_HOURS)}
+                               "window_check": oh_chk, "features": list(OPEN_HOURS),
+                               # 1.2.12: the owner's adhoc rule as applied to THIS run (listing values, maximum, rule,
+                               # version, time); panel_for_run rebuilds the run's panel from this record
+                               "override": oh_ovr if oh_ovr and oh_ovr["applies_to_scope"] else None}
     names = feature_names(mcfg)
     if is_direct(mcfg) and max(hcfg.enabled) > model.direct_max_horizon(mcfg):
         raise AppError("DIRECT_HORIZON_EXCEEDS_TRAINING", 409,
@@ -406,6 +416,8 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
                                "feature_decisions": decisions, "lineage": lineage, "data_window": window},
                               default=str),
                    json.dumps(model.lgb_params(mcfg)), job_id))
+        if oh_ovr and oh_ovr["applied"]:
+            db.audit(c, "OPEN_HOURS_OVERRIDE_APPLIED", "training_run", run_id, open_hours_override.audit_details(oh_ovr))
 
     def finish(status: str, reason: str | None, **cols):
         sets = ["status=?", "finished_at=?", "reject_reason=?"] + [f"{k}=?" for k in cols]
@@ -437,10 +449,18 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
         at("PREPARING_DATA")
         # model input = the data window only (complete VN days from window_start_date to yesterday)
         demand = load_demand(scope["scope_key"], start=window["start"], end=window["end"])
-        if mcfg.feature_open_hours and demand["open_hours"].isna().any():
+        ovr_problems = []
+        if oh_ovr and oh_ovr["applied"]:
+            # 1.2.12: the approved value on exactly the rows of the applied keys (the loaded frame only, never stored)
+            demand, ovr_problems = open_hours_override.fill(demand, oh_ovr["applied"])
+        if mcfg.feature_open_hours and (ovr_problems or demand["open_hours"].isna().any()):
             # 1.2.9: the rows really loaded must all carry their open hours - a D-1 load may have run since the check
             with db.read() as c:
-                det = open_hours.blocking_detail(open_hours.window_check(c, scope["scope_key"], window["start"], window["end"]))
+                chk = open_hours_override.add_missing(open_hours.window_check(
+                    c, scope["scope_key"], window["start"], window["end"], overrides=(oh_ovr or {}).get("applied")), oh_ovr)
+                if oh_chk is not None:
+                    chk["override"] = {**(oh_chk.get("override") or {}), "fill_problems": ovr_problems}
+                det = open_hours.blocking_detail(chk)
             finish("FAILED", "OPEN_HOURS_INVALID", error=det[:2000])
             return {"status": "FAILED", "reason_code": "OPEN_HOURS_INVALID", "failed_stage": "PREPARING_DATA",
                     "training_run_id": run_id, "error": det}

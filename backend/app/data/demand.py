@@ -84,11 +84,16 @@ def panel_for_run(tr: dict, conn=None):
     window or max_train_days settings, which may have changed since). None when the run has no stored range or the
     data is gone."""
     from ..ml.features import build_panel
+    from . import open_hours_override
     if not tr or not tr.get("train_start") or not tr.get("train_end"):
         return None
     d = load_demand(tr["scope_key"], conn, start=tr["train_start"], end=tr["train_end"])
     if d.empty:
         return None
+    # 1.2.12: the open hours the owner's adhoc rule gave THIS run, as recorded with it (never the current list)
+    applied = open_hours_override.recorded(tr)
+    if applied:
+        d, _ = open_hours_override.fill(d, applied)
     return build_panel(d, end_date=tr["train_end"], start_date=tr["train_start"])
 
 

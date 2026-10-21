@@ -5,6 +5,38 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.2.12 - 2026-10-21 (owner-approved open-hours rule for six exact keys; weekday names of forecast dates) [reports/release-1.2.12-20261021/FINAL_REPORT.md]
+
+No migration (schema 9, as 1.2.11), no settings change, no change of any default. Rollback to 1.2.11 =
+`rollback-version.ps1 -To 1.2.11` without a restore (same schema); 1.2.11 blocks the six keys again (nothing to repair).
+
+* **Owner-approved ADHOC open-hours rule for exactly six keys** (owner decision 21/10/2026): for the six day x SKU x FC
+  keys that stopped the BIGQUERY training with `OPEN_HOURS_INVALID` (status `MULTI_ITEM`: two listings of the SKU sold
+  through the same FC with different `total_open_hours`), the representative value is the MAXIMUM of the valid
+  listing-level values (24, 24, 24, 24, 24, 22.85). New `app/data/open_hours_override.py`: key = scope x date x SKU x FC
+  (item codes only label the evidence); the listing values (read-only, source snapshot 21/10 07:10:38, the one the rows
+  were loaded from) are validated at every use (present, numeric, finite, 0..24, at least two) and the maximum computed
+  in code; applied only while the stored row is still `MULTI_ITEM` without a value with the approved quantity and
+  number of orders, from the very D-1 load the evidence was verified against (`APPROVED_LOADED_AT`; a later reload of
+  those days needs a new read-only verification) - otherwise that key keeps blocking with its reason; an approved key of
+  the window whose row is gone blocks too (`OVERRIDE_KEY_NOT_FOUND`), and the loaded frame is checked again when the
+  value is applied (independent data review 21/10, findings S1-S3). Not a general rule: every other multi-listing,
+  conflicting or missing row still blocks; the D-1 classification and `demand_daily` are unchanged (the six rows stay
+  `MULTI_ITEM` / NULL). Applied to the frame the training reads, recorded with the run
+  (`feature_decisions.open_hours.override`: listing values, maximum, rule, version, reason, time) and in the audit log
+  (`OPEN_HOURS_OVERRIDE_APPLIED`); `panel_for_run` rebuilds a run's panel with the values recorded with it. The training
+  gate, the feature registry (`next_training.blocked_by`) and `data-check` (`open_hours_window_ready`, new
+  `open_hours_owner_override`) apply the same check. Tests: `test_v1212_open_hours_override.py` (22). On a copy of
+  production: 6 / 6 keys covered, no other not-OK row, `demand_daily` hash unchanged, data-check open-hours checks OK.
+* **Weekday of forecast dates in one Vietnamese form "Thứ 2" ... "Chủ nhật"** (owner requirement): the explanation panel
+  used "Thứ Hai" ... "Chủ Nhật"; the forecast trend chart tooltip (Results, Dashboard), the history page (target dates in
+  the summary, run-date list, chart tooltip, sessions / backups / rows tables) and the SHAP trace subtitle now show the
+  weekday of the forecast date (`fmtDateWd`). The model input was already the ISO weekday of the TARGET date (`dow` 1..7,
+  `is_weekend`; models before 1.2.9 keep 0..6): new parity tests `test_v1212_weekday_parity.py` (all seven days, month /
+  year / leap boundaries, every training row, every walk-forward fold's training rows and the rows actually passed to
+  `predict()`, inference rows = forecast dates, fitted booster feature names) and `v1212-weekday.test.tsx`; existing
+  frontend tests updated for the new texts.
+
 ## 1.2.11 - 2026-10-21 (duplicate rule by order status; item_code never a uniqueness criterion) [reports/release-1.2.11-20261021/FINAL_REPORT.md]
 
 No migration (schema 9, as 1.2.10), no settings change, no change of any default. Rollback to 1.2.10 =

@@ -512,6 +512,26 @@ Trên DuckDB với dữ liệu tổng hợp, phiên bản 2 cho cùng các dòng
   listing cho mỗi FC × SKU × tháng (180.854 dòng) - nhưng thiếu 1-43% khóa D-1 mỗi tháng, 184 FC × SKU × tháng gắn listing
   của miền kia, và dùng nó sẽ đổi giá trị của 19 khóa một item: **không** phải quy tắc đã xác minh cho giờ mở bán ngày.
   Quy tắc gộp vẫn chờ chủ hệ thống; huấn luyện BIGQUERY vẫn dừng `OPEN_HOURS_INVALID`.
+- **1.2.12 - quy tắc riêng chủ hệ thống duyệt cho đúng 6 khóa (21/10/2026, tối):** giờ mở bán đại diện của khóa =
+  **MAX** các giá trị giờ hợp lệ ở mức listing của chính SKU × FC × ngày đó. Chỉ 6 khóa trên (khóa = scope × ngày × SKU ×
+  FC, `item_code` chỉ là nhãn bằng chứng), **không** phải quy tắc chung: khóa nhiều listing khác (mới hay cũ) vẫn
+  `MULTI_ITEM` và vẫn chặn. `backend/app/data/open_hours_override.py`:
+  - giá trị listing đọc chỉ đọc từ bản nguồn 21/10 07:10:38 (đúng bản các dòng đã nạp); kiểm tra lại mỗi lần dùng: có
+    giá trị, là số, hữu hạn, trong 0..24, ít nhất 2 listing; MAX tính trong code (6 khóa: 24, 24, 24, 24, 24, 22,85);
+  - chỉ áp dụng khi dòng lưu vẫn `MULTI_ITEM`, không có giá trị, cùng số lượng, số đơn và **cùng lần nạp** đã đối chiếu
+    (`loaded_at` 2026-10-21T05:36:47Z, backfill đọc đúng bản 07:10:38); nếu không, khóa đó **vẫn chặn** với lý do
+    (`CONTENT_CHANGED`, `RELOADED_SINCE_APPROVAL`, `STORED_STATUS_*`, `LISTING_VALUE_*`) trong chi tiết `OPEN_HOURS_INVALID`;
+    khóa đã duyệt mà dòng biến mất cũng chặn (`OVERRIDE_KEY_NOT_FOUND`); khung dữ liệu được kiểm lại khi gán (số lượng,
+    số đơn, giá trị là MAX hợp lệ). Nạp lại các ngày này (backfill / nạp lại toàn bộ) cần đối chiếu lại giá trị listing
+    (truy vấn chỉ đọc) và duyệt lại trong bản sau;
+  - `demand_daily` **không** đổi (6 dòng giữ `MULTI_ITEM` / NULL), phân loại D-1 không đổi; giá trị áp vào khung dữ liệu
+    huấn luyện đọc ra, ghi kèm lần huấn luyện (`feature_decisions.open_hours.override`: giá trị từng listing, MAX, quy
+    tắc, phiên bản, lý do, thời điểm) và nhật ký `OPEN_HOURS_OVERRIDE_APPLIED`; dựng lại panel của lần đó (promote, giải
+    thích) dùng giá trị đã ghi;
+  - cùng một kiểm tra ở cổng huấn luyện, trang feature registry và `data-check` (`open_hours_window_ready`,
+    `open_hours_owner_override`). Bỏ quy tắc (xoá khóa) ở bản sau hoặc rollback 1.2.11 = 6 khóa chặn lại, không phải sửa
+    dữ liệu. Bằng chứng: `reports/release-1.2.12-20261021/OPEN_HOURS_OVERRIDE_EVIDENCE.xlsx`. Test:
+    `test_v1212_open_hours_override.py`.
 
 ## 12. Bảng nguồn thật — kiểm tra chỉ đọc ngày 16/10/2026 (11:20, giờ Việt Nam)
 

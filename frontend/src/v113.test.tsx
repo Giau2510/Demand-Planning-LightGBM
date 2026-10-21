@@ -24,8 +24,9 @@ describe("B. explanation numbers: at most 2 decimals, sign and magnitude kept", 
     expect(screen.getByTestId("n").textContent).toBe("1,99|-0,1|1,89|6,61|7,2|10|0,5|0|<0,01|-<0,01|+<0,01|+0,12|2.072|1.234,57|19,2%|+1,5%|-6,76%");
   });
   it("weekday comes from the calendar date itself", () => {
-    expect(weekdayName("2026-10-14", "vi")).toBe("Thứ Tư");
-    expect(weekdayName("2026-10-18", "vi")).toBe("Chủ Nhật");
+    // 1.2.12: the application's one Vietnamese form "Thứ 2" ... "Chủ nhật" (was "Thứ Tư" / "Chủ Nhật" here)
+    expect(weekdayName("2026-10-14", "vi")).toBe("Thứ 4");
+    expect(weekdayName("2026-10-18", "vi")).toBe("Chủ nhật");
     expect(weekdayName("2026-10-19", "en")).toBe("Monday");
   });
 });
@@ -112,7 +113,7 @@ describe("A. LightGBM calculation shown step by step", () => {
     expect(hist).toContain("/api/forecast-runs/FCR-1/explain/history.xlsx");
     expect(hist).toContain("target_date=2026-10-14");
     const wd = [...document.querySelectorAll("[data-testid=history-table] tbody tr")].map((tr) => tr.querySelectorAll("td")[1].textContent);
-    expect(wd).toEqual(["Thứ Hai", "Thứ Ba"]);
+    expect(wd).toEqual(["Thứ 2", "Thứ 3"]);
   });
 });
 

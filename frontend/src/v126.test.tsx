@@ -74,7 +74,7 @@ describe("v1.2.6 forecast history: backup snapshot and 23:59 close", () => {
     const r = await act(async () => render(wrap(<ForecastHistory />)));
     await waitFor(() => expect(screen.getByTestId("fh-rows")).toBeTruthy());
     expect(screen.getByTestId("fh-today-backup").textContent).toContain("Đang dùng snapshot dự phòng cuối ngày 17/10/2026 (tạo lúc 17/10/2026 23:55, run nguồn FCR-A) cho ngày 19/10/2026");
-    expect([...screen.getByTestId("fh-run-date").querySelectorAll("option")].map((o) => o.textContent)).toContain("18/10/2026 → 19/10/2026 (Dự phòng)");
+    expect([...screen.getByTestId("fh-run-date").querySelectorAll("option")].map((o) => o.textContent)).toContain("18/10/2026 → 19/10/2026 (Thứ 2) (Dự phòng)");   // 1.2.12: + weekday of the target
     const kpi = within(screen.getByTestId("fh-kpi"));
     expect(kpi.queryByText("Đã chốt – cần xác minh")).toBeNull();               // 1.2.9: not in the finalized cards
     expect(kpi.queryByText("Đã hoàn tất")).toBeNull();

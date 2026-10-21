@@ -29,6 +29,9 @@ Training on the BIGQUERY source stops with OPEN_HOURS_INVALID while ANY demand r
 pipeline never continues as if the input existed. Until a rule for missing / conflicting / multi-item values is approved,
 the owner's options are a later model-input start (data_policy.window_start_date, or 1.2.9b training_start_rule =
 OPEN_HOURS_COVERAGE: the first stored day with open hours) or a corrected source + a D-1 full reload.
+1.2.12: the only approved rule is the owner's ADHOC rule for six exact MULTI_ITEM keys (data/open_hours_override.py:
+maximum of the valid listing-level values, applied when the training reads its window, stored rows unchanged). The
+window check counts those rows apart (OK_OWNER_OVERRIDE); every other row is checked exactly as before.
 
 Source history (read-only checks of 19/10 and 20/10/2026): up to the 20/10 07:10 refresh the source had open hours only
 from 19/03 or 20/03 (the first day moved between two refreshes); the owner then filled the history and the 20/10 15:05
@@ -43,6 +46,7 @@ import json
 MIN_HOURS, MAX_HOURS = 0.0, 24.0
 STATUSES = ("OK", "MISSING", "OUT_OF_RANGE", "CONFLICT", "MULTI_ITEM")
 FIELD = "open_hours"           # reference_mapping field (column total_open_hours on the real table)
+OVERRIDE = "OK_OWNER_OVERRIDE"  # 1.2.12: label of the window check only, never a stored status (open_hours_override.py)
 
 
 def mandatory(data_source: str | None) -> bool:
@@ -76,19 +80,30 @@ def row_cell(r: dict) -> tuple[float | None, str | None]:
                 r.get("open_hours_items"), r.get("open_hours_item_values"), r.get("open_hours_no_item_rows"))
 
 
-def window_check(conn, scope_key: str, start: str, end: str) -> dict:
+def window_check(conn, scope_key: str, start: str, end: str, overrides: list[dict] | None = None) -> dict:
     """Status of every demand row of [start, end] (the model window): rows, first / last day per status. ok = at least
-    one row and every row OK. One sequential scan (the key index has no open_hours_status)."""
+    one row and every row OK. One sequential scan (the key index has no open_hours_status).
+    1.2.12: overrides = the keys the owner's adhoc rule gives a value (open_hours_override.resolve()['applied']): those
+    MULTI_ITEM rows are counted apart as OVERRIDE and do not block; every other row is checked exactly as before."""
+    keys = [(o["business_date"], o["sku_id"], o["fc_id"]) for o in overrides or []]
+    status, params = "COALESCE(open_hours_status, 'NOT_LOADED')", []
+    if keys:
+        status = (f"CASE WHEN open_hours_status = 'MULTI_ITEM' AND (order_date, sku_id, fc_id) IN "
+                  f"(VALUES {', '.join(['(?, ?, ?)'] * len(keys))}) THEN '{OVERRIDE}' ELSE {status} END")
+        params = [x for k in keys for x in k]
     by = {}
     for st, n, lo, hi in conn.execute(
-            "SELECT COALESCE(open_hours_status, 'NOT_LOADED'), COUNT(*), MIN(order_date), MAX(order_date) "
+            f"SELECT {status}, COUNT(*), MIN(order_date), MAX(order_date) "
             "FROM demand_daily NOT INDEXED WHERE scope_key=? AND order_date BETWEEN ? AND ? GROUP BY 1",
-            (scope_key, start, end)):
+            (*params, scope_key, start, end)):
         by[st] = {"rows": int(n), "first": lo, "last": hi}
     rows = sum(v["rows"] for v in by.values())
-    bad = {k: v for k, v in by.items() if k != "OK"}
-    return {"window": [start, end], "rows": rows, "ok_rows": by.get("OK", {}).get("rows", 0),
-            "not_ok": bad, "ok": rows > 0 and not bad}
+    bad = {k: v for k, v in by.items() if k not in ("OK", OVERRIDE)}
+    out = {"window": [start, end], "rows": rows, "ok_rows": by.get("OK", {}).get("rows", 0),
+           "not_ok": bad, "ok": rows > 0 and not bad}
+    if keys:
+        out["override_rows"] = by.get(OVERRIDE, {}).get("rows", 0)
+    return out
 
 
 def coverage_start(conn, scope_key: str, start: str, end: str) -> str | None:
@@ -101,5 +116,10 @@ def coverage_start(conn, scope_key: str, start: str, end: str) -> str | None:
 
 
 def blocking_detail(chk: dict) -> str:
-    """Detail of OPEN_HOURS_INVALID: counts and day ranges per status (no row values)."""
-    return json.dumps({"window": chk["window"], "rows": chk["rows"], "ok_rows": chk["ok_rows"], "not_ok": chk["not_ok"]})
+    """Detail of OPEN_HOURS_INVALID: counts and day ranges per status (no row values); 1.2.12: with the owner's adhoc
+    override, the rows it covered and the approved keys it did NOT cover with their reason."""
+    out = {"window": chk["window"], "rows": chk["rows"], "ok_rows": chk["ok_rows"], "not_ok": chk["not_ok"]}
+    if chk.get("override"):
+        out["override_rows"] = chk.get("override_rows", 0)
+        out["override"] = chk["override"]
+    return json.dumps(out)

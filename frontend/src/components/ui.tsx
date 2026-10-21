@@ -28,12 +28,17 @@ export function fmtX(v: number | null | undefined, signed = false): string {
 export const fmtPctX = (v: number | null | undefined, signed = false) =>
   v === null || v === undefined ? "—" : `${v > 0 && signed ? "+" : v < 0 ? "-" : ""}${fmtNum(Math.abs(v) * 100, 2)}%`;
 
-const WEEKDAYS = { vi: ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"],
-  en: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] };
-/** Weekday of a calendar date (YYYY-MM-DD) computed from the date itself, never from a row position. */
+/** Weekday of a calendar date (YYYY-MM-DD) computed from the date itself, never from a row position. 1.2.12: the one
+ * Vietnamese form of the application, "Thứ 2" ... "Chủ nhật" (weekdayLabel), also where the explanation panel used
+ * "Thứ Hai" ... "Chủ Nhật"; "—" for a missing or impossible date. */
 export function weekdayName(iso: string, lang: "vi" | "en"): string {
-  const d = new Date(iso + "T00:00:00Z");
-  return WEEKDAYS[lang][(d.getUTCDay() + 6) % 7];
+  return weekdayLabel(isoWeekday(iso), lang);
+}
+
+/** 1.2.12: a forecast (target) date with its weekday: "20/10/2026 (Thứ 3)". */
+export function fmtDateWd(iso: string | null | undefined, lang: "vi" | "en"): string {
+  const n = isoWeekday(iso);
+  return n === null ? fmtDate(iso) : `${fmtDate(iso)} (${weekdayLabel(n, lang)})`;
 }
 
 /** 1.2.9: the application's one weekday convention (backend app/weekday.py): 1 = Monday ... 7 = Sunday, from the
@@ -488,6 +493,7 @@ export interface ChartActual { x: string; y: number; tooltip: string; legend: st
 export function LineChart({ points, height = 240, label, actual, forecastLegend }: {
   points: { x: string; y: number }[]; height?: number; label?: string; actual?: ChartActual | null; forecastLegend?: string;
 }) {
+  const { lang } = useI18n();
   const [hover, setHover] = useState<number | null>(null);
   const box = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(760);
@@ -513,7 +519,8 @@ export function LineChart({ points, height = 240, label, actual, forecastLegend 
   // first / last labels are anchored inside the plot so they are never cut off
   const showLabel = (i: number) => i === n - 1 || (i % step === 0 && n - 1 - i >= step);
   const anchor = (i: number) => (n > 1 && i === n - 1 ? "end" : n > 1 && i === 0 ? "start" : "middle");
-  const tipLines = hover === null ? [] : [`${fmtDate(points[hover].x)}: ${fmtNum(points[hover].y, 1)}`,
+  // 1.2.12: the forecast date of the hovered day with its weekday (axis labels keep the date only, for space)
+  const tipLines = hover === null ? [] : [`${fmtDateWd(points[hover].x, lang)}: ${fmtNum(points[hover].y, 1)}`,
     ...(hover === ai ? [`${actual!.tooltip}: ${fmtNum(actual!.y, 1)}`] : [])];
   const tipW = Math.max(0, ...tipLines.map((s) => s.length)) * 7 + 16;
   const tipX = hover === null ? 0 : x(hover) + 12 + tipW > W - P.r ? x(hover) - 12 - tipW : x(hover) + 12;

@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { get, qs } from "../api";
 import { useI18n } from "../i18n";
-import { ErrorBox, Loading, fmtDate, fmtNum, fmtX, useAsync } from "../components/ui";
+import { ErrorBox, Loading, fmtDate, fmtDateWd, fmtNum, fmtX, useAsync } from "../components/ui";
 import { Icon } from "../components/icons";
 
 /** Technical numbers (levels B and C): up to 6 decimals, trailing zeros removed; the exports keep every digit. */
@@ -53,7 +53,7 @@ export default function ShapTrace({ runId, sku, fc, date, feature, onClose }: {
           <h3>{L("Vì sao feature này có đóng góp như vậy?", "Why does this feature contribute this much?")} <span className="mono">{feature}</span></h3>
           <button className="icon-btn ghost" onClick={onClose} aria-label={L("Đóng", "Close")} title={L("Đóng", "Close")}><Icon name="close" /></button>
         </div>
-        <p className="small muted">{sku} · {fc} · {fmtDate(date)} · <span className="mono">{runId}</span></p>
+        <p className="small muted">{sku} · {fc} · {fmtDateWd(date, lang)} · <span className="mono">{runId}</span></p>
         {tr.loading && !d && <Loading />}
         <ErrorBox error={tr.error} />
         {d && statusBox}

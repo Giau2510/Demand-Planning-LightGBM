@@ -311,13 +311,17 @@ def view(conn, source: str | None = None) -> dict:
         scope_error = e.to_dict()
     resolved, decisions = resolve(mcfg, cov)
     # 1.2.9: SKU open hours - mandatory for the BIGQUERY source (same check as the training: every row of the window)
-    from ..data import open_hours
+    from ..data import open_hours, open_hours_override
     from ..data.demand import data_window
     mand = open_hours.mandatory(src)
     chk = None
     if mand and scope:
         w = data_window(conn, scope=scope)       # 1.2.9b: same start rule as the training
-        chk = open_hours.window_check(conn, scope["scope_key"], w["start"], w["end"])
+        # 1.2.12: same check as the training, with the owner's adhoc rule for six exact keys
+        ovr = open_hours_override.resolve(conn, scope["scope_key"], w["start"], w["end"])
+        chk = open_hours_override.add_missing(
+            open_hours.window_check(conn, scope["scope_key"], w["start"], w["end"], overrides=ovr["applied"]), ovr)
+        chk["override"] = open_hours_override.summary(ovr) if ovr["applies_to_scope"] else None
     decisions["open_hours"] = {"mandatory": mand, "ok": bool(chk and chk["ok"]), "window_check": chk,
                                "used": bool(chk and chk["ok"]), "reason": ("NOT_IN_SOURCE" if not mand else
                                                                           "MANDATORY_DATA_OK" if chk and chk["ok"]

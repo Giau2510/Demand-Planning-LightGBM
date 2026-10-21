@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { get, qs } from "../api";
 import { useI18n } from "../i18n";
-import { Card, CompareChart, DateInput, Empty, ErrorBox, Field, FilterBar, Loading, PageHeader, Pager, Pill, SearchInput, SourceBadge, Stat, fmtDate, fmtNum, fmtPct, fmtPctX, fmtTime, useAsync } from "../components/ui";
+import { Card, CompareChart, DateInput, Empty, ErrorBox, Field, FilterBar, Loading, PageHeader, Pager, Pill, SearchInput, SourceBadge, Stat, fmtDate, fmtDateWd, fmtNum, fmtPct, fmtPctX, fmtTime, useAsync } from "../components/ui";
 import { Icon } from "../components/icons";
 import { ProductName } from "./Results";
 
@@ -114,10 +114,10 @@ export default function ForecastHistory() {
       <div className="alert info small" data-testid="fh-today">
         {o.today_session
           ? t("fh.today_session").replace("{d}", fmtDate(o.today)).replace("{t}", fmtTime(o.today_session.session_started_at))
-            .replace("{target}", fmtDate(o.today_session.target_date))
+            .replace("{target}", fmtDateWd(o.today_session.target_date, lang))
           : tb ? <span data-testid="fh-today-backup">{t("fh.no_valid_today").replace("{d}", fmtDate(o.today))} {t("fh.today_backup")
               .replace("{s}", fmtDate(tb.snapshot_business_date)).replace("{t}", fmtTime(tb.snapshot_created_at))
-              .replace("{run}", tb.forecast_run_id).replace("{target}", fmtDate(tb.target_date))}</span>
+              .replace("{run}", tb.forecast_run_id).replace("{target}", fmtDateWd(tb.target_date, lang))}</span>
           : <>{t("fh.no_valid_today").replace("{d}", fmtDate(o.today))} {t("fh.sessions_when")}</>}
       </div>
 
@@ -137,7 +137,7 @@ export default function ForecastHistory() {
                 <option value="all">{t("fh.all")}</option>
                 <option value="custom">{t("fh.custom")}</option>
                 <optgroup label={t("fh.one_day")}>
-                  {days.map((d) => <option key={d.run_date} value={d.run_date}>{fmtDate(d.run_date)} → {fmtDate(d.target_date)}{d.source === "SNAPSHOT" ? ` (${t("fh.src.SNAPSHOT_short")})` : ""}</option>)}
+                  {days.map((d) => <option key={d.run_date} value={d.run_date}>{fmtDate(d.run_date)} → {fmtDateWd(d.target_date, lang)}{d.source === "SNAPSHOT" ? ` (${t("fh.src.SNAPSHOT_short")})` : ""}</option>)}
                 </optgroup>
               </select>
             </Field>
@@ -170,8 +170,8 @@ export default function ForecastHistory() {
             </Field>
           </FilterBar>
           <p className="small muted" data-testid="fh-range">
-            {t("fh.run_date")}: <b>{fmtDate(runFrom)}</b>{runTo !== runFrom && <> → <b>{fmtDate(runTo)}</b></>} · {t("fh.target_date")}: <b>{fmtDate(addDays(runFrom, 1))}</b>
-            {runTo !== runFrom && <> → <b>{fmtDate(addDays(runTo, 1))}</b></>} · <SourceBadge source={o.data_source} />
+            {t("fh.run_date")}: <b>{fmtDate(runFrom)}</b>{runTo !== runFrom && <> → <b>{fmtDate(runTo)}</b></>} · {t("fh.target_date")}: <b>{fmtDateWd(addDays(runFrom, 1), lang)}</b>
+            {runTo !== runFrom && <> → <b>{fmtDateWd(addDays(runTo, 1), lang)}</b></>} · <SourceBadge source={o.data_source} />
             {s?.matching_skus != null && <> · {t("fh.matching").replace("{n}", fmtNum(s.matching_skus))}</>}
           </p>
 
@@ -227,7 +227,7 @@ export default function ForecastHistory() {
                 points={s.daily.map((d: any) => ({
                   x: d.target_date, forecast: d.has_history && d.n_rows ? d.forecast : null, actual: d.actual,
                   provisional: d.actual_status === "PROVISIONAL" || d.actual_status === "CLOSED", backup: d.forecast_source === "SNAPSHOT",
-                  tip: [`${t("fh.target_date")}: ${fmtDate(d.target_date)}`, `${t("fh.run_date")}: ${fmtDate(d.run_date)}`,
+                  tip: [`${t("fh.target_date")}: ${fmtDateWd(d.target_date, lang)}`, `${t("fh.run_date")}: ${fmtDate(d.run_date)}`,
                     !d.has_history ? t("fh.no_history_day") : `${t("fh.tip.forecast")}: ${d.n_rows ? fmtNum(d.forecast) : t("fh.filtered_out")}`,
                     ...(d.forecast_source === "SNAPSHOT" ? [`${t("fh.src")}: ${t("fh.src.SNAPSHOT")} ${fmtDate(d.snapshot.snapshot_business_date)} · ${d.forecast_run_id}`] : []),
                     ...(d.has_history && d.n_rows ? [d.actual === null ? `${t("fh.tip.actual")}: ${t("fh.st.NO_ACTUAL")}`
@@ -250,7 +250,7 @@ export default function ForecastHistory() {
                         const all = (s.sessions ?? []).filter((y: any) => y.run_date === x.run_date);
                         return (
                           <tr key={x.forecast_run_id}>
-                            <td className="nowrap">{fmtDate(x.run_date)}</td><td className="nowrap">{fmtDate(x.target_date)}</td>
+                            <td className="nowrap">{fmtDate(x.run_date)}</td><td className="nowrap" data-testid="fh-session-target">{fmtDateWd(x.target_date, lang)}</td>
                             <td className="nowrap" title={`${t("fh.published_at")}: ${fmtTime(x.published_at)}`}>{fmtTime(x.session_started_at)}</td>
                             <td className="mono small nowrap">{x.forecast_run_id}</td><td className="mono small">{x.model_version}</td>
                             <td className="small">{t(`fh.capture.${x.capture_mode}`)}</td><td className="num">{fmtNum(x.n_rows)}</td>
@@ -275,7 +275,7 @@ export default function ForecastHistory() {
                       <tbody>
                         {backups.map((x: any) => (
                           <tr key={x.run_date}>
-                            <td className="nowrap">{fmtDate(x.run_date)}</td><td className="nowrap">{fmtDate(x.target_date)}</td>
+                            <td className="nowrap">{fmtDate(x.run_date)}</td><td className="nowrap" data-testid="fh-backup-target">{fmtDateWd(x.target_date, lang)}</td>
                             <td className="nowrap">{fmtDate(x.snapshot_business_date)}</td><td className="nowrap">{fmtTime(x.snapshot_created_at)}</td>
                             <td className="mono small nowrap" title={`${t("fh.session_time")}: ${fmtTime(x.session_started_at)}`}>{x.forecast_run_id} ({fmtDate(x.source_run_date)})</td>
                             <td className="mono small">{x.model_version}</td><td className="mono small nowrap">{x.snapshot_id}</td>
@@ -308,7 +308,7 @@ export default function ForecastHistory() {
                       {rows.data.rows.map((r: any) => (
                         <tr key={`${r.run_date}|${r.sku_id}|${r.fc_id}`}>
                           <td className="sku">{r.sku_id}</td><td className="pname"><ProductName name={r.product_name} /></td><td>{r.fc_id}</td>
-                          <td className="nowrap">{fmtDate(r.run_date)}</td><td className="nowrap">{fmtDate(r.target_date)}</td>
+                          <td className="nowrap">{fmtDate(r.run_date)}</td><td className="nowrap" data-testid="fh-row-target">{fmtDateWd(r.target_date, lang)}</td>
                           <td className="src-cell"><ForecastSource r={r} /></td>
                           <td className="num" data-testid="fh-forecast-qty" title={`${t("fh.model_value")}: ${fmtNum(r.yhat, 3)}`}>{fmtNum(r.forecast_qty)}</td>
                           <td className="num" title={r.actual === null ? t("fh.st.NO_ACTUAL")

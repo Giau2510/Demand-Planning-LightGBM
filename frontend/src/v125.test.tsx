@@ -177,7 +177,7 @@ describe("v1.2.5 chart readability", () => {
     const { container } = render(wrap(<LineChart points={days.slice(0, 3)} />));
     fireEvent.mouseEnter(container.querySelectorAll("rect[fill=transparent]")[1]);
     expect(container.querySelector("rect.tipbox")).toBeTruthy();
-    expect(container.querySelector("text.tip")!.textContent).toBe("02/10/2026: 1.010");
+    expect(container.querySelector("text.tip")!.textContent).toBe("02/10/2026 (Thứ 6): 1.010");   // 1.2.12: + weekday
   });
 });
 

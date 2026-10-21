@@ -122,7 +122,7 @@ describe("A + C. explanation: compact numbers and dated history", () => {
     expect(modal).not.toMatch(/\d{4}-\d{2}-\d{2}/);                 // no ISO dates in the panel
     const rows = [...document.querySelectorAll("[data-testid=history-table] tbody tr")].map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent));
     expect(rows.map((r) => r[0])).toEqual(days.map((d) => fmtDate(d.date)));                           // chronological, DD/MM/YYYY
-    expect(rows.map((r) => r[1])).toEqual(["Chủ Nhật", "Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật", "Thứ Hai", "Thứ Ba"]);   // 04/10/2026 = Sunday
+    expect(rows.map((r) => r[1])).toEqual(["Chủ nhật", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật", "Thứ 2", "Thứ 3"]);   // 04/10/2026 = Sunday (1.2.12 form)
     expect(rows.map((r) => r[2])).toEqual(days.map((d) => (d.qty == null ? "—" : String(d.qty))));     // paired demand
     expect(rows[2][2]).toBe("0");                                    // a real zero ...
     expect(rows[4][2]).toBe("—");                                    // ... is not "no data"

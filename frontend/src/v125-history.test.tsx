@@ -88,7 +88,7 @@ describe("v1.2.5 Forecast & actual history page", () => {
     expect(screen.getByTestId("fh-today").textContent).toContain("Hôm nay (18/10/2026): phiên chính thức lúc 18/10/2026 09:00, dự báo cho 19/10/2026");
     const range = screen.getByTestId("fh-range").textContent!;
     expect(range).toContain("Ngày chạy forecast: 19/09/2026 → 18/10/2026");      // default: last 30 run dates
-    expect(range).toContain("Ngày được dự báo: 20/09/2026 → 19/10/2026");
+    expect(range).toContain("Ngày được dự báo: 20/09/2026 (Chủ nhật) → 19/10/2026 (Thứ 2)");   // 1.2.12: + weekday
     const kpi = within(screen.getByTestId("fh-kpi"));
     expect(kpi.getByText("250")).toBeTruthy();
     // 1.2.9 (seventh batch): the main cards are finalized rows only - here none, said plainly; the provisional figures apart
@@ -114,8 +114,8 @@ describe("v1.2.5 Forecast & actual history page", () => {
     expect(head).toEqual(["SKU", "Tên sản phẩm", "FC/kho", "Ngày chạy forecast", "Ngày được dự báo", "Phiên được chọn lúc", "Forecast",
       "Thực tế", "Sai lệch (F − T)", "WAPE dòng", "Trạng thái thực tế"]);
     const body = [...screen.getByTestId("fh-rows").querySelectorAll("tbody tr")].map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent));
-    expect(body[0]).toEqual(["SKU-1", "Thuốc hạ sốt", "HN", "17/10/2026", "18/10/2026", "19:34", "50", "30", "+20", "66,7%", "Tạm tính"]);
-    expect(body[1]).toEqual(["SKU-2", "Chưa có tên sản phẩm", "BD", "18/10/2026", "19/10/2026", "09:00", "40", "—", "—", "—", "Chưa có dữ liệu thực tế"]);
+    expect(body[0]).toEqual(["SKU-1", "Thuốc hạ sốt", "HN", "17/10/2026", "18/10/2026 (Chủ nhật)", "19:34", "50", "30", "+20", "66,7%", "Tạm tính"]);   // 1.2.12: + weekday of the forecast date
+    expect(body[1]).toEqual(["SKU-2", "Chưa có tên sản phẩm", "BD", "18/10/2026", "19/10/2026 (Thứ 2)", "09:00", "40", "—", "—", "—", "Chưa có dữ liệu thực tế"]);
     // sessions: official one per run date, the other session of the day is traced
     const ses = screen.getByTestId("fh-sessions").textContent!;
     expect(ses).toContain("FCR-B");
