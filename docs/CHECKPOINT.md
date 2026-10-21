@@ -684,3 +684,23 @@ docs (BIGQUERY.md 11f, DATA-MODEL, CHANGELOG Unreleased, this section).
 | Gate D | BLOCKED | `OPEN_HOURS_INVALID` (6 MULTI_ITEM rows 09/02-26/08), shown on an isolated copy (409, nothing written); no training, model `TRN-20261020054540-D7EEF6` / forecast `FCR-20261020082402-A42C91` unchanged; 07:00 slot SKIPPED |
 | Open | OWNER | open-hours rule for multi-listing keys (or source value at SKU x FC); training 22/10 07:00 will fail OPEN_HOURS_INVALID; D-1 06:00 vs source refresh ~07:10; commit approval |
 | Checkpoint after | DONE | `checkpoints/checkpoint-20261021-multiitem-d1-after.zip` SHA-256 F0B2B69B240E653B596B5284A8BB870BE56287972B8A9FA75AD55162C548A80B (58 entries: diff, 2 new tests, 8 sources, reports + workbook, scratchpad p27; verified) |
+
+# Release 1.2.11 DEPLOYED (2026-10-21 16:02 - 18:30): duplicate rule by order status, item_code, proxy hardening
+
+Owner prompt "EXECUTE NOW - CONSOLIDATED PENDING FIXES + RELEASE" (deploy authorized when every gate passes; no push, no
+schedule / target / Price / customer_id / promotion change; training only with verified open-hours semantics). Reports:
+`reports/release-1.2.11-20261021/` (FINAL_REPORT, TEST_RESULTS, DATA_RECONCILIATION, RESUME_CHECKPOINT + 13-sheet
+workbook). Release READY_FOR_PRODUCTION (deployed, verified); training BLOCKED_DATA_SAFETY; public link
+BLOCKED_EXTERNAL_SETUP.
+
+| Step | Status | Evidence |
+|---|---|---|
+| item_code / MULTI_ITEM | VERIFIED + TESTS | item_code never a key; 101 multi-item keys, 95 OK (same hours), 6 MULTI_ITEM (hours differ between two regional listings); blocking never depends on item counts (test); fact_classification_sku_history is not a usable rule (1-43 % keys without association, 184 cross-region, would change 19 keys) |
+| Duplicate rule | DONE | WAIT_TO_CONFIRM exempt (with or without so_code); other statuses compared on the mapped columns except item_code; real table: 0 groups, 904 pending rows exempt |
+| Proxy | HARDENED | GET /api/data-quality (writes on a cache miss) and HEAD /api refused; local check 28/29 (1 client-side artefact explained) |
+| Release | DONE | commit 9ee5a4a (22 files, not pushed); release.ps1 QA 686 passed / 19 skipped, vitest 155; package SHA-256 5A7A73AA...0886 |
+| Rehearsal | PASS | r12 36/36: upgrade (no migration), full-range preview = source, D-1, training gate OPEN_HOURS_INVALID, rollback-version 14 s |
+| Production | DEPLOYED | gates 18:00; verified backup backup-20261021-180216-manual.zip (EEEC86E6...5CEB); deploy-upgrade 18:03-18:08 exit 0 (backup 180400 29DC5902...43D3); preview BFP-20261021110908-3FC80A 0 changes = independent recon; D-1 JOB-20261021111824-17023B SUCCEEDED 0 changes; app = source 1,360,913 / 42,088,223; 293 finalized; post-checks 7/7 |
+| Training | BLOCKED | OPEN_HOURS_INVALID (6 MULTI_ITEM rows); an operator click at 16:35 (train Run now) failed at the gate, nothing written |
+| Open | OWNER | open-hours rule (or source SKU x FC hours); D-1 / training schedule (4/4 scheduled D-1 failed, source ~07:10); public link provider + access + autostart; push |
+| Checkpoint after | DONE | `checkpoints/checkpoint-20261021-release1211-after.zip` SHA-256 96084B02FD550A3FD37931DF8BE612B66F438B13F3A72C7107B8DB33AF51B5F1 (76 entries: reports + workbook, scratchpad p28 scripts / results / state; verified) |
