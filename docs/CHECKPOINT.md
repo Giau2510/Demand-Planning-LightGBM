@@ -723,3 +723,56 @@ READY_FOR_PRODUCTION; production deploy BLOCKED (permission classifier); trainin
 | Production | NOT DEPLOYED | gates PASS 22/10 00:03:44; verified backup `backup-20261022-000431-manual.zip` (ED0F8EC6...E7A7); the deploy command was refused by the Claude Code permission classifier 00:06 -> production still 1.2.11 (PID 7316), still OPEN_HOURS_INVALID; EOD / close of 21/10 SUCCEEDED |
 | Candidate (copy) | DONE | copy of production 00:06 + models; TRN-20261021170704-F58EB8 / MV-20261022-003132-8EB8 (33 features), CANDIDATE, WAPE 0.80535 vs model in use 0.80555 on the same 7 folds (BETTER by 0.0002), WAPE_MAX FAIL -> not promoted; forecast FCR-20261021173318-869CF1 on the copy only (15 days, 256,935 values); artifacts in the report folder |
 | Open | OWNER | run / allow deploy-upgrade 1.2.12 then "Chay ngay" training; promotion decision; public link provider + access + autostart; D-1 schedule vs source ~07:10; push |
+
+# Release 1.2.12 deploy, second attempt (2026-10-22 10:45 - 11:40): refused again, production 1.2.11
+
+Owner prompt "CONTINUE DEMAND FORECASTING - RELEASE 1.2.12 DEPLOY, PRODUCTION TRAINING AND NEW FORECAST" (no push, no
+schedule change, no promotion; no workaround if the permission classifier refuses). Reports: `reports/release-1.2.12-20261021/`
+(updated 11:40).
+
+| Step | Status | Evidence |
+|---|---|---|
+| D-1 | VERIFIED | scheduled 06:00 `JOB-20261021235733-F4FE52` SOURCE_INCOMPLETE 4/4; manual `JOB-20261022001433-6BAF6C` 07:14 SUCCEEDED, window 17-21/10 = source |
+| Package / gates | PASS | 10BF50BF...4C05 = commit a601f4c, manifest 7,148 / 7,148; verified backup `backup-20261022-111140-manual.zip` (A3564E18...AFD6); deploy-upgrade -CheckOnly PASS 11:18:33 |
+| Deploy | REFUSED | the official deploy command was refused by the Claude Code permission classifier a second time (11:20:37); nothing installed, no workaround |
+| Training / forecast | NOT RUN | needs 1.2.12 in production (07:00 slot stopped OPEN_HOURS_INVALID on 1.2.11) |
+| Checkpoint | DONE | `checkpoints/checkpoint-20261022-release1212-deploy-denied2-r2.zip` (CDC1D0AD...5292) |
+
+# 1.2.13 history sync: cancelled orders and history changes after D-1 (2026-10-22 11:45 - 15:20) - NOT committed, NOT deployed
+
+Owner prompt "FIX DONG BO LICH SU DU LIEU D-1, DON HUY VA HUAN LUYEN" (target = gross demand at order creation; never reduce
+history only because an order disappears; no deploy, production backfill, schedule change, training / promotion, push).
+Reports: `reports/history-sync-20261022/` (FINAL_REPORT, TEST_RESULTS, evidence/, workbook
+`HISTORY_RECONCILIATION_BIGQUERY_20260101-20261021_20261022-1504.xlsx` 773A265C...A5EE). Status READY_FOR_EXTERNAL_SETUP,
+conclusion PARTIAL.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Checkpoint before | DONE | `checkpoints/source-1.2.12-before-history-sync-20261022.zip` (B8B335BB...0137) |
+| Root cause | FOUND | D-1 rewrote only its window as the source shows it; days before the window never re-read, no per-key log; the D-1 table is rebuilt daily ~07:10 without a cancel status: a cancelled order (fact_order CANCEL) leaves with all its lines, unconfirmed WAIT_TO_CONFIRM lines leave, the product scope adds / removes whole SKU histories |
+| Code | DONE (uncommitted, 23 files on 24590d2) | migration 0010 (5 additive tables, append-only triggers); `app/data/history_sync.py`, `app/bq/source_lines.py`; policy KEEP_OBSERVED_LINES (default) / FOLLOW_SOURCE; held lines, change log, run records, day checks, rollback, owner release; CLI sync-runs / sync-rollback / held-lines / history-check; version 1.2.13; independent review SAFE WITH CONDITIONS, every item fixed with a test |
+| Tests | PASS | backend 751 passed / 19 skipped / 0 failed; new test file 35 passed (20 mandatory cases); vitest 159 passed; typecheck + build OK; lint not configured |
+| Rehearsal | PASS (DB copy + real BigQuery read only) | copy 13:35:54; 01/01-21/10 in 9 chunks of 35 days 13:50-14:58: day check 239 -> 0 differing days of 294; 1,364,054 -> 1,364,268 rows, +8,092 units (3 SKUs added by the source), 933 held lines / 6,789 units; rerun writes nothing; rollback RBK-20261022074834-EDB725 exact; re-apply identical; six keys 6/6; training gate OK; other scopes, runs, forecasts, finals unchanged; 122 queries / 122.26 GB estimated |
+| Production | NOT TOUCHED | 1.2.11, schema 9, storage.json 8D79DBDD..., no job (GET only 15:09) |
+| Open | OWNER | deploy 1.2.12; commit + package + deploy 1.2.13; first controlled production backfill; keep / release the 7 SKUs removed by the source (6,323 units); gross-demand source incl. orders cancelled before the first load; window cancellations already removed (126 + 313 units, time travel until ~28/10) |
+| Checkpoint after | DONE | `checkpoints/source-1.2.13-history-sync-rehearsed-20261022.zip` SHA-256 64EB82052B636C5E655AC3FBA15EA8436617BAC0C53BC8EBB5B60969B69C2D0F (49 entries: 23 sources, git state, rehearsal log + JSON, scripts; verified) |
+
+# Resource audit RAM / CPU / disk (2026-10-22 15:00 - 17:30) - NOT committed, NOT deployed
+
+Owner prompt "AUDIT VA TOI UU TOAN DIEN RAM, CPU, O DIA VA DU LIEU" (watch the running rehearsal read-only first; no
+deploy, push, schedule / storage / credential change, promotion; no bulk deletion; quality parameters unchanged unless
+benchmarked). Report: `reports/resource-audit-20261022/` (FINAL_REPORT 12 points, evidence/, workbook). Status
+READY_FOR_EXTERNAL_SETUP.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Rehearsal watch | DONE | read only until exit 0 (14:58); silent monitor = `cut` buffering in the Git Bash pipe; PowerShell watcher (FileShare.ReadWrite, per-line flush) tested PASS 5/5 on Windows after fixing its `0..-1` range bug |
+| Baseline | DONE | machine 15:15: 1,095 MB available, commit 84 %, page file 6.65 GB; browsers ~13.6 GB, python of another account (PID 10412) 4.19 GB, app 7316 2.75 GB (29 MB resident); per-task benchmark on an isolated copy: training +2,403 MB peak / 1,672 s, quality report +1,008 MB, load +1,130 MB, export +1,169 MB (0.94 GB held until GC), D-1 +331 MB; no leak (3 rounds: 0.2 MB live objects) |
+| Checkpoint before | DONE | `checkpoints/source-1.2.13-before-resource-audit-20261022.zip` (B66AFA98...D63D) |
+| Changes | DONE (uncommitted) | `jobs/resources.py` (new), runner (resources per attempt, timed-out thread keeps its lock, one heavy job at a time, measured memory guard INSUFFICIENT_MEMORY / PAGING_EXPECTED), scheduler + explain + shap_audit (stale panels dropped, idle release 30 min), pipeline / model (frame and raw matrix released), features (preallocated training matrix), excel_io (export garbage collected); forced gc after every job measured useless (0-6 MB) and removed |
+| After | DONE | same copy: training peak growth -733 MB (-31 %), mean -587 MB (-24 %); matrix build -680 MB (-47 %, exactly equal on production data); export held -676 MB; model file byte-identical (68b95f22...), WAPE / bias / points identical |
+| Disk | PLAN (deletion refused) | C: 9.8 GB free; 15.4 GB of own scratch copies verified safe (7 steps) - the permission classifier refused the deletion, not worked around; 17 old installed versions ~5.0 GB (owner) |
+| Tests | PASS | 17 new tests; full suite 768 passed / 19 skipped / 0 failed (17:02, final code); monitor test 5/5; matrix equality on production data |
+| Production | NOT TOUCHED | 1.2.11, schema 9, storage.json 8D79DBDD..., D-0 16:00 SUCCEEDED during the benchmarks |
+| Checkpoint after | DONE | `checkpoints/source-1.2.13-after-resource-audit-20261022.zip` (all 36 changed / new files of 1.2.13 + this audit, git state, p32 evidence and scripts; SHA-256 in the `.sha256` file next to it: this row is not in the copy inside the ZIP) |
+| Next | OWNER | verified scratch cleanup 15.4 GB (command in the report, section 12); old installed versions; commit 1.2.13; deploy 1.2.12 then 1.2.13; partition of the D-1 source table; identify python PID 10412 |

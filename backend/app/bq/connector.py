@@ -226,7 +226,9 @@ def _run(client, bq, kind: str, sql: str, params: list | None = None, dry_run_on
     sql = f"-- df:{kind}\n{sql}"
     if from_lib:
         from google.cloud import bigquery
-        qp = [bigquery.ScalarQueryParameter(n, t, v) for n, t, v in (params or [])]
+        # 1.2.13: a list value is an ARRAY parameter (line evidence of the history sync: days, SKUs, order codes)
+        qp = [bigquery.ArrayQueryParameter(n, t, list(v)) if isinstance(v, (list, tuple))
+              else bigquery.ScalarQueryParameter(n, t, v) for n, t, v in (params or [])]
         dry = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False, query_parameters=qp)
         cfg = bigquery.QueryJobConfig(maximum_bytes_billed=bq.maximum_bytes_billed, query_parameters=qp)
     else:

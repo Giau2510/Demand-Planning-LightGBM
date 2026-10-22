@@ -206,6 +206,9 @@ def test_backfill_needs_a_matching_preview_backs_up_first_and_replaces_only_its_
     y = timeutil.today_vn() - timedelta(days=1)
     old = y - timedelta(days=5)
     fake = _production([_row(y, "A", 5), _row(y, "B", 1), _row(y, "GONE", 4), _row(y, "MISS", 2, None, None, 1)])
+    # 1.2.13: this test checks the 1.2.9 replacement mechanics, i.e. the FOLLOW_SOURCE history policy (a key the source
+    # dropped is removed); the default KEEP_OBSERVED_LINES on the same scenario: test_v1213_history_sync.py
+    ss.update("data_policy", {"history_change_policy": "FOLLOW_SOURCE"})
     sync.run_d1_sync("J1")                                               # regular load: the baseline
     with db.tx() as c:                                                   # a stored day outside the backfill window
         c.execute("INSERT INTO demand_daily(scope_key, data_source, order_date, sku_id, fc_id, qty, n_orders, loaded_at, "

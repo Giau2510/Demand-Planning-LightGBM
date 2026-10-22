@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
@@ -30,10 +31,13 @@ from datetime import date, datetime, timedelta
 from .. import db
 from .. import settings_service as ss
 from ..timeutil import now_iso, now_utc, now_vn, parse_iso, vn_slot
-from . import runner
+from . import resources, runner
 
 log = logging.getLogger("df.scheduler")
 MAX_MISSED_LOOKBACK_DAYS = 14
+# 1.2.13: explanation caches (a run's whole panel, SHAP traces) are given back after this long without a request
+IDLE_CACHE_SECONDS = 30 * 60
+_PKG = __name__.rsplit(".", 2)[0]
 
 
 def d0_key(d: date, hhmm: str) -> str:
@@ -198,7 +202,26 @@ class Scheduler:
     def _loop(self) -> None:
         while not self._stop.is_set():
             self.safe_tick()
+            self.release_idle_caches()
             self._stop.wait(self.tick_seconds)
+
+    @staticmethod
+    def release_idle_caches(max_idle_s: float = IDLE_CACHE_SECONDS) -> int:
+        """1.2.13: the server keeps no explanation panel / SHAP trace while nobody uses them: after max_idle_s without
+        a request they are dropped and the heap given back. Only modules already loaded are checked (nothing heavy is
+        imported for it). Never raises; returns the number of cache entries dropped."""
+        try:
+            n = 0
+            for name in ("ml.explain", "ml.shap_audit"):
+                mod = sys.modules.get(f"{_PKG}.{name}")
+                if mod is not None:
+                    n += mod.release_idle(max_idle_s)
+            if n:
+                log.info("idle explanation caches released", extra={"ctx": {"entries": n, **resources.release_memory()}})
+            return n
+        except Exception:  # noqa: BLE001 - housekeeping only
+            log.warning("idle cache release failed", exc_info=True)
+            return 0
 
     def safe_tick(self) -> str:
         """One loop iteration. A long write transaction (e.g. a D-1 full reload) can hold the database lock longer than

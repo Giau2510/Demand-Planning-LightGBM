@@ -579,7 +579,8 @@ def test_migration_0007_is_additive_and_reversible_on_a_copy(tmp_path):
     res = db.migrate(src)
     # 1.2.9b: 0008 (customer counts, additive) follows 0007 in the same upgrade
     assert res["applied"] == ["0007_open_hours.sql", "0008_customer_aggregates.sql",
-                              "0009_actual_finalization.sql"] and res["to"] == 9      # 0009: seventh batch
+                              "0009_actual_finalization.sql",                         # 0009: seventh batch
+                              "0010_history_sync.sql"] and res["to"] == 10            # 0010: 1.2.13 history sync
     c = sqlite3.connect(src)
     cols7 = [r[1] for r in c.execute("PRAGMA table_info(demand_daily)")]
     assert cols7 == cols6 + ["open_hours", "open_hours_status", "customer_count", "repeat_customer_count",

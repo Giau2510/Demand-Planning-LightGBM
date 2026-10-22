@@ -143,6 +143,23 @@ def main(argv=None) -> int:
     af.add_argument("--db", help="dry run on this database file (read-only); default: the configured database")
     af.add_argument("--apply", action="store_true", help="finalize the eligible days in the configured database")
     af.add_argument("--summary", action="store_true", help="dry run: counts only, without the per-day list")
+    # 1.2.13: history sync (data/history_sync.py)
+    sr_ = sub.add_parser("sync-runs", help="1.2.13: the latest D-1 / backfill / rollback / release runs with their counts")
+    sr_.add_argument("--limit", type=int, default=20)
+    rb = sub.add_parser("sync-rollback", help="1.2.13: restore the stored rows of one run as they were before it (dry run "
+                                             "unless --apply; an online backup first)")
+    rb.add_argument("--run", required=True, help="run id (D1L-... / HRL-...) from sync-runs")
+    rb.add_argument("--apply", action="store_true")
+    hl = sub.add_parser("held-lines", help="1.2.13: order lines kept although the source dropped them - summary, or an "
+                                          "explicit owner release (dry run unless --apply)")
+    hl.add_argument("--release", action="store_true", help="release the matching ACTIVE held lines (owner decision)")
+    hl.add_argument("--cause", choices=["ORDER_GONE", "LINE_GONE", "PENDING_GONE", "QTY_REDUCED", "NO_EVIDENCE"])
+    hl.add_argument("--sku")
+    hl.add_argument("--from", dest="start")
+    hl.add_argument("--to", dest="end")
+    hl.add_argument("--apply", action="store_true")
+    sub.add_parser("history-check", help="1.2.13: compare the stored history before the D-1 window with the source now "
+                                         "(read-only BigQuery; records the day checks)")
     a = ap.parse_args(argv)
     from . import paths
     try:
@@ -150,6 +167,67 @@ def main(argv=None) -> int:
     except paths.StorageError as e:
         print(json.dumps({"ok": False, "code": e.code, "detail": e.detail}, ensure_ascii=False))
         return 3
+
+
+def _history_cmd(a) -> int:
+    """1.2.13 history-sync commands on the configured database (data/history_sync.py)."""
+    from . import db, paths
+    from . import settings_service as ss
+    from .data import history_sync
+    from .data.demand import bigquery_scope_key
+    from .messages import AppError
+    paths.ensure_storage()
+    # never migrates: run from a newer source tree against an older installation, a migration would make the installed
+    # version refuse its own database. The commands need the history-sync tables (schema 10, 1.2.13).
+    with db.read() as c:
+        ver = c.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] \
+            if c.execute("SELECT 1 FROM sqlite_master WHERE name='schema_migrations'").fetchone() else None
+    if (ver or 0) < 10:
+        print(json.dumps({"ok": False, "refused": f"database schema {ver}: the history-sync commands need schema 10 "
+                                                  "(release 1.2.13 installed); nothing was changed"}, ensure_ascii=False))
+        return 2
+    scope_key = bigquery_scope_key(ss.get("bigquery"))
+    try:
+        if a.cmd == "sync-runs":
+            with db.read() as c:
+                runs = db.rows(c, "SELECT id, kind, status, window_start, window_end, policy, source_version, started_at, "
+                                  "finished_at, summary_json, backup, rolled_back_by FROM demand_sync_runs WHERE scope_key=? "
+                                  "ORDER BY started_at DESC, rowid DESC LIMIT ?", (scope_key, a.limit))
+            for r in runs:
+                r["summary"] = json.loads(r.pop("summary_json") or "{}")
+            res = {"ok": True, "scope_key": scope_key, "runs": runs}
+        elif a.cmd == "sync-rollback":
+            res = {"ok": True, **history_sync.rollback(a.run, apply=a.apply)}
+        elif a.cmd == "held-lines":
+            if a.release:
+                res = {"ok": True, **history_sync.release_holds(scope_key, a.cause, a.sku, a.start, a.end, apply=a.apply)}
+            else:
+                with db.read() as c:
+                    rows = db.rows(c, "SELECT cause, status, COUNT(*) AS lines, TOTAL(qty) AS units, COUNT(DISTINCT "
+                                      "order_date || '|' || sku_id || '|' || fc_id) AS keys, MIN(order_date) AS first_day, "
+                                      "MAX(order_date) AS last_day FROM demand_held_lines WHERE scope_key=? GROUP BY 1, 2 "
+                                      "ORDER BY 1, 2", (scope_key,))
+                res = {"ok": True, "scope_key": scope_key, "policy": history_sync.policy(), "held_lines": rows}
+        else:
+            from datetime import date, timedelta
+            from .bq import connector, sql_sources
+            bq = ss.get("bigquery")
+            with db.read() as c:
+                st = c.execute("SELECT value_json FROM sync_state WHERE name=?", (f"last_d1_sync:{scope_key}",)).fetchone()
+            ws = json.loads(st[0]).get("window_start") if st else None
+            if not ws:
+                print(json.dumps({"ok": False, "refused": "no D-1 load recorded yet"}, ensure_ascii=False))
+                return 2
+            floor = connector.read_range(bq)[0]
+            end = date.fromisoformat(ws) - timedelta(days=1)
+            res = {"ok": True, **history_sync.day_check(scope_key, str(floor), str(end), sql_sources.snapshot("history"),
+                                                        "CLI")}
+    except AppError as e:
+        print(json.dumps({"ok": False, "code": e.code, "detail": e.detail, "params": e.params}, indent=2, default=str,
+                         ensure_ascii=False))
+        return 2
+    print(json.dumps(res, indent=2, default=str, ensure_ascii=False))
+    return 0
 
 
 def _run(a) -> int:
@@ -321,6 +399,8 @@ def _run(a) -> int:
             return 2
         print(json.dumps({"ok": not res["error"], **res}, indent=2, ensure_ascii=False, default=str))
         return 1 if res["error"] else 0
+    elif a.cmd in ("sync-runs", "sync-rollback", "held-lines", "history-check"):
+        return _history_cmd(a)
     elif a.cmd == "info":
         from . import __version__
         print(json.dumps({"version": __version__, "data_dir": str(paths.data_dir()), "db": str(paths.db_path()),

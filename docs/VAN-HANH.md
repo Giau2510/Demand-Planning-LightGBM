@@ -196,10 +196,40 @@ ADC của tài khoản Windows khác (ví dụ Administrator) không dùng đư�
 `batch_id`, `snapshot_id`, `training_run_id`, `forecast_run_id` khi phù hợp. Không ghi secret (có lọc từ khóa
 `token/password/private_key…`) và không ghi toàn bộ dữ liệu đơn hàng. Lỗi khởi động: `logs\server.err.log`.
 
+## Tài nguyên máy: RAM, ổ đĩa (1.2.13)
+
+Số đo và kế hoạch chi tiết của ngày 22/10/2026: `reports\resource-audit-20261022\`.
+
+**Số liệu từng job.** Mỗi job ghi `resources`: bộ nhớ đỉnh / trung bình, CPU, I/O, RAM trống thấp nhất. Xem qua
+`GET /api/jobs/{id}` hoặc dòng log `job resources`. Quy tắc job nặng và kiểm tra bộ nhớ trước khi chạy:
+[SCHEDULER.md](SCHEDULER.md) mục *Tài nguyên của job*.
+
+**Bộ nhớ của server.**
+- Mọi job chạy trong tiến trình server.
+- Sau một tác vụ nặng (huấn luyện, báo cáo chất lượng, nạp toàn bộ dữ liệu), tiến trình vẫn giữ một phần bộ nhớ đã dùng:
+  bộ cấp phát của Python không trả hết cho Windows. Windows tự đẩy phần không dùng ra page file.
+- Muốn lấy lại ngay: khởi động lại ứng dụng ngoài khung lịch chạy, khi không có job nào đang chạy.
+
+**Ổ C:.** Chương trình đã cài (mỗi phiên bản khoảng 0,3 GB trong `%LOCALAPPDATA%\Programs\DemandForecast`), page file và
+thư mục tạm đều ở ổ C:. Dữ liệu, sao lưu và gói phát hành ở ổ D:.
+
+**Phiên bản đã cài.** Chỉ cần giữ:
+- phiên bản đang chạy;
+- phiên bản để rollback cùng schema;
+- phiên bản có Python mà link xem từ xa đang dùng (proxy hiện tại chạy bằng Python của 1.2.6).
+
+Phiên bản có schema cũ hơn database không chạy được nữa (`rollback-version` từ chối). Chúng chỉ được xóa khi chủ hệ
+thống duyệt; gói cài vẫn còn trong `dist\`.
+
+**Database.** Phần tăng nhanh nhất là snapshot forecast cuối ngày, khoảng 12 MB/ngày. Dọn theo quy tắc 90 ngày, xem mục
+*Snapshot forecast cuối ngày* ở trên. Từ 1.2.13, nhật ký thay đổi lịch sử thêm khoảng một dòng cho mỗi khóa mới mỗi ngày.
+
 ## Khắc phục sự cố
 
 | Triệu chứng | Nguyên nhân / cách xử lý |
 |---|---|
+| Job nặng có lý do `INSUFFICIENT_MEMORY` (1.2.13) | Dung lượng commit còn lại (RAM + page file) nhỏ hơn mức job đó đã cần ở các lần trước. Job chưa chạy và tự thử lại có giới hạn. Đóng bớt chương trình (trình duyệt nhiều tab, ...) rồi chờ lần thử lại hoặc chạy tay |
+| Kích thước / giờ sửa của `app.log` trong Explorer không đổi khi app đang chạy | Windows cập nhật thông tin thư mục chậm cho file đang mở. Mở file để xem dòng mới nhất |
 | `start.ps1` báo *failed to start* | Xem `logs\server.err.log`. Chạy `check-env.ps1`. |
 | `check-env` báo thiếu `vcomp140.dll` / LightGBM lỗi | `winget install Microsoft.VCRedist.2015+.x64` |
 | Cổng 8765 bị chiếm | Đặt `DF_PORT` trong `app.env` |

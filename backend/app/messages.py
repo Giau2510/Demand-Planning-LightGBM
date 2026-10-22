@@ -215,6 +215,33 @@ CATALOG: dict[str, tuple[str, str]] = {
     "TIMEOUT": ("Job vượt thời gian cho phép.", "Job exceeded its timeout."),
     "RETRIES_EXHAUSTED": ("Đã hết số lần thử lại.", "Retries exhausted."),
     "SOURCE_INCOMPLETE": ("Nguồn chưa hoàn tất dữ liệu D-1.", "Source has not completed D-1 data."),
+    # 1.2.13: history sync (data/history_sync.py)
+    "STORED_DATA_CHANGED": ("Dữ liệu đã lưu thay đổi trong lúc chuẩn bị ghi — không ghi gì, job sẽ thử lại.",
+                            "The stored data changed while the write was prepared — nothing written, the job retries."),
+    "SYNC_ROLLBACK_REFUSED": ("Không hoàn tác được lần nạp này: có khóa đã bị một lần ghi sau thay đổi, hoặc lần nạp không "
+                              "còn ở trạng thái đã ghi. Không thay đổi gì.",
+                              "This load cannot be rolled back: a later write changed some of its keys, or it is not "
+                              "committed any more. Nothing was changed."),
+    "HISTORY_SOURCE_CHANGED": ("Nguồn đã sửa dữ liệu của các ngày cũ (ngoài cửa sổ D-1). Chạy 'Xem trước' đọc lại lịch sử "
+                               "cho các ngày đó rồi đọc lại có kiểm soát.",
+                               "The source changed older days (outside the D-1 window). Run a history backfill preview "
+                               "of those days, then a controlled backfill."),
+    "HISTORY_CHECK_FAILED": ("Không kiểm tra được lịch sử ngoài cửa sổ D-1 sau lần nạp (không ảnh hưởng dữ liệu đã ghi).",
+                             "The history outside the D-1 window could not be checked after the load (the written data "
+                             "is not affected)."),
+    "HISTORY_CHANGE_TOO_LARGE": ("Quá nhiều khóa đã lưu bị nguồn thay đổi trong một lần chạy — không ghi gì. Đọc lại theo "
+                                 "khoảng ngày nhỏ hơn, hoặc chủ hệ thống quyết định chính sách.",
+                                 "Too many stored keys changed by the source in one run — nothing written. Re-read a smaller "
+                                 "window, or the owner decides the policy."),
+    "FULL_RELOAD_HELD_LINES": ("Nạp lại toàn bộ (mapping / khoảng / SQL đổi) đã GIỮ các dòng mà định nghĩa mới bỏ đi. Chủ "
+                               "hệ thống quyết định giữ hay bỏ (app.cli held-lines --release).",
+                               "A full reload (mapping / range / SQL changed) KEPT the lines the new definition drops. The "
+                               "owner decides to keep or release them (app.cli held-lines --release)."),
+    # 1.2.13: resource guard of heavy jobs (jobs/runner.py)
+    "INSUFFICIENT_MEMORY": ("Máy không còn đủ bộ nhớ (RAM + page file) cho job nặng này theo mức đã đo ở các lần chạy "
+                            "trước — job chưa chạy, sẽ thử lại sau (có giới hạn). Đóng bớt ứng dụng nếu lỗi lặp lại.",
+                            "Not enough memory (RAM + page file) left for this heavy job, by what its earlier runs "
+                            "measurably needed — not started, retried later (bounded). Close other programs if it repeats."),
     "WAITING_FOR_SIGNAL": ("Đang chờ tín hiệu hoàn tất dữ liệu từ nguồn.", "Waiting for the source completion signal."),
     "D1_NOT_SYNCED": ("Dữ liệu D-1 chưa đồng bộ thành công hôm nay — hoãn huấn luyện.", "D-1 data not synced today — training deferred."),
     "ALREADY_SUCCEEDED": ("Job này đã chạy thành công — không chạy lại.", "This job already succeeded — not re-run."),

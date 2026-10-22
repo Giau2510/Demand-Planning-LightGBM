@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import time
 from collections import OrderedDict
 
 import numpy as np
@@ -34,6 +35,7 @@ _cache: "OrderedDict[tuple, dict]" = OrderedDict()
 _CACHE_MAX = 32
 _cache_lock = threading.Lock()
 _build_lock = threading.Lock()      # 1.2.8: one reproduction (panel build + model run) at a time, see _reproduce
+_last_used = [0.0]                  # 1.2.13: time.monotonic() of the last reproduction request (release_idle)
 
 FEATURE_INFO = {
     "sku_code": ("Mã SKU dạng danh mục (categorical) để model phân biệt SKU.", "SKU as a categorical code."),
@@ -109,6 +111,7 @@ def _reproduce(run: dict, tr: dict, sku: str, fc_id: str, method: str | None = N
     check = {k: v for k, v in state.items() if k != "key"}
     # data change, or a new verdict on the same data (e.g. an attestation) -> different key -> no stale explanation
     key = (run["id"], sku, fc_id, state["key"], state["status"])
+    _last_used[0] = time.monotonic()
     hit = _cached(key)
     if hit is not None:
         return hit
@@ -184,7 +187,40 @@ def _run_inputs(run: dict, tr: dict, key: tuple) -> dict | None:
     with _inputs_lock:
         _inputs.clear()
         _inputs[key] = v
+    _drop_stale_panels(v)
     return v
+
+
+def _drop_stale_panels(keep: dict | None) -> int:
+    """1.2.13: a cached reproduction holds its run's whole panel (~200 MB on the production data). When the run inputs
+    change (another run, another data version) the entries of the previous inputs would keep that panel alive until 32
+    newer entries push them out; they are dropped now. Entries without a panel (DATA_CHANGED, ...) stay."""
+    panel = (keep or {}).get("panel")
+    with _cache_lock:
+        stale = [k for k, x in _cache.items() if x.get("panel") is not None and x.get("panel") is not panel]
+        for k in stale:
+            del _cache[k]
+    return len(stale)
+
+
+def release_idle(max_idle_s: float) -> int:
+    """1.2.13: after max_idle_s without an explanation request, drop the run inputs (panel, model) and the cached
+    reproductions - the server keeps no panel while nobody explains; the next request rebuilds them (~40 s). Skipped while
+    a reproduction is being built. Returns the number of entries dropped."""
+    if not (_inputs or _cache) or time.monotonic() - _last_used[0] <= max_idle_s:
+        return 0
+    if not _build_lock.acquire(blocking=False):
+        return 0
+    try:
+        with _inputs_lock:
+            n = len(_inputs)
+            _inputs.clear()
+        with _cache_lock:
+            n += len(_cache)
+            _cache.clear()
+        return n
+    finally:
+        _build_lock.release()
 
 
 def _booster(inp: dict, tr: dict):

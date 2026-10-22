@@ -15,8 +15,8 @@ import pandas as pd
 
 from . import db
 from . import settings_service as ss
-from .bq import connector, sql_sources
-from .data import customers, open_hours
+from .bq import connector, source_lines, sql_sources
+from .data import history_sync, open_hours, open_hours_override
 from .data.demand import active_demo_batch, bigquery_scope_key, resolve_scope
 from .messages import AppError
 from .timeutil import now_iso, now_utc, now_vn, today_vn
@@ -136,6 +136,37 @@ def _after_d1(scope_key: str, job_id: str | None) -> None:
     actual_close.reconcile_quietly(scope_key, "BIGQUERY", f"D-1 job {job_id or '-'}")
 
 
+def _source_version(snap: dict) -> str | None:
+    """1.2.13: version (modified time) of the history source table before a read; None for a user SQL source."""
+    return None if connector._is_sql(snap) else source_lines.table_version()
+
+
+def _same_version(snap: dict, version: str | None) -> bool:
+    """The source table still has the version read at the start (a rebuild in between = an inconsistent read)."""
+    return version is None or source_lines.table_version() == version
+
+
+def _history_day_check(scope_key: str, bq, window_start: str, snap: dict, run_id: str) -> dict | None:
+    """1.2.13, after a regular D-1 load - never fails it: the stored days BEFORE the window this load re-read are
+    compared with the source (history_sync.day_check, one capped read-only query). A changed day raises the alert
+    HISTORY_SOURCE_CHANGED: the controlled path is a backfill preview of those days."""
+    dp = ss.get("data_policy")
+    if not dp.history_day_check:
+        return {"status": "OFF"}
+    floor = connector.read_range(bq)[0]
+    end = date.fromisoformat(window_start) - timedelta(days=1)
+    if end < floor:
+        return {"status": "SKIPPED", "reason": "NO_DAY_BEFORE_WINDOW"}
+    try:
+        return history_sync.day_check(scope_key, str(floor), str(end), snap, run_id)
+    except Exception as ex:  # noqa: BLE001 - informative only; the next load checks again
+        log.warning("history day check failed", exc_info=True, extra={"ctx": {"run_id": run_id}})
+        err = ex.to_dict() if isinstance(ex, AppError) else {"code": type(ex).__name__, "detail": str(ex)[:300]}
+        with db.tx() as c:
+            db.alert(c, "WARNING", "HISTORY_CHECK_FAILED", {"run_id": run_id, "error": err}, "scope", scope_key)
+        return {"status": "FAILED", "error": err}
+
+
 def _backfill_window(start: str | None, end: str | None, floor: date, day: date) -> tuple[date, date]:
     """[start, end] bounded by the read range (floor .. yesterday), at most MAX_BACKFILL_DAYS days."""
     s = max(date.fromisoformat(start or str(floor)), floor)
@@ -192,10 +223,11 @@ def _d1_load_marker(st: dict | None) -> tuple:
     return st.get("synced_at"), st.get("load_id")
 
 
-def _recheck_preview(c, preview: dict, scope_key: str, before: dict, rows: list[dict]) -> None:
+def _recheck_preview(c, preview: dict, scope_key: str, before: dict, rows: list[dict], plan: dict | None = None) -> None:
     """Under the write lock, right before the stored days are replaced (findings 1-2 of the 1.2.9 data review): the
     preview is still the latest and READY (not used by another job meanwhile), no regular D-1 load changed the stored
-    data since, and what this load would change is exactly what the preview showed. Otherwise nothing is written."""
+    data since, and what this load would change is exactly what the preview showed (1.2.13: including the held lines -
+    same plan digest). Otherwise nothing is written."""
     cur = _state_get(c, BACKFILL_PREVIEW_STATE) or {}
     why = None
     if cur.get("preview_id") != preview.get("preview_id") or cur.get("status") != "READY":
@@ -210,6 +242,9 @@ def _recheck_preview(c, preview: dict, scope_key: str, before: dict, rows: list[
         seen = (pc.get("series_days_new"), pc.get("series_days_updated"), pc.get("series_days_removed"))
         if (n, u, r_) != seen:
             why = f"the data changed since the preview: new/updated/removed now {n}/{u}/{r_}, previewed {seen[0]}/{seen[1]}/{seen[2]}"
+        elif plan is not None and (preview.get("history_sync") or {}).get("digest") != plan["digest"]:
+            why = (f"the held-line plan changed since the preview (digest now {plan['digest']}, previewed "
+                   f"{(preview.get('history_sync') or {}).get('digest')})")
     if why:
         raise AppError("BACKFILL_PREVIEW_REQUIRED", 409, detail=why)
 
@@ -265,7 +300,10 @@ def backfill_preview(start: str, end: str) -> dict:
     if e == day and not connector.completion_signal(day):
         # finding 6: yesterday may still be incomplete in the source (the regular D-1 waits for the signal)
         out["warnings"].append({"code": "YESTERDAY_NOT_CONFIRMED", "day": str(day)})
+    plan = None
     try:
+        version = _source_version(snap)
+        out["source_version"] = version
         res = connector.fetch_daily(s, e, snap, context="backfill preview")
         check_output(res["rows"])
         with db.read() as c:
@@ -317,16 +355,30 @@ def backfill_preview(start: str, end: str) -> dict:
                                         "sync watermark (last_d1_sync)"],
                         "notes": ["a closed day (23:59 close) of the last days whose actual changes gets a NEW close "
                                   "revision; earlier revisions are never changed",
-                                  "a backfill is never followed by a training (flows.d1_success_today ignores it)"]}})
+                                  "a backfill is never followed by a training (flows.d1_success_today ignores it)",
+                                  "1.2.13: order lines the source dropped since they were stored are kept (held lines, "
+                                  "history_sync); every changed row is logged and the backfill can be rolled back"]}})
+        # 1.2.13: what the backfill would write under the history policy (source + held lines, line evidence read
+        # from BigQuery for the keys the source changed) - the backfill must find exactly this plan (digest)
+        plan = history_sync.prepare(scope_key, res["rows"], str(s), str(e), str(s), str(e), snap)
+        if not _same_version(snap, version):
+            raise AppError("SOURCE_INCOMPLETE", 409, detail=json.dumps({"reason": "SOURCE_CHANGED_DURING_READ",
+                                                                        "version_before": version}))
+        # 1.2.13: would the six-key open-hours approval carry over to the rows this backfill rewrites (shown before)
+        plan["summary"]["open_hours_override"] = open_hours_override.verify_load(scope_key, res["rows"], str(s), str(e))
+        out["history_sync"] = plan["summary"]
     except AppError as ex:
+        plan = None
         out.update(status="BLOCKED" if ex.code in ("BQ_DATA_DUPLICATES", "SOURCE_INCOMPLETE") else "FAILED",
                    error=ex.to_dict())
         if ex.code == "BQ_DATA_DUPLICATES":
             out["duplicate_check"] = ex.params.get("duplicate_check")
+    if plan is not None:
+        history_sync.record_preview(plan, out["preview_id"], out.get("source_version"), out["checked_at"])
     with db.tx() as c:
         _state_set(c, BACKFILL_PREVIEW_STATE, out)
         db.audit(c, "D1_BACKFILL_PREVIEW", "scope", scope_key,
-                 {k: out.get(k) for k in ("preview_id", "status", "window", "compare", "open_hours")})
+                 {k: out.get(k) for k in ("preview_id", "status", "window", "compare", "open_hours", "history_sync")})
     return out
 
 
@@ -377,6 +429,8 @@ def run_d1_sync(job_id: str | None = None, fallback_mode: bool | None = None, ba
         # incremental only when the previous load used the SAME mapping/range/SQL; otherwise reload the whole period
         start, full, _ = _d1_window(bq, st, day, mhash)
     # mapping vs live source, exact-duplicate gate on the raw rows (BLOCK: report, nothing written), aggregation
+    started = now_iso()
+    version = _source_version(snap)
     res = connector.fetch_daily(start, end, snap, context=f"D-1 job {job_id or '-'}")
     check_output(res["rows"])
     backup = None
@@ -389,11 +443,34 @@ def run_d1_sync(job_id: str | None = None, fallback_mode: bool | None = None, ba
         except Exception as ex:  # noqa: BLE001
             raise AppError("BACKFILL_BACKUP_FAILED", 409, detail=str(ex)[:500]) from ex
         backup = {"file": bk.name, "bytes": bk.stat().st_size}
-    loaded = now_iso()
     w0, w1 = (str(floor), str(end)) if full else (res["window"]["start"], str(end))
     # a full reload replaces the MODEL-INPUT part of the scope (from the data window start); rows stored before the
     # window are history that is no longer used and is kept untouched
     keep_before = ss.get("data_policy").window_start_date
+    load_id = db.new_id("D1L")
+    if not res["rows"]:
+        with db.read() as c:
+            q = ("SELECT COUNT(*) FROM demand_daily WHERE scope_key=? AND order_date >= ?" if full else
+                 "SELECT COUNT(*) FROM demand_daily WHERE scope_key=? AND order_date BETWEEN ? AND ?")
+            n_stored = c.execute(q, (scope_key, keep_before) if full else (scope_key, w0, w1)).fetchone()[0]
+        if n_stored:
+            # an empty read never replaces stored days (checked again under the write lock below)
+            raise Retryable("SOURCE_INCOMPLETE", json.dumps({"reason": "EMPTY_READ", "rows_read": res["rows_read"],
+                                                              "window": [w0, w1], "rows_stored": n_stored}))
+    # 1.2.13 (owner rule of 22/10/2026, data/history_sync.py): what this load writes - the source rows plus the order
+    # lines the source dropped since they were stored (held lines), with line evidence read from BigQuery for the keys
+    # the source changed. Computed BEFORE the write lock; the write re-checks that the stored data did not move.
+    plan = history_sync.prepare(scope_key, res["rows"], res["window"]["start"], str(end),
+                                keep_before if full else w0, None if full else w1, snap)
+    # 1.2.13: the owner's six-key open-hours approval carries over to the rows this load rewrites only if the source still
+    # gives the approved evidence - checked here and stored with the run (data/open_hours_override.verify_load)
+    plan["summary"]["open_hours_override"] = open_hours_override.verify_load(scope_key, res["rows"],
+                                                                             res["window"]["start"], str(end))
+    if not _same_version(snap, version):
+        # the source table was rebuilt while this load read it: never written, the job retries on a consistent version
+        raise Retryable("SOURCE_INCOMPLETE", json.dumps({"reason": "SOURCE_CHANGED_DURING_READ", "version_before": version}))
+    # the write time (demand_daily.loaded_at, change log, run): taken after the evidence reads, right before the lock
+    loaded = now_iso()
     with db.tx() as c:
         if full:
             q, prm = ("SELECT order_date, sku_id, fc_id, qty FROM demand_daily WHERE scope_key=? AND order_date >= ?",
@@ -409,31 +486,43 @@ def run_d1_sync(job_id: str | None = None, fallback_mode: bool | None = None, ba
             raise Retryable("SOURCE_INCOMPLETE", json.dumps({"reason": "EMPTY_READ", "rows_read": res["rows_read"],
                                                               "window": [w0, w1], "rows_stored": len(before)}))
         if backfill:
-            _recheck_preview(c, preview, scope_key, before, res["rows"])
-        if full:
-            c.execute("DELETE FROM demand_daily WHERE scope_key=? AND order_date >= ?", (scope_key, keep_before))
-        else:
-            c.execute("DELETE FROM demand_daily WHERE scope_key=? AND order_date BETWEEN ? AND ?", (scope_key, w0, w1))
+            _recheck_preview(c, preview, scope_key, before, res["rows"], plan)
         # 1.2.9: open hours of the day x SKU x FC (value only when every line agrees and is within 0..24, else a status
-        # and no value - data/open_hours.py); the demand itself is written exactly as before
+        # and no value - data/open_hours.py); 1.2.9b: customer counts (data/customers.py) - NULL unless mapped.
+        # 1.2.13: the stored rows of the window are replaced by the plan's rows (source + held lines) - every changed
+        # row logged with its full before / after, the held lines recorded, one run record (history_sync.write)
+        try:
+            # a backfill replaces only the rows that change (an unchanged row keeps its loaded_at); a regular load
+            # rewrites its whole window as before (one loaded_at per day for the finalization of completed days)
+            wr = history_sync.write(c, plan, res["rows"], run_id=load_id, run_kind="BACKFILL" if backfill else "D1_SYNC",
+                                    loaded=loaded, data_source="BIGQUERY", source_version=version, job_id=job_id,
+                                    backup=backup, preview_id=(preview or {}).get("preview_id"), started=started,
+                                    rewrite_all=not backfill)
+        except history_sync.StaleBase as ex:
+            raise Retryable("STORED_DATA_CHANGED", str(ex)) from ex
+        if full and plan["new_holds"]:
+            # a full reload (mapping / range / SQL changed) under KEEP_OBSERVED_LINES kept the lines the new definition
+            # drops: the owner decides (release them with app.cli held-lines --release, or keep them)
+            db.alert(c, "WARNING", "FULL_RELOAD_HELD_LINES", {"run_id": load_id, "holds": len(plan["new_holds"]),
+                                                               "units": plan["summary"]["holds_new_units"]},
+                     "scope", scope_key)
         oh = [open_hours.row_cell(r) for r in res["rows"]]
-        # 1.2.9b: customer counts (data/customers.py) - NULL unless the owner mapped a customer column
-        c.executemany(
-            "INSERT INTO demand_daily(scope_key, data_source, order_date, sku_id, fc_id, qty, n_orders, avg_unit_price, "
-            "avg_discount_rate, promo_share, voucher_share, loaded_at, open_hours, open_hours_status, customer_count, "
-            "repeat_customer_count, repeat_interval_days_sum) VALUES (?, 'BIGQUERY', ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            [(scope_key, str(r["order_date"])[:10], r["sku_id"], r["fc_id"], float(r["qty"]), int(r["n_orders"] or 0),
-              r.get("avg_unit_price"), r.get("avg_discount_rate"), r.get("promo_share"), r.get("voucher_share"), loaded,
-              h[0], h[1], *customers.stored(r))
-             for r, h in zip(res["rows"], oh)])
         oh_counts = {s: sum(1 for h in oh if h[1] == s) for s in open_hours.STATUSES}
         oh_counts["NOT_READ"] = sum(1 for h in oh if h[1] is None)
-        # what was written must equal the valid total read from BigQuery, otherwise nothing is committed
-        w = c.execute("SELECT COUNT(*), COALESCE(SUM(qty), 0) FROM demand_daily WHERE scope_key=? AND order_date "
-                      "BETWEEN ? AND ?", (scope_key, res["window"]["start"], str(end))).fetchone()
-        if w[0] != len(res["rows"]) or abs(float(w[1]) - res["qty_valid"]) > 1e-6 * max(1.0, abs(res["qty_valid"])):
+        # what was written must equal the valid total read from BigQuery plus the held lines of the plan, otherwise
+        # nothing is committed
+        if full:
+            w = c.execute("SELECT COUNT(*), COALESCE(SUM(qty), 0) FROM demand_daily WHERE scope_key=? AND order_date >= ?",
+                          (scope_key, keep_before)).fetchone()
+        else:
+            w = c.execute("SELECT COUNT(*), COALESCE(SUM(qty), 0) FROM demand_daily WHERE scope_key=? AND order_date "
+                          "BETWEEN ? AND ?", (scope_key, w0, w1)).fetchone()
+        want_qty = res["qty_valid"] + plan["summary"]["held_units_after"]
+        tol = 1e-6 * max(1.0, abs(want_qty))
+        if w[0] != wr["rows_written"] or abs(float(w[1]) - wr["qty_written"]) > tol or abs(wr["qty_written"] - want_qty) > tol:
             raise AppError("BQ_SYNC_RECONCILIATION_FAILED", 409,
-                           detail=f"written {w[0]} rows / {w[1]} qty; read {len(res['rows'])} rows / {res['qty_valid']} qty")
+                           detail=f"written {w[0]} rows / {w[1]} qty; read {len(res['rows'])} rows / {res['qty_valid']} qty "
+                                  f"+ held {plan['summary']['held_units_after']}")
         after = {(str(r["order_date"])[:10], r["sku_id"], r["fc_id"]): float(r["qty"] or 0) for r in res["rows"]}
         same = set(after) & set(before)
         info = {"synced_at": loaded, "watermark": str(day) if not backfill else (st or {}).get("watermark"),
@@ -456,7 +545,9 @@ def run_d1_sync(job_id: str | None = None, fallback_mode: bool | None = None, ba
                 "open_hours_lost": _open_hours_lost(stored_ok, res["rows"], [h[1] for h in oh]),
                 "preview_id": (preview or {}).get("preview_id"), "pre_backfill_backup": backup,
                 "source_batch_id": res["source_batch_id"], "max_source_updated_at": res["max_source_updated_at"],
-                "estimated_bytes": res["estimated_bytes"], "job_id": job_id, "load_id": db.new_id("D1L")}
+                "estimated_bytes": res["estimated_bytes"], "job_id": job_id, "load_id": load_id,
+                # 1.2.13: source version read (stable during the load) and the history-sync plan that was written
+                "source_version": version, "history_sync": {**plan["summary"], "rows_logged": wr["rows_logged"]}}
         if not backfill:
             _state_set(c, f"last_d1_sync:{scope_key}", info)
         else:
@@ -464,7 +555,9 @@ def run_d1_sync(job_id: str | None = None, fallback_mode: bool | None = None, ba
             _state_set(c, BACKFILL_PREVIEW_STATE, {**preview, "status": "USED", "used_by_job": job_id, "used_at": loaded})
         db.audit(c, "D1_SYNC", "scope", scope_key, {k: v for k, v in info.items() if k != "excluded_by_reason"})
     _after_d1(scope_key, job_id)
-    return {"status": "SUCCEEDED", "reason_code": "BACKFILL_DONE" if backfill else None, **info}
+    # 1.2.13: the stored history before this load's window, compared with the source (informative, never failing)
+    hist = None if backfill else _history_day_check(scope_key, bq, res["window"]["start"], snap, load_id)
+    return {"status": "SUCCEEDED", "reason_code": "BACKFILL_DONE" if backfill else None, **info, "history_check": hist}
 
 
 def d1_dry_run() -> dict:

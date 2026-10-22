@@ -183,6 +183,16 @@ class DataPolicySettings(BaseModel):
     # earlier days stay stored and are still read by D-1 / backfill (read floor = window_start_date); they are only not
     # model input. Sources without open hours (DEMO / Excel) are not affected. Not part of the BigQuery mapping hash.
     training_start_rule: Literal["WINDOW_START", "OPEN_HOURS_COVERAGE"] = "WINDOW_START"
+    # 1.2.13 (owner rule of 22/10/2026, data/history_sync.py): the target is the quantity of the orders placed, so an
+    # order line the BigQuery source drops later (cancellation, unconfirmed WAIT_TO_CONFIRM, scope change) is KEPT in the
+    # stored demand (KEEP_OBSERVED_LINES); FOLLOW_SOURCE = the rule before 1.2.13 (stored = source). Not in the mapping
+    # hash: changing it never forces a full reload.
+    history_change_policy: Literal["KEEP_OBSERVED_LINES", "FOLLOW_SOURCE"] = "KEEP_OBSERVED_LINES"
+    # 1.2.13: after each regular D-1 load, compare the stored history before the D-1 window with the source (one capped
+    # read-only query); a changed day is reported (alert HISTORY_SOURCE_CHANGED) for a controlled backfill
+    history_day_check: bool = True
+    # 1.2.13: oldest source version used as line evidence (BigQuery time travel of the dataset: 168 h)
+    source_time_travel_hours: int = Field(160, ge=1, le=168)
 
     @field_validator("window_start_date")
     @classmethod

@@ -70,6 +70,9 @@ def train(p: Panel, cfg, cancel=None, weights: np.ndarray | None = None) -> tupl
         raise Cancelled()
     names = feature_names(cfg)
     ds = lgb.Dataset(X, y, weight=w, feature_name=names, categorical_feature=["sku_code", "fc_code"], free_raw_data=True)
+    # 1.2.13: the Dataset is now the only holder of the raw matrix; LightGBM drops it once the data is binned
+    # (free_raw_data), so the float32 matrix no longer stays in memory through all the boosting rounds (same model)
+    del X, y, w
     booster = lgb.train(lgb_params(cfg), ds, num_boost_round=cfg.num_boost_round)
     imp = booster.feature_importance(importance_type="gain")
     info["feature_importance"] = sorted(({"feature": n, "gain": float(g)} for n, g in zip(names, imp)),

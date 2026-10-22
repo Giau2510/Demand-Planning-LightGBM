@@ -115,11 +115,51 @@ sau giờ làm mới của nguồn, cấu hình bảng tín hiệu hoàn tất, 
 - **Timeout** mỗi job (mặc định 3600 s): quá hạn → job bị đánh dấu `TIMEOUT`, huấn luyện bị hủy trước bước publish.
   D-1 / D-0 không có cơ chế hủy: lần đọc đang chạy có thể chạy nốt sau khi job đã bị đánh dấu `TIMEOUT` (dữ liệu vẫn
   nhất quán vì mỗi lần ghi là một transaction có đối soát).
+  - Từ 1.2.13, luồng job còn chạy sau timeout **giữ khóa** của loại job đó đến khi thật sự kết thúc (khóa gia hạn mỗi
+    60 s). Lần thử lại chờ, không chạy chồng.
+  - Trước 1.2.13 khóa được nhả ngay. Lần thử lại có thể chạy song song với luồng cũ, ví dụ hai lần huấn luyện cùng lúc,
+    gấp đôi bộ nhớ.
 - **Kết quả huấn luyện ≠ trạng thái job:** model *không đạt chất lượng* (`REJECTED`) hoặc *lỗi huấn luyện* (`FAILED`)
   là kết quả của model; job vẫn ghi *Thành công*, cảnh báo nằm ở trang *Tổng quan*, không thử lại trong cùng ngày
   (khóa `TRAIN_PUBLISH:<ngày>`). Trang *Job & Scheduler* và (từ mã nguồn sau 1.1.8) trang *Lịch chạy dữ liệu* hiển
   thị thêm nhãn kết quả.
 - Lịch sử job: trang **Job & Scheduler** (trạng thái, lý do, số lần thử, thời điểm thử lại, lỗi, kết quả).
+
+## Tài nguyên của job (1.2.13)
+
+**Số liệu mỗi lần thử.** Mọi job ghi `resources` trong kết quả (`result_json`, xem qua `GET /api/jobs/{id}`) và một dòng
+log `job resources` (`backend/app/jobs/resources.py`, không cần gói thêm):
+- PID, thời gian chạy, CPU (user / kernel, % trên số luồng logic);
+- bộ nhớ riêng (private bytes) và working set: lúc bắt đầu, đỉnh, trung bình, lúc kết thúc (lấy mẫu mỗi 2 s);
+- số page fault, MB đọc / ghi;
+- RAM trống và dung lượng commit còn lại của máy (mức thấp nhất trong lúc chạy);
+- `other_jobs`: job khác chạy cùng lúc. Server chạy mọi job trong một tiến trình, nên số liệu là của cả tiến trình.
+
+Mẫu lấy mỗi 2 s: đỉnh của job rất ngắn (vài giây) có thể thấp hơn thực tế. Dọn chung sau mỗi job (`gc.collect` + nén
+heap) đã được đo trên bản sao (trả lại 0 MB sau huấn luyện, 6 MB sau D-1) nên không giữ; bộ nhớ được trả bằng cách
+không giữ dữ liệu lớn quá lúc cần (xem CHANGELOG 1.2.13).
+
+**Job nặng** gồm `TRAIN_PUBLISH`, `FORECAST_EXTEND` và backfill D-1.
+- Không bao giờ có hai job nặng chạy cùng lúc trong một tiến trình, kể cả job theo lịch. Trước 1.2.13 chỉ nút chạy tay
+  kiểm tra điều này.
+- Job đến sau chờ (`RETRY_WAIT`, lý do `LOCKED`) và chạy khi job kia xong.
+
+**Kiểm tra bộ nhớ trước job nặng.** Nhu cầu = mức tăng bộ nhớ riêng lớn nhất đo được ở 10 lần chạy gần nhất của cùng
+loại job. Không có ngưỡng cố định: số liệu là của chính máy này.
+
+| Điều kiện | Kết quả |
+|---|---|
+| Chưa có lần đo nào | `NO_BASELINE`: job chạy |
+| Commit còn lại (RAM + page file) < 1,25 × nhu cầu | `INSUFFICIENT_MEMORY`: job **chưa chạy**, tính là một lần thử (backoff như retry; hết lượt → *Thất bại* + `RETRIES_EXHAUSTED`). Job sẽ hết bộ nhớ nếu chạy |
+| RAM vật lý trống < nhu cầu | `PAGING_EXPECTED`: job **vẫn chạy**. Windows đẩy bộ nhớ của chương trình khác ra page file: chậm hơn, không lỗi |
+| Còn lại | `OK` |
+
+Trên máy hiện tại RAM trống thường chỉ khoảng 1 GB. Nếu hoãn theo RAM vật lý, huấn luyện sẽ bị chặn mãi.
+
+**Cache giải thích.**
+- Panel của một lần chạy (khoảng 190 MB trên dữ liệu production 22/10) và vết SHAP được trả lại sau 30 phút không có
+  yêu cầu giải thích.
+- Khi đổi lần chạy hoặc phiên bản dữ liệu, panel cũ được bỏ ngay.
 
 ## Công đoạn job (tiến trình thật, không có phần trăm)
 

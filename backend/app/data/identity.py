@@ -47,7 +47,15 @@ def _columns(cols) -> tuple[str, ...]:
     if c not in _ALLOWED:        # stored JSON never reaches the SQL text unchecked
         raise ValueError(f"unknown identity columns {c}")
     return c
-_cache: "OrderedDict[tuple, dict]" = OrderedDict()     # (scope_key, fingerprint) -> {date: (sha256, rows)}
+def _log_marker(conn, scope_key: str):
+    """Newest demand_change_log id of the scope (None before migration 0010)."""
+    try:
+        return conn.execute("SELECT MAX(id) FROM demand_change_log WHERE scope_key=?", (scope_key,)).fetchone()[0]
+    except Exception:  # noqa: BLE001 - a database before 1.2.13 has no change log
+        return None
+
+
+_cache: "OrderedDict[tuple, dict]" = OrderedDict()     # (scope_key, fingerprint, columns, log id) -> {date: (sha256, rows)}
 _CACHE_MAX = 4
 _lock = threading.Lock()
 
@@ -59,7 +67,9 @@ def day_hashes(scope_key: str, conn, cache: bool = True, fp: str | None = None,
     another database (a backup copy). fp: the fingerprint when the caller has it (one full-scope aggregate less).
     columns: the identity's own column list (CONTENT_COLUMNS for every run before 1.2.9)."""
     cols = _columns(columns)
-    key = (scope_key, fp or fingerprint(scope_key, conn), cols)
+    # 1.2.13: + the newest change-log entry of the scope - a rollback can restore the count, sum and newest loaded_at
+    # of the fingerprint while the content differs (history_sync logs every changed row)
+    key = (scope_key, fp or fingerprint(scope_key, conn), cols, _log_marker(conn, scope_key))
     with _lock:
         if cache and key in _cache:
             _cache.move_to_end(key)

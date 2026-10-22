@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import time
 from collections import OrderedDict
 
 import numpy as np
@@ -31,6 +32,17 @@ TIME_LIMIT_S = 60.0
 MAX_COMPONENTS = 3_000_000
 _cache: "OrderedDict[tuple, dict]" = OrderedDict()
 _CACHE_MAX = 6
+_last_used = [0.0]            # 1.2.13: time.monotonic() of the last audit request (release_idle)
+
+
+def release_idle(max_idle_s: float) -> int:
+    """1.2.13: drop the cached audits (each holds the parsed model and up to MAX_COMPONENTS trace terms) after max_idle_s
+    without an audit request. Returns the number of entries dropped."""
+    if not _cache or time.monotonic() - _last_used[0] <= max_idle_s:
+        return 0
+    n = len(_cache)
+    _cache.clear()
+    return n
 
 
 def _check(name, ok, **kw):
@@ -40,6 +52,7 @@ def _check(name, ok, **kw):
 def audit(run_id: str, sku: str, fc_id: str, target_date: str) -> dict:
     """Full audit (all features, all terms) - cached by model sha256 + run + row + feature-row hash."""
     from .explain import _reproduce
+    _last_used[0] = time.monotonic()
     with db.read() as c:
         run = db.one(c, "SELECT * FROM forecast_runs WHERE id=?", (run_id,))
         if not run:

@@ -532,6 +532,69 @@ Trên DuckDB với dữ liệu tổng hợp, phiên bản 2 cho cùng các dòng
     `open_hours_owner_override`). Bỏ quy tắc (xoá khóa) ở bản sau hoặc rollback 1.2.11 = 6 khóa chặn lại, không phải sửa
     dữ liệu. Bằng chứng: `reports/release-1.2.12-20261021/OPEN_HOURS_OVERRIDE_EVIDENCE.xlsx`. Test:
     `test_v1212_open_hours_override.py`.
+- **1.2.13 - quy tắc sáu khóa qua các lần nạp lại.** Chủ hệ thống nhắc lại ngày 22/10/2026: MAX chỉ áp dụng "nếu giá trị
+  nguồn vẫn khớp với bằng chứng đã ghi nhận".
+  - Mỗi lần D-1 / backfill, **trước khi ghi**, đối chiếu tổng hợp nguồn của từng khóa đã duyệt trong khoảng đọc với bằng
+    chứng (`open_hours_override.verify_load`):
+    - cùng số lượng và số đơn;
+    - mọi dòng đều có giá trị giờ và mã item;
+    - số item và số cặp (item, giá trị) bằng số listing đã duyệt;
+    - cùng MIN và MAX. Với 2 listing, cặp giá trị được xác định hoàn toàn.
+  - Kết quả ghi kèm bản ghi lần chạy (`demand_sync_runs.summary_json.open_hours_override`, chỉ thêm, không sửa).
+  - Cổng huấn luyện nhận một lần nạp sau của khóa **chỉ** qua bản ghi khớp của chính lần nạp đã ghi dòng đó. Lần nạp đã
+    rollback vẫn tính cho dòng còn mang `loaded_at` của nó, vì nội dung dòng không đổi.
+  - Lần nạp không có bản ghi (ví dụ ghi bởi phiên bản cũ) vẫn chặn: `RELOADED_SINCE_APPROVAL`. Giá trị khác cũng vẫn
+    chặn: `LISTING_VALUES_CHANGED` / `CONTENT_CHANGED`.
+  - Lý do cần: ánh xạ cột `customer_id` làm đổi mapping hash, nên lần D-1 kế tiếp nạp lại toàn bộ và ghi lại mọi dòng.
+  - Kiểm tra chỉ đọc 22/10 (bản 07:10:45): cả 6 khóa vẫn khớp từng listing. Test: `test_v1213_six_key_reverify.py`.
+
+## 11g. Lịch sử thay đổi sau ngày đặt hàng: nguồn làm gì và ứng dụng xử lý thế nào (1.2.13, kiểm tra chỉ đọc 22/10/2026)
+
+**Nguồn làm gì** (time travel BigQuery so từng dòng bản 21/10 07:10 với bản 22/10 07:10, đối chiếu `fact_order`):
+- Bảng D-1 được **dựng lại mỗi sáng** (thời điểm tạo = thời điểm sửa, khoảng 07:10), không partition, dataset giữ time
+  travel 168 giờ. Không đọc được SQL dựng bảng (`INFORMATION_SCHEMA.JOBS_BY_USER` / `JOBS_BY_PROJECT` bị từ chối quyền).
+- Bảng **không có trạng thái hủy** (chỉ COMPLETED, DELIVERED, DELIVERING, CONFIRMED, WAIT_TO_DELIVER, PROCESSING,
+  WAIT_TO_CONFIRM). Khi đơn bị hủy (`fact_order.order_status = CANCEL`), **mọi dòng của đơn rời bảng**: 92 dòng của 22
+  đơn hủy ngày 21/10, kể cả đơn tạo từ 28/09. Dòng WAIT_TO_CONFIRM không được xác nhận cũng rời bảng.
+- Nguồn còn **thay đổi phạm vi sản phẩm**: toàn bộ lịch sử của vài SKU được thêm (`MEDX.CRE-ROS-001` +7.990 đơn vị trong
+  2.330 đơn cũ) hoặc bỏ (`MEDX.RIS-DNP-002`, `MEDX.HUY-JUI-001`, … −6.323 đơn vị, đơn vẫn COMPLETED). Không phải đổi mã
+  1-1 (chỉ 3 đơn có cả hai SKU).
+- Vậy nguồn = đơn **chưa bị hủy tại lúc làm mới**, không phải tổng cầu. `fact_order_item` vẫn giữ dòng của đơn hủy với
+  cùng SKU, FC, ngày, số lượng (92 / 92 dòng); 01-21/10 đơn hủy = 67.738 đơn vị = 4,0 % nguồn, 0 dòng thiếu FC. Muốn
+  tổng cầu đầy đủ cần một nguồn mới do chủ nguồn định nghĩa (chưa làm).
+
+**Trước 1.2.13:** D-1 chỉ đọc lại cửa sổ `watermark - late_data_lookback_days` .. hôm qua và ghi đè đúng như nguồn (đơn
+hủy trong cửa sổ làm GIẢM cầu); ngày cũ hơn không bao giờ được đọc lại hay so sánh; không có nhật ký theo khóa.
+
+**Từ 1.2.13** (`app/data/history_sync.py`, quy tắc chủ hệ thống 22/10/2026: target = số lượng đặt của mọi đơn đã đặt):
+- Chính sách `data_policy.history_change_policy` = `KEEP_OBSERVED_LINES` (mặc định): dòng lưu = nguồn hiện tại + các
+  dòng đơn đã từng thấy mà nguồn bỏ đi không phải do chuyển SKU / FC / ngày ("dòng giữ", bảng `demand_held_lines`).
+  `FOLLOW_SOURCE` = quy tắc cũ.
+- Bằng chứng mức dòng cho khóa nguồn thay đổi: dòng của phiên bản đã ghi (time travel tới phiên bản ghi trong
+  `source_day_checks` hoặc của lần nạp đã ghi dòng) so với dòng hiện tại và dòng khác của cùng đơn. Kết luận:
+  `ORDER_GONE` (đơn hủy), `LINE_GONE` (nguồn bỏ dòng, đơn còn), `PENDING_GONE`, `QTY_REDUCED` (cùng dòng, số nhỏ hơn) =
+  giữ; `MOVED` (cùng dòng sang SKU / FC / ngày khác, FC chỉ lấy từ `fc_code`), `PENDING_CONFIRMED`, dòng / đơn mới, số
+  lớn hơn = lấy theo nguồn; dòng giữ xuất hiện lại = nhả (`REAPPEARED`, kể cả dòng chờ, phần `QTY_REDUCED` khi dòng
+  tăng lại, và `NO_EVIDENCE` khi số nguồn của khóa trở lại mức trước khi giảm). Chuyển (`MOVED`) chỉ khi cùng dòng đơn
+  (sản phẩm, số lượng) được chứng minh là MỚI ở khóa khác của cùng lần chạy; nếu không thì giữ. Không có phiên bản gốc
+  dùng được (quá 160 giờ, SQL nguồn, `DROP_EXACT`, dòng không cộng ra đúng số tổng hợp) = `NO_EVIDENCE`: giữ phần giảm.
+  Lỗi khi đọc bằng chứng (BigQuery, trần chi phí, hết giờ) = dừng, không ghi gì (job thử lại / báo lỗi); quá 50.000
+  khóa thay đổi trong một lần = `HISTORY_CHANGE_TOO_LARGE`, không ghi gì. Nạp lại toàn bộ (mapping đổi) mà giữ dòng =
+  cảnh báo `FULL_RELOAD_HELD_LINES` để chủ hệ thống quyết định.
+- Mọi lần ghi (D-1 thường, backfill): một transaction; bản ghi lần chạy (`demand_sync_runs`), quyết định từng khóa
+  (`demand_sync_run_keys`), nhật ký trước / sau từng dòng (`demand_change_log`, append-only, cờ `finalized` khi ngày đã
+  chốt), kiểm tra lại dữ liệu lưu dưới khóa ghi; phiên bản nguồn phải giữ nguyên trong suốt lần đọc
+  (`SOURCE_CHANGED_DURING_READ` = không ghi, job thử lại). Backfill chỉ ghi lại dòng thay đổi (dòng không đổi giữ
+  `loaded_at`: 6 khóa giờ mở bán vẫn được áp dụng); xem trước và đọc lại phải ra cùng kế hoạch (digest).
+- Sau mỗi D-1 thường: so lịch sử trước cửa sổ với nguồn (một truy vấn, `source_day_checks`); ngày khác = cảnh báo
+  `HISTORY_SOURCE_CHANGED` → xem trước + backfill có kiểm soát các ngày đó.
+- Ngày đã chốt (`actual_finals`) không chặn việc sửa `demand_daily`; bản đóng băng (KPI) giữ nguyên; `data-check`
+  `finalized_days_changed` liệt kê ngày lệch.
+- Hoàn tác: `python -m app.cli sync-rollback --run <id> [--apply]` (khôi phục đúng từng dòng, cả `loaded_at`); quyết định
+  của chủ hệ thống bỏ dòng giữ: `python -m app.cli held-lines --release --cause <...> [--sku] [--apply]` (ghi nhật ký,
+  hoàn tác được). Tái lập dữ liệu của một lần huấn luyện cũ: `history_sync.window_identity_as_of`.
+- Giới hạn: thay đổi giữ nguyên cả số lượng lẫn số đơn của một khóa không được xem; đơn hủy trước lần nạp đầu không có
+  trong nguồn nên không giữ được (cần nguồn tổng cầu).
 
 ## 12. Bảng nguồn thật — kiểm tra chỉ đọc ngày 16/10/2026 (11:20, giờ Việt Nam)
 

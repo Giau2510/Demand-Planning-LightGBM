@@ -28,6 +28,44 @@ RETENTION_TRIGGERS = ("trg_fes_delete_retention_only", "trg_fes_values_delete_re
 FINAL_TRIGGERS = ("trg_afn_no_delete", "trg_afn_keys_fixed", "trg_afn_born_unsealed", "trg_afn_no_replace",
                   "trg_afn_final_fixed", "trg_afn_seal_checked", "trg_afv_no_update", "trg_afv_no_delete",
                   "trg_afv_open_only", "trg_afv_no_replace")
+# 1.2.13 (migration 0010): held lines, change log, sync runs and their per-key decisions are append-only
+HISTORY_SYNC_TRIGGERS = ("trg_dhl_no_delete", "trg_dhl_fixed", "trg_dcl_no_update", "trg_dcl_no_delete", "trg_dsr_no_delete",
+                         "trg_dsr_fixed", "trg_dsk_no_update", "trg_dsk_no_delete")
+
+
+def _history_sync_checks(c) -> list[dict]:
+    """1.2.13 (migration 0010, data/history_sync.py): every ACTIVE held line sits inside a stored row that holds at least
+    its units; the protection triggers exist; finalized days whose stored total differs from the frozen actual (changed
+    after finalization, informative); history days the source changed since the last check (a controlled backfill is
+    due, informative)."""
+    if not _q(c, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='demand_held_lines'"):
+        return []
+    out = [_check(
+        "held_lines_in_demand",
+        "every ACTIVE held line belongs to a stored row whose quantity is at least the units held for that row",
+        _q(c, "SELECT h.scope_key, h.order_date, h.sku_id, h.fc_id, TOTAL(h.qty) AS held, d.qty FROM demand_held_lines h "
+              "LEFT JOIN demand_daily d ON d.scope_key = h.scope_key AND d.order_date = h.order_date AND d.sku_id = h.sku_id "
+              "AND d.fc_id = h.fc_id WHERE h.status = 'ACTIVE' GROUP BY 1, 2, 3, 4 "
+              "HAVING d.qty IS NULL OR d.qty < TOTAL(h.qty) - 1e-6"))]
+    have = {r[0] for r in _q(c, "SELECT name FROM sqlite_master WHERE type='trigger'")}
+    out.append(_check("history_sync_protection_triggers",
+                      "every trigger that keeps the held lines, the change log and the sync runs append-only exists "
+                      "(migration 0010)", [(t,) for t in sorted(set(HISTORY_SYNC_TRIGGERS) - have)]))
+    if _q(c, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='actual_finals'"):
+        out.append(_check(
+            "finalized_days_changed",
+            "finalized days whose stored demand total now differs from the frozen actual (the source changed them after "
+            "finalization; the frozen actual stays the KPI snapshot, the demand follows the history policy)",
+            _q(c, "SELECT f.business_date, f.total_qty, d.q FROM actual_finals f JOIN (SELECT scope_key, order_date, "
+                  "TOTAL(qty) AS q FROM demand_daily GROUP BY 1, 2) d ON d.scope_key = f.scope_key AND d.order_date = "
+                  "f.business_date WHERE f.status = 'FINALIZED' AND ABS(d.q - f.total_qty) > 1e-6 ORDER BY 1"), fail=False))
+    out.append(_check(
+        "history_source_drift",
+        "no stored history day differs from the source at its last daily check (DIFF = the source changed it: run a "
+        "backfill preview of those days)",
+        _q(c, "SELECT order_date, source_keys, stored_keys, source_qty, stored_qty, checked_at FROM source_day_checks "
+              "WHERE status = 'DIFF' ORDER BY order_date"), fail=False))
+    return out
 
 
 def _q(c, sql, params=()):
@@ -338,6 +376,7 @@ def _run(c, db_path: Path, models_dir: Path | None) -> dict:
         out.append(_check("actual_final_protection_triggers",
                           "every trigger that keeps a finalized actual frozen exists (migration 0009)",
                           [(t,) for t in sorted(set(FINAL_TRIGGERS) - have)]))
+    out.extend(_history_sync_checks(c))
     model_bad = []
     if models_dir is not None:
         for rid, mv, mp, sha in _q(c, "SELECT id, model_version, model_path, model_sha256 FROM training_runs "
@@ -372,6 +411,8 @@ def _run(c, db_path: Path, models_dir: Path | None) -> dict:
                                                 "forecast_history_days") if has_history else ())
               + (("forecast_eod_snapshots", "forecast_eod_snapshot_values", "actual_closes", "actual_close_values")
                  if has_eod else ()) + (("forecast_eod_snapshot_retention",) if has_ret else ())
-              + (("actual_finals", "actual_final_values") if has_final else ())}
+              + (("actual_finals", "actual_final_values") if has_final else ())
+              + (("demand_held_lines", "demand_change_log", "demand_sync_runs")
+                 if _q(c, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='demand_held_lines'") else ())}
     return {"db": str(db_path), "schema_version": ver, "checked_at": now.isoformat(timespec="seconds"),
             "status": status, "row_counts": counts, "checks": out}

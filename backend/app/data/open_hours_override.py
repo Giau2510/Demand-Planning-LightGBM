@@ -26,6 +26,13 @@ Scope and safety:
   (not_applied); the loaded frame is checked again when the value is applied (fill);
 * reversible: removing a key (or emptying APPROVED_KEYS) in a later version restores the block; nothing stored needs a
   repair, and a version without this module (1.2.11) blocks the six keys again.
+* 1.2.13 (owner rule restated 22/10/2026: the MAX applies to the six keys only "if the source values still match the
+  recorded evidence"): a LATER load of a key is accepted when that load verified the source against the evidence before
+  writing (verify_load, run on every D-1 load / backfill and stored with its run record in demand_sync_runs) - the same
+  quantity and orders, every line with a value and an item code, as many items and distinct (item, value) pairs as
+  approved listings and the same minimum and maximum (two listings: the pair of values is fully determined). A reload
+  without such a record (e.g. written by an older version) or with different values keeps blocking. So a reload that
+  changes nothing in the evidence (e.g. a full reload after a new column mapping) no longer needs a new approval.
 
 Evidence: read-only BigQuery queries of 21/10/2026 on the table snapshot modified 2026-10-21 00:10:38 UTC (07:10:38
 Vietnam time), the snapshot the stored rows were loaded from; reports/release-1.2.12-20261021/
@@ -35,12 +42,14 @@ from __future__ import annotations
 
 import json
 import math
+import sqlite3
 
 from ..timeutil import now_iso
 from .open_hours import MAX_HOURS, MIN_HOURS
 
 RULE_ID = "OWNER_ADHOC_MAX_LISTING_OPEN_HOURS"
 RULE_VERSION = "1.2.12"
+VERIFY_VERSION = "1.2.13"           # per-load verification of the evidence (verify_load / verified_for)
 APPROVED_ON = "2026-10-21"
 REASON = ("MULTI_ITEM: the listings of the SKU sold through this FC that day have different open hours; owner-approved "
           "adhoc rule for this key only: maximum of the valid listing-level values")
@@ -131,12 +140,92 @@ def resolve(conn, scope_key: str, start: str, end: str) -> dict:
             elif r[2] is None or abs(float(r[2]) - rec["approved_qty"]) > 1e-9 or int(r[3] or 0) != rec["approved_orders"]:
                 why = "CONTENT_CHANGED"
             elif r[4] != APPROVED_LOADED_AT:
-                why = "RELOADED_SINCE_APPROVAL"     # the listing values were verified for the earlier load only
+                # 1.2.13: a later load counts only through the verification it recorded before writing the row
+                v = verified_for(conn, scope_key, r[4], rec)
+                if v is None:
+                    why = "RELOADED_SINCE_APPROVAL"     # no verification of the evidence for the load that wrote the row
+                elif not v["match"]:
+                    why = v.get("reason") or "LISTING_VALUES_CHANGED"
+                else:
+                    rec["verified_by_load"] = {"run_id": v["run_id"], "loaded_at": r[4],
+                                               "source_version": v.get("source_version")}
         if why:
             out["not_applied"].append({**rec, "not_applied_reason": why})
         else:
             out["applied"].append(rec)
     return out
+
+
+def _expected(rec: dict) -> dict:
+    """What the source aggregate of a load (connector._daily_sql) must show for an approved key: the approved quantity
+    and orders, every line with a value and an item code, one distinct (item, value) pair per approved listing and the
+    approved minimum / maximum."""
+    vals = [float(x["total_open_hours"]) for x in rec["listings"]]
+    return {"qty": float(rec["approved_qty"]), "n_orders": int(rec["approved_orders"]), "hours_null_rows": 0,
+            "hours_no_item_rows": 0, "hours_items": len(vals), "hours_item_values": len(vals),
+            "hours_min": min(vals), "hours_max": max(vals)}
+
+
+def _num(v):
+    try:
+        return None if v is None else float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def verify_load(scope_key: str, rows, start: str, end: str) -> dict | None:
+    """1.2.13: compare, BEFORE a load / backfill writes, the source aggregate of every approved key inside [start, end]
+    with the recorded evidence. Returns the record stored with the run (None for any other scope): per key `match`, the
+    reason (ROW_NOT_FOUND / CONTENT_CHANGED / LISTING_VALUES_CHANGED) and the observed values. Read-only; no query."""
+    if scope_key != SCOPE_KEY:
+        return None
+    want = {(r["business_date"], r["sku_id"], r["fc_id"]): r for r in approved() if start <= r["business_date"] <= end}
+    out = {"rule": RULE_ID, "verify_version": VERIFY_VERSION, "checked_at": now_iso(), "window": [start, end], "keys": []}
+    if not want:
+        return out
+    found = {}
+    for r in rows:
+        k = (str(r.get("order_date"))[:10], str(r.get("sku_id")), str(r.get("fc_id")))
+        if k in want:
+            found[k] = r
+    for k, rec in want.items():
+        exp, r = _expected(rec), found.get(k)
+        if r is None:
+            out["keys"].append({"key": list(k), "match": False, "reason": "ROW_NOT_FOUND", "expected": exp})
+            continue
+        got = {"qty": _num(r.get("qty")), "n_orders": _num(r.get("n_orders")),
+               "hours_null_rows": _num(r.get("open_hours_null_rows")), "hours_no_item_rows": _num(r.get("open_hours_no_item_rows")),
+               "hours_items": _num(r.get("open_hours_items")), "hours_item_values": _num(r.get("open_hours_item_values")),
+               "hours_min": _num(r.get("open_hours_min")), "hours_max": _num(r.get("open_hours_max"))}
+        diff = sorted(n for n in exp if got[n] is None or abs(got[n] - float(exp[n])) > 1e-9)
+        reason = None if not diff else ("CONTENT_CHANGED" if set(diff) <= {"qty", "n_orders"} else "LISTING_VALUES_CHANGED")
+        out["keys"].append({"key": list(k), "match": not diff, "reason": reason, "differs": diff, "observed": got})
+    return out
+
+
+def verified_for(conn, scope_key: str, loaded_at: str | None, rec: dict) -> dict | None:
+    """1.2.13: the verification recorded by the load that wrote the stored row (its loaded_at = the run's finished_at);
+    None when there is none (a row written by an older version, a schema without run records). A load that was rolled
+    back still counts for a row that carries its loaded_at: the rollback restored every row it changed, so such a row
+    has the content it had before and that load verified the evidence against it."""
+    if not loaded_at:
+        return None
+    try:
+        runs = conn.execute("SELECT id, source_version, summary_json FROM demand_sync_runs WHERE scope_key=? AND "
+                            "finished_at=? AND status IN ('COMMITTED', 'ROLLED_BACK') AND kind IN ('D1_SYNC', 'BACKFILL') "
+                            "ORDER BY rowid DESC", (scope_key, loaded_at)).fetchall()
+    except sqlite3.OperationalError:
+        return None
+    key = [rec["business_date"], rec["sku_id"], rec["fc_id"]]
+    for run_id, version, sj in runs:
+        try:
+            ver = (json.loads(sj or "{}") or {}).get("open_hours_override") or {}
+        except (TypeError, ValueError):
+            continue
+        for k in ver.get("keys") or []:
+            if k.get("key") == key:
+                return {"run_id": run_id, "source_version": version, "match": bool(k.get("match")), "reason": k.get("reason")}
+    return None
 
 
 def summary(res: dict | None) -> dict | None:

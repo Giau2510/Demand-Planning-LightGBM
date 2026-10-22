@@ -113,6 +113,19 @@ Guarantees verified in code and tests:
   is announced by the preview (`OPEN_HOURS_WOULD_BE_LOST`) and counted in the result (`open_hours_lost`): the source keeps
   open hours for about its last 7 months only, so re-reading older days replaces stored values by MISSING.
 * A D0 snapshot is written only after a successful read; a retried job never writes a second snapshot (`job_id`).
+* 1.2.13 (migration 0010, `data/history_sync.py`, owner rule of 22/10/2026): the BIGQUERY demand is
+  **source + held lines** under the default policy `KEEP_OBSERVED_LINES`. The source drops a cancelled order, an
+  unconfirmed WAIT_TO_CONFIRM line or a product leaving its scope; such a line, once stored, stays in
+  `demand_held_lines` (ACTIVE) and in the stored row until it reappears (REAPPEARED), a rollback, or an explicit owner
+  release. Line evidence (BigQuery time travel) separates these from moves to another SKU / FC / day (taken). Every write
+  (regular load, backfill, release, rollback) is one transaction with a run record (`demand_sync_runs`, only
+  COMMITTED -> ROLLED_BACK may change), per-key decisions (`demand_sync_run_keys`) and the full before / after of every
+  changed row (`demand_change_log`, append-only, `finalized` flag for a day with a frozen actual); the stored state the plan
+  was computed on is checked again under the write lock (`STORED_DATA_CHANGED`), the source version must not change while
+  read (`SOURCE_CHANGED_DURING_READ`). A backfill rewrites only the rows that change. After each regular load the history
+  before its window is compared with the source (`source_day_checks`, alert `HISTORY_SOURCE_CHANGED`). Rollback restores
+  the rows of one run exactly (`app.cli sync-rollback`); an older training's data can be rebuilt from the log
+  (`window_identity_as_of`). Tests: `test_v1213_history_sync.py`.
 
 ## 4. Keys, uniqueness and deduplication
 

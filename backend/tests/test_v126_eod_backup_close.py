@@ -583,11 +583,12 @@ def test_migration_0005_on_a_v4_database_keeps_every_row(tmp_path, monkeypatch):
             before = {t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tabs}
             vals0 = c.execute("SELECT COUNT(*), SUM(yhat) FROM forecast_values").fetchone()
         res = db.migrate(target)
-        assert (res["from"], res["to"], res["applied"]) == (4, 9, ["0005_eod_backup_actual_close.sql",
+        assert (res["from"], res["to"], res["applied"]) == (4, 10, ["0005_eod_backup_actual_close.sql",
                                                                    "0006_eod_snapshot_retention.sql",
                                                                    "0007_open_hours.sql",       # 1.2.9: additive
                                                                    "0008_customer_aggregates.sql",  # 1.2.9b: additive
-                                                                   "0009_actual_finalization.sql"])  # 1.2.9: additive
+                                                                   "0009_actual_finalization.sql",  # 1.2.9: additive
+                                                                   "0010_history_sync.sql"])  # 1.2.13: additive
         assert db.migrate(target)["applied"] == []
         with db.read() as c:
             assert {t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tabs} == before

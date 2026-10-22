@@ -5,6 +5,97 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.2.13 - 2026-10-22 (history sync: changes after the order day, cancelled orders, held lines, change log, rollback) [reports/history-sync-20261022/FINAL_REPORT.md]
+
+Migration 0010 (additive: five new tables and their protection triggers, nothing existing changed). Rollback to 1.2.12
+needs the pre-upgrade backup (a database at schema 10 is refused by 1.2.12). Changed defaults: new
+`data_policy.history_change_policy` = `KEEP_OBSERVED_LINES`, `data_policy.history_day_check` = true,
+`data_policy.source_time_travel_hours` = 160 (none of them in the BigQuery mapping hash: no full reload).
+
+* **Root cause** (read-only evidence 22/10/2026, docs/BIGQUERY.md section 11g): the D-1 load re-read and replaced only
+  its window (`watermark - late_data_lookback_days` .. yesterday) exactly as the source has it, and never compared older
+  days; the source is rebuilt every morning WITHOUT cancelled orders (no cancel status: every line of a cancelled
+  order leaves it) and with its current product scope (whole SKU histories added / removed). So a cancellation inside the
+  window reduced the stored demand while any change of an older day was never seen (841 keys before 17/10 on 22/10).
+* **Owner rule (22/10/2026): the target is the order quantity of the orders placed.** New `app/data/history_sync.py`:
+  the stored row = the source now + the order lines seen earlier and later dropped by the source without a proven move
+  (held lines, `demand_held_lines`: ORDER_GONE / LINE_GONE / PENDING_GONE / QTY_REDUCED / NO_EVIDENCE). Line evidence
+  from BigQuery time travel (`bq/source_lines.py`: the version the row was written from vs now, plus the other lines of
+  the same order) tells a cancellation or removal (kept) from a move to another SKU / FC / day (taken; FC only from
+  `fc_code`), a confirmed WAIT_TO_CONFIRM request (taken) and new orders / lines / bigger quantities (taken); a held line
+  that reappears is released (never counted twice; also a pending request, a QTY_REDUCED difference when the line grows
+  again, a key-level NO_EVIDENCE hold when the source is back to its level). A move needs the same order line proven NEW
+  in another key of the same run. Evidence that does not add up to the aggregates, or a base version older than the
+  time-travel window, keeps the decrease (fail-safe); a failed evidence read stops the run before any write; more than
+  50,000 changed keys in one run stops it (`HISTORY_CHANGE_TOO_LARGE`); a full reload that holds lines raises
+  `FULL_RELOAD_HELD_LINES`. `FOLLOW_SOURCE` restores the rule before 1.2.13.
+* Every write (regular D-1 load, backfill) goes through one plan and one transaction: run record (`demand_sync_runs`),
+  per-key decisions (`demand_sync_run_keys`), full before / after of every changed row (`demand_change_log`,
+  append-only, `finalized` flag when the day has a frozen actual), the stored state re-checked under the write lock
+  (`STORED_DATA_CHANGED`), the source version stable during the read (`SOURCE_CHANGED_DURING_READ`: nothing written,
+  the job retries), an empty read never replaces stored days. A backfill now rewrites only the rows that change (an
+  unchanged row keeps its `loaded_at`: the six-key open-hours approval of 1.2.12 stays valid; a day not finalized yet is
+  rewritten whole so it can still be finalized); its preview reports the
+  held lines and causes and the backfill must find the same plan (digest).
+* History outside the D-1 window: after every regular load the stored days before the window are compared with the
+  source (one capped query; `source_day_checks`; alert `HISTORY_SOURCE_CHANGED`; result `history_check` of the job);
+  the controlled path is a backfill preview + backfill of those days. Finalized days are not immutable for the demand:
+  their changes are written and marked; the frozen actual (KPI snapshot) never changes; `data-check`
+  `finalized_days_changed` lists them.
+* New CLI: `sync-runs`, `sync-rollback --run <id> [--apply]` (restores the rows of one run exactly, refused when a later
+  run changed them), `held-lines [--release --cause ... --sku ... --apply]` (explicit owner decision, logged, reversible),
+  `history-check`. New data checks: `held_lines_in_demand` (FAIL), `history_sync_protection_triggers` (FAIL),
+  `finalized_days_changed` (WARN), `history_source_drift` (WARN). An older training's data can be rebuilt from the log
+  (`history_sync.window_identity_as_of`).
+* **Six-key open-hours rule across reloads** (owner rule restated 22/10/2026: the MAX applies "only if the source values
+  still match the recorded evidence"). Every D-1 load / backfill verifies, before writing, the approved keys inside its
+  range against the evidence (`open_hours_override.verify_load`): same quantity and orders, every line with a value and
+  an item code, as many items and distinct (item, value) pairs as approved listings, same minimum and maximum. The result
+  is stored with the run record. The training gate accepts a later load of a key only through such a matching record of
+  the load that wrote the row; a load without one (older version) or with other values still blocks
+  (`RELOADED_SINCE_APPROVAL`, `LISTING_VALUES_CHANGED`). Needed because mapping the customer column changes the mapping
+  hash, so the next D-1 reloads (rewrites) every row. Read-only check of 22/10 (07:10:45 version): the six keys still
+  match listing by listing. Tests: `test_v1213_six_key_reverify.py`.
+* Not changed: grain day x SKU x FC, `item_code` never a key, WAIT_TO_CONFIRM duplicate exemption, exact-duplicate guard,
+  open hours never filled, the six-key MAX rule itself, Price ON, schedules, training / promotion / forecasts (a history
+  change never triggers any of them).
+* Customer ID (owner requirement, release batch of 22/10/2026): the 1.2.9b customer path (column mapping
+  `bigquery.customer_id_column`, aggregates per day x SKU x FC computed in BigQuery from earlier days only, features
+  `cust_mean_28` / `cust_repeat_share_28` / `cust_repeat_interval_28` from the 28 days before the target, the identifier
+  never leaves BigQuery) is ready to be switched on in production with this version. Read-only source check of 22/10:
+  INTEGER, 0 NULL / blank of 9,000,299 lines, 35,092 customers, every one of 974,552 orders has exactly one customer,
+  100 % of 1,363,690 keys covered.
+* Independent data review (data-reviewer, 22/10): held-line ids collided in a tight loop (now run id + counter), several
+  held lines could not be released when the line came back, weak move proof, zero-unit holds, the history CLI
+  migrated the database (now refused below schema 10, never migrates), memory of the evidence reads (exact key filter,
+  streamed day check, cheap stale-state marker), finalization of non-finalized days after a backfill - all fixed, with
+  tests. The identity cache key includes the newest change-log entry.
+* Tests: `test_v1213_history_sync.py`. Existing tests: migration-path expectations now include 0010; two tests of
+  the 1.2.9 replacement mechanics run under `FOLLOW_SOURCE` (their assertions unchanged; the default policy is tested on
+  the same scenarios in the new file).
+
+Resource audit of the same day (RAM, CPU, disk; [reports/resource-audit-20261022/FINAL_REPORT.md]), no migration, no
+setting, no change of any result:
+
+* **Resources of every job attempt** (`app/jobs/resources.py`: Win32 API on Windows, `/proc` on Linux, no new package):
+  `resources` in the job result (PID, wall time, CPU user / kernel and utilisation, private bytes and working set at
+  start / peak / mean / end, page faults, MB read / written, the machine's lowest available memory and commit headroom,
+  other jobs running at the same time) and a `job resources` log line.
+* **No duplicate heavy work.** A job thread that outlives its timeout now keeps its job type's lock (refreshed) until it
+  really ends; before, the retry could start while the old thread still ran (two trainings at once). Training, forecast
+  extension and a D-1 backfill never run two at a time in the server process, scheduled runs included (before, only the
+  manual buttons checked it).
+* **Memory guard of heavy jobs.** Need = the largest private-memory growth measured on the last 10 runs of the same job
+  type (no absolute threshold). Commit headroom (RAM + page file) below 1.25 x the need: the job does not start
+  (`INSUFFICIENT_MEMORY`, counted as an attempt: backoff, then FAILED + `RETRIES_EXHAUSTED`); physical memory below the
+  need: the job runs and records `PAGING_EXPECTED` (on this PC about 1 GB is free most of the time).
+* **Training memory, same models.** The loaded demand frame is released once the panel is built; the raw training
+  matrix once LightGBM has binned it; training matrices are filled into one preallocated array instead of stacking every
+  piece and then copying them (identical arrays and boosters: tests).
+* **Explanation caches.** Entries of an older run / data version no longer keep that version's whole panel (~190 MB on
+  the production data) alive; the panel and the SHAP traces are released after 30 minutes without a request.
+* Tests: `test_v1213_job_resources.py`.
+
 ## 1.2.12 - 2026-10-21 (owner-approved open-hours rule for six exact keys; weekday names of forecast dates) [reports/release-1.2.12-20261021/FINAL_REPORT.md]
 
 No migration (schema 9, as 1.2.11), no settings change, no change of any default. Rollback to 1.2.11 =

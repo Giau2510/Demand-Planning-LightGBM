@@ -1,6 +1,7 @@
 """Safe .xlsx reading (no macros, no formula execution, zip-bomb guard), template and error report."""
 from __future__ import annotations
 
+import gc
 import io
 import zipfile
 from datetime import date, datetime, timedelta
@@ -247,7 +248,16 @@ def build_error_report(batch: dict, issues: list[dict], lang: str = "vi") -> byt
 
 
 def dataframe_to_xlsx(sheets: dict[str, pd.DataFrame], date_format: str | None = None) -> bytes:
-    """date_format (e.g. "DD/MM/YYYY") is the Excel display format of date cells; the values stay real dates."""
+    """date_format (e.g. "DD/MM/YYYY") is the Excel display format of date cells; the values stay real dates.
+    1.2.13: the workbook (one object per cell, linked both ways) is cyclic garbage once written; it is collected here,
+    not whenever Python's full collection happens to run (forecast export of production: +1.0 GB while building,
+    0.67 GB still held after it returned - measured on a copy, 22/10/2026)."""
+    content = _dataframe_to_xlsx(sheets, date_format)
+    gc.collect()
+    return content
+
+
+def _dataframe_to_xlsx(sheets: dict[str, pd.DataFrame], date_format: str | None) -> bytes:
     import datetime as _dt
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as w:

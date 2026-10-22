@@ -34,6 +34,17 @@ def reverse_0009(c) -> None:
     c.execute("DELETE FROM schema_migrations WHERE version = 9")
 
 
+def reverse_0010(c) -> None:
+    """1.2.13: the reverse statements in the header of migration 0010 (copy only) - a newer migration is reversed
+    before an older one."""
+    for (t,) in c.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND (name LIKE 'trg_dhl_%' "
+                          "OR name LIKE 'trg_dcl_%' OR name LIKE 'trg_dsr_%' OR name LIKE 'trg_dsk_%')").fetchall():
+        c.execute(f"DROP TRIGGER {t}")
+    for t in ("source_day_checks", "demand_sync_run_keys", "demand_sync_runs", "demand_change_log", "demand_held_lines"):
+        c.execute(f"DROP TABLE {t}")
+    c.execute("DELETE FROM schema_migrations WHERE version = 10")
+
+
 @pytest.fixture
 def frozen():
     """20/10/2026 10:00 Vietnam time (03:00 UTC); set_now_override can move it."""
@@ -106,6 +117,10 @@ def test_a_successful_d1_load_finalizes_the_completed_day_and_a_later_load_never
                keys=(("A", "F1"), ("B", "F1"), ("C", "F1")))
     fh.capture(rid)
     fake = _production([_row(y, "A", 7), _row(y, "B", 3)])
+    # 1.2.13: the stored demand follows the source here (FOLLOW_SOURCE: B dropped -> removed) - what this test checks is
+    # that the FROZEN actual never follows it; the default KEEP_OBSERVED_LINES policy: test_v1213_history_sync.py
+    from app import settings_service as ss
+    ss.update("data_policy", {"history_change_policy": "FOLLOW_SOURCE"})
     f0 = _fp()
     res = sync.run_d1_sync("J1")
     h, v = _final(str(y), BQS)
@@ -387,17 +402,19 @@ def test_legacy_rows_get_no_status_from_the_migration_and_the_dry_run_measures_t
     assert {i["business_date"]: i["d1_load_id"] for i in sc["items"]} == {"2026-10-14": None, "2026-10-15": "D1L-1",
                                                                           "2026-10-16": "D1L-1"}
     res = db.migrate(src)
-    assert res["applied"] == ["0009_actual_finalization.sql"] and res["to"] == 9
+    # 1.2.13: the upgrade path continues with 0010 (history sync); 0009 is still applied first
+    assert res["applied"] == ["0009_actual_finalization.sql", "0010_history_sync.sql"] and res["to"] == 10
     c = sqlite3.connect(src)
     assert c.execute("SELECT * FROM demand_daily ORDER BY rowid").fetchall() == before    # nothing changed
     assert [c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in FINAL_TABLES] == [0, 0]   # no status invented
     assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    reverse_0010(c)                                                       # 1.2.13: the newer migration first
     reverse_0009(c)                                                       # the header's reverse statements (copy only)
     c.commit()
     assert not c.execute("SELECT 1 FROM sqlite_master WHERE name IN ('actual_finals', 'actual_final_values') "
                          "OR name LIKE 'trg_af%'").fetchall()
     c.close()
-    assert db.migrate(src)["applied"] == ["0009_actual_finalization.sql"]
+    assert db.migrate(src)["applied"] == ["0009_actual_finalization.sql", "0010_history_sync.sql"]
     assert db.migrate(src)["applied"] == []
 
 

@@ -464,6 +464,7 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
             return {"status": "FAILED", "reason_code": "OPEN_HOURS_INVALID", "failed_stage": "PREPARING_DATA",
                     "training_run_id": run_id, "error": det}
         panel = build_panel(demand, max_days=mcfg.max_train_days)
+        del demand      # 1.2.13: the panel holds everything the job needs; the loaded frame is not kept to the end
         log.info("training window", extra={"ctx": {"training_run_id": run_id, "window": window["start"] + ".." +
                                                    window["end"], "panel": f"{panel.dates[0].date()}..{panel.dates[-1].date()}",
                                                    "series": panel.n_series}})

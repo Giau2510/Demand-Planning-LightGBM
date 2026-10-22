@@ -351,6 +351,28 @@ def _stack(Xs, ys, idx, cfg, with_index: bool):
     return X, y, (np.vstack(idx) if idx else np.empty((0, 2), dtype=np.int64))
 
 
+def _fill(blocks, n: int, cfg):
+    """1.2.13: the rows of `blocks` (in order: (features of the block's rows, extra columns or None, targets)) written
+    into ONE preallocated float32 matrix - the same matrix np.vstack builds, without holding every piece AND the stacked
+    copy at the same time (half the peak memory of building a training matrix)."""
+    X = y = None
+    r = 0
+    for xb, extra, yb in blocks:
+        k = len(yb)
+        if X is None:
+            X = np.empty((n, xb.shape[1] + (0 if extra is None else len(extra))), dtype=np.float32)
+            y = np.empty(n, dtype=yb.dtype)
+        X[r:r + k, :xb.shape[1]] = xb
+        if extra is not None:
+            X[r:r + k, xb.shape[1]:] = extra
+        y[r:r + k] = yb
+        r += k
+    if X is None:
+        return np.empty((0, len(feature_names(cfg))), dtype=np.float32), np.empty(0)
+    assert r == n, (r, n)
+    return X, y
+
+
 def training_matrix(p: Panel, cfg, min_t: int = 7, max_rows: int = 4_000_000, with_index: bool = False):
     """Stack features/targets for every (series, day) with a known target, oldest days dropped if too big.
     with_index (1.2.9b): also the (series, target day) index of every row, e.g. to give a row a training weight."""
@@ -359,6 +381,11 @@ def training_matrix(p: Panel, cfg, min_t: int = 7, max_rows: int = 4_000_000, wi
     t_from = max(min_t, 1)
     max_days = max(1, max_rows // max(S, 1))
     t_from = max(t_from, T - max_days)
+    if not with_index:
+        days = [(t, ok) for t in range(t_from, T)
+                for ok in [~np.isnan(p.Y[:, t]) & (t > p.start_idx)] if ok.any()]
+        return _fill(((features_at(p, p.Y, p.price, p.disc, p.promo, p.dates, t, cfg, sc, fcc)[ok], None, p.Y[:, t][ok])
+                      for t, ok in days), sum(int(ok.sum()) for _, ok in days), cfg)
     Xs, ys, idx = [], [], []
     for t in range(t_from, T):
         target = p.Y[:, t]
@@ -380,6 +407,22 @@ def direct_training_matrix(p: Panel, cfg, horizon: int, with_index: bool = False
     with_index (1.2.9b): also the (series, target day) index of every row."""
     sc, fcc = static_codes(p)
     S, T = p.Y.shape
+    if not with_index:
+        plan = []
+        for j in range(1, cfg.direct_origins + 1):
+            t0 = T - j * cfg.direct_origin_step_days
+            if t0 < 7:
+                break
+            plan.append((t0, [(h, t0 + h - 1, ok) for h in range(1, horizon + 1) if t0 + h - 1 < T
+                              for ok in [~np.isnan(p.Y[:, t0 + h - 1]) & (t0 > p.start_idx)] if ok.any()]))
+
+        def blocks():
+            for t0, hs in plan:
+                if hs:
+                    Xb = origin_features(p, p.Y, p.price, p.disc, p.promo, p.dates, t0, cfg, sc, fcc)
+                    for h, td, ok in hs:
+                        yield Xb[ok], np.array(direct_extra(cfg, p.dates[td], h), dtype=np.float32), p.Y[:, td][ok]
+        return _fill(blocks(), sum(int(ok.sum()) for _, hs in plan for _, _, ok in hs), cfg)
     Xs, ys, idx = [], [], []
     for j in range(1, cfg.direct_origins + 1):
         t0 = T - j * cfg.direct_origin_step_days
