@@ -776,3 +776,25 @@ READY_FOR_EXTERNAL_SETUP.
 | Production | NOT TOUCHED | 1.2.11, schema 9, storage.json 8D79DBDD..., D-0 16:00 SUCCEEDED during the benchmarks |
 | Checkpoint after | DONE | `checkpoints/source-1.2.13-after-resource-audit-20261022.zip` (all 36 changed / new files of 1.2.13 + this audit, git state, p32 evidence and scripts; SHA-256 in the `.sha256` file next to it: this row is not in the copy inside the ZIP) |
 | Next | OWNER | verified scratch cleanup 15.4 GB (command in the report, section 12); old installed versions; commit 1.2.13; deploy 1.2.12 then 1.2.13; partition of the D-1 source table; identify python PID 10412 |
+
+# Master batch: release 1.2.13 + Customer ID + demand + forecast readiness (2026-10-22 17:30 - 21:00) - committed, NOT deployed
+
+Owner prompt "MASTER BATCH - DEMAND FORECASTING RELEASE, CUSTOMER_ID, DEMAND & FORECAST READINESS" (bring Customer ID and
+the agreed demand rules to production, then forecast for review; no push, no workaround of the permission classifier, no
+production promotion / schedule change). Report: `reports/release-1.2.13-20261022/` (FINAL_REPORT sections A-F, owner
+scripts, quality workbook, forecast Excel of the copy, evidence/ with MANIFEST.json, RESUME_CHECKPOINT). Status
+READY_FOR_PRODUCTION; deploy BLOCKED by the permission classifier.
+
+| Step | Status | Evidence |
+|---|---|---|
+| Target version | 1.2.13 | contains 1.2.12; 1.2.12 alone re-blocks training after the Customer ID full reload (RELOADED_SINCE_APPROVAL); 1.2.12 has no migration, 1.2.11 -> 1.2.13 = migration 0010 only |
+| Code | DONE | six-key re-verification per load: `open_hours_override.verify_load` / `verified_for`, result in `demand_sync_runs.summary_json.open_hours_override`; `test_v1213_six_key_reverify.py` (14) |
+| Commit | DONE (local) | `1b00c42` "Release 1.2.13: history sync for gross demand, six-key rule across reloads, Customer ID ready, job resources"; ahead of origin 36, NOT pushed |
+| QA + package | PASS | `release.ps1`: backend 782 passed / 19 skipped / 0 failed, vitest 159, typecheck + build OK, lint not configured; `dist\DemandForecast-1.2.13-win64-portable.zip` ABE0C9B1631095F86BFA5F8549F53DC9C25C308C433F8EAD53D5DB37E58B8469 |
+| Production CheckOnly | PASS | 18:10:35, nothing changed |
+| Production deploy | DENIED | classifier `[Production Deploy]` ~18:11 (3rd denial after 00:06 and 11:20); not worked around |
+| Rehearsal r14 (production copy, real BigQuery read only) | A 20/21, B 10/11, C 8/8, D 4/5 | each FAIL explained (A: expected schema_migrations row; B: script parse, data verified; D: 2 candidate model files kept by restore, settings 6/6 and old models 12/12 identical). B full reload 831 s, coverage 0.9996, six keys 6/6, 933 held lines / 6,789 units. C candidate `TRN-20261022125113-487BFA` / `MV-20261022-202359-7BFA` (36 features, 34 min) WAPE 0.8058 vs model in use re-fitted 0.8074 vs baseline 0.8488; promoted on the copy only -> `FCR-20261022132426-A8126A` |
+| Evaluation | DONE | re-run backtest = stored WAPE exactly (3,364,320 points); customer A/B same folds 0.8058 vs 0.8074 (4/7 folds better, worse in the 2 latest); BD 0.738 / HN 0.965; workbook `FORECAST_QUALITY_TRN-20261022125113-487BFA_20261022-2049.xlsx` 0B44820F...3856 |
+| Production | NOT TOUCHED | 1.2.11, schema 9, storage.json 8D79DBDD..., read-only checks 17:59 and 20:53; training FAILED OPEN_HOURS_INVALID 21/10 x2 + 22/10 -> last production forecast `FCR-20261020082402-A42C91` |
+| Checkpoint | DONE | `checkpoints/release-1.2.13-master-batch-20261022.zip` (report folder incl. the copy's forecast Excel + quality workbook - the copy itself was restored by phase D -, p33 scripts and state, git state, this file; SHA-256 in the `.sha256` file next to it) |
+| Next | OWNER | `reports\release-1.2.13-20261022\OWNER_RELEASE_1.2.13.ps1` (UPGRADE-1.2.13, CUSTOMER-ON, optional TRAIN) in 18:30-21:45 or 00:05-05:00; promotion decision in the UI; gross-demand source incl. cancellations; D-1 time after the 07:10 source refresh (scheduled D-1 failed SOURCE_INCOMPLETE 4/4 every day 19-22/10) |
