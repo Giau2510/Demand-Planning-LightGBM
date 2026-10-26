@@ -30,7 +30,7 @@ function failingBackend() {
 }
 
 const ROUTES: [string, string][] = [["/", "nav.dashboard"], ["/results", "nav.results"], ["/forecast-history", "nav.fhistory"], ["/performance", "nav.performance"],
-  ["/snapshots", "nav.snapshots"], ["/methodology", "nav.methodology"], ["/import", "nav.import"], ["/batches", "nav.batches"],
+  ["/snapshots", "nav.snapshots"], ["/methodology", "nav.methodology"], ["/forecast-explainer", "nav.explainer"], ["/import", "nav.import"], ["/batches", "nav.batches"],
   ["/quality", "nav.quality"], ["/config", "nav.config"], ["/bigquery", "nav.bigquery"], ["/mapping", "nav.mapping"], ["/sql", "nav.sql"],
   ["/features", "nav.features"], ["/schedules", "nav.schedules"], ["/jobs", "nav.jobs"], ["/system", "nav.system"]];
 

@@ -5,6 +5,93 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.2.14 - 2026-10-26 (LightGBM forecast explainer screen; managed deploy staging folder; deploy preflight and confirmation) [reports/forecast-explainer-20261026/FINAL_REPORT.md]
+
+No migration (the schema stays 10) and no change to the forecast pipeline, the features, the settings or the
+schedules. Rollback to 1.2.13: `rollback-version.ps1 -To 1.2.13` (same schema, no restore).
+
+* New page **"Giải thích cách tính Forecast"** (`/forecast-explainer`, menu Dự báo), independent of the forecast pages.
+  * For ONE LightGBM value of the forecast in use, it shows five steps:
+    1. the source rows;
+    2. the 36 features, each with its general formula and the real values substituted;
+    3. the path of every one of the model's trees (feature, threshold, real value, branch, leaf);
+    4. the sum of the leaves and the objective's link (`exp` for tweedie);
+    5. the published post-processing and the whole number of `qty.py`.
+  * It is compared with the STORED value. A difference is shown as a warning with its cause; nothing is adjusted.
+  * The SKU is chosen automatically: the LightGBM series of the run in use with the most days of data in the last 28
+    days (then the largest forecast of that day), on the first forecast day from today. `?sku_id=&fc_id=&target_date=`
+    selects another.
+  * Demo data is never explained.
+* Backend: `app/ml/forecast_explainer.py` and `GET /api/forecast-explainer` (+ `/trees?offset&limit`). It is read-only:
+  no training, no job, no write, GET only.
+  * Inputs: the production `build_panel` / `origin_features` / `direct_extra` run on one series, plus the scope's list
+    of days with data. Category codes come from the model sidecar, and the owner's open-hours override recorded with
+    the run is applied. The full-scope panel is never built.
+  * The series rows, the scope's days and the change log are read with one primary-key lookup per day, not a range
+    over the whole window: the first open fell from 31.9 s (file cache of the PC cold) to about 2.5 s.
+  * Changes logged after the run (`demand_change_log`) are undone, so the inputs are those at the run. A change of a
+    column that is not an input (e.g. `n_orders`) is listed as such.
+  * Trees are walked with LightGBM's own decision rule (`treeshap_trace`). Each step is checked against LightGBM:
+    `pred_leaf`, `raw_score` and the prediction.
+  * Cache: 4 explanations keyed by run, model, series data and day; it is dropped after 30 minutes without use.
+  * Response size: about 55 KB without the tree paths.
+* `scripts/deploy-upgrade.ps1` unpacks the package into ONE managed folder, `%TEMP%\DemandForecast-deploy\<stamp>`,
+  marked with `.df-deploy-staging.json` (new helper `scripts/_deploy_staging.ps1`, packaged).
+  * The folder is removed at the end only if all of these hold: the post-checks passed, `current.txt` = the new
+    version, the installed copy has its runtime, the rollback version is installed, no process runs from the folder,
+    and nothing in it is open.
+  * A failed deploy keeps it for the investigation.
+  * Old `%TEMP%\DemandForecast-deploy-<stamp>` folders and folders without this run's marker are never touched.
+  * A cleanup that cannot complete is a warning in the log; the exit codes are unchanged.
+* Tests:
+  * `test_v1214_deploy_staging.py`: 24 tests (helper cases and the real script in the isolated fake installation);
+  * `test_v1214_forecast_explainer.py`: 12 tests (a real DIRECT model trained in the test database);
+  * `v1214.test.tsx`: 6 tests.
+
+### Deploy preflight and confirmation (repository script since 22/10/2026, packaged from 1.2.14) [reports/release-1.2.13-20261022/FINAL_REPORT.md]
+
+`scripts/deploy-upgrade.ps1` ran from the repository from 22/10/2026 on (the 1.2.13 package itself was not rebuilt);
+1.2.14 is the first package that contains it.
+* **Root cause** of the CheckOnly failure of 22/10/2026: it was started from ANOTHER Windows account (Administrator), whose
+  `%LOCALAPPDATA%` holds an older, separate 1.1.0 installation (its CLI has no `storage-verify`) and its own
+  `storage.json`, while the app on port 8765 is 1.2.11 of the account that runs it. The precheck was right to stop
+  (version mismatch, `storage-verify` failed, nothing changed), but did not name the cause.
+* New check: the running app must be THIS account's installation (same database and `storage.json` as reported by
+  `GET /api/system/paths`); otherwise `[FAIL] ... run the upgrade as the Windows user that runs the app`. This also blocks
+  the case the version comparison alone let through (another account's installation reporting the same version).
+* The CLI of the installed version now always runs from its own `backend` folder: `python -m app.cli` puts the current
+  folder first on `sys.path`, so an `app` package in the caller's folder (a source checkout) used to shadow it.
+* A CLI that returns no storage paths stops the precheck at once (before, it went on with empty paths and the default
+  port 8765). Clearer messages: Windows account and installation folder printed; a missing `storage-verify` is reported
+  as an older, separate installation. No existing check removed or relaxed.
+* Tests: `backend/tests/test_v1213_deploy_preflight.py` (6) run the real script `-CheckOnly` against a fake
+  installation in a temporary `LOCALAPPDATA` and a stub app on a random port. The first 5 all fail with the previous
+  script. The 6th (no storage paths) was not run against it, because the old script would have fallen back to port 8765,
+  i.e. queried the real app.
+* **Confirmation** (22/10/2026 23:10): the first upgrade on this PC confirmed by typing (every earlier one passed
+  `-ConfirmToken` on the command line) stopped "not confirmed - nothing was stopped or installed". The answer was read
+  about 3 s after the question appeared, after the online backup, and nothing recorded what it was: a transcript keeps
+  neither a `Read-Host` prompt nor its answer. Now keys typed before the question are discarded, the question is printed
+  with `Write-Host` (so it is in `deploy-<time>.log`), the answer is trimmed, a refused answer is reported
+  (`not confirmed (answer '...', N characters, expected UPGRADE-<v>)`) and `confirmed: UPGRADE-<v>` is logged. The word,
+  its comparison and the order (backup, question, install) are unchanged; `-ConfirmToken` works as before.
+* Tests: `test_v1213_deploy_preflight.py` also runs the whole upgrade (no `-CheckOnly`) with a fake package whose
+  `install.ps1` only reports stop/start to the stub app (fake versions 9.8.6 -> 9.8.7, so no typed answer can confirm a
+  real package). Wrong, empty or impossible answer (no console) -> exit 1, nothing stopped or installed; answer with
+  spaces around it, or `-ConfirmToken` -> installed; install failure and post-check failure -> exit 1. 15 tests; the 5
+  about the answer fail with the previous script. Not covered: discarding keys typed early needs a real console (the
+  tests type through stdin).
+* The owner scripts of the release (`reports/release-1.2.13-20261022/OWNER_*.ps1`, not versioned) now ask for the word
+  right after the CheckOnly, pass it to `deploy-upgrade -ConfirmToken`, and stop with the exit code of any step that
+  fails; their tests are in that folder.
+* 23/10/2026 00:13, Customer ID step of the owner release: "Cannot bind parameter 'Headers' ... PSCustomObject ... to
+  IDictionary". The header table `$H` of `OWNER_CUSTOMER_ID` (and of the TRAIN request of `OWNER_RELEASE`) was replaced
+  by `$h = <health answer>`: PowerShell variable names ignore case. The binding failed before any request was sent
+  (nothing changed). Fixed in those scripts (`$WebHeaders`), with read-back checks before the reload and a step that
+  is already done not repeated. The stub app of `test_v1213_deploy_preflight.py` now refuses a write without
+  `X-DF-Client` like the real app (`app/security.py`) and records the header of every request. All `-Headers` of
+  `scripts/` pass a hashtable literal (checked).
+
 ## 1.2.13 - 2026-10-22 (history sync: changes after the order day, cancelled orders, held lines, change log, rollback) [reports/history-sync-20261022/FINAL_REPORT.md]
 
 Migration 0010 (additive: five new tables and their protection triggers, nothing existing changed). Rollback to 1.2.12

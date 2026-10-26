@@ -17,6 +17,11 @@ export const DICT: Record<string, [string, string]> = {
   "nav.performance": ["Chất lượng mô hình", "Model Performance"],
   "nav.config": ["Cấu hình dự báo", "Forecast Configuration"],
   "nav.methodology": ["Thuật toán & thuật ngữ", "Algorithm & Methodology"],
+  "nav.explainer": ["Giải thích cách tính Forecast", "How the forecast is computed"],
+  "fexp.desc": [
+    "Một SKU thật của forecast đang dùng, từ dữ liệu nguồn đến số forecast cuối cùng: công thức trước, thay số thật sau, đi qua từng cây của model LightGBM và đối chiếu với forecast đã lưu. Chỉ đọc, không chạy lại forecast.",
+    "One real SKU of the forecast in use, from the source data to the final number: the formula first, then the real values, through every tree of the LightGBM model, checked against the stored forecast. Read-only; no forecast is re-run.",
+  ],
   "nav.snapshots": ["Lịch sử Snapshot D0", "D0 Snapshot History"],
   "nav.import": ["Import dữ liệu lịch sử", "Historical Data Import"],
   "nav.batches": ["Lịch sử lô import", "Import Batch History"],

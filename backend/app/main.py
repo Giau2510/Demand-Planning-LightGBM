@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from . import __version__, db, paths
-from .api import bq_routes, data_routes, forecast_routes, history_routes, ops_routes, schedule_routes
+from .api import bq_routes, data_routes, explainer_routes, forecast_routes, history_routes, ops_routes, schedule_routes
 from .jobs import scheduler as sched_mod
 from .logging_setup import setup_logging
 from .messages import AppError
@@ -127,6 +127,7 @@ def create_app() -> FastAPI:
     app.include_router(data_routes.router)
     app.include_router(forecast_routes.router)
     app.include_router(history_routes.router)
+    app.include_router(explainer_routes.router)
 
     dist = paths.frontend_dist()
     if (dist / "index.html").exists():

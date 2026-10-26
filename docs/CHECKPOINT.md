@@ -798,3 +798,62 @@ READY_FOR_PRODUCTION; deploy BLOCKED by the permission classifier.
 | Production | NOT TOUCHED | 1.2.11, schema 9, storage.json 8D79DBDD..., read-only checks 17:59 and 20:53; training FAILED OPEN_HOURS_INVALID 21/10 x2 + 22/10 -> last production forecast `FCR-20261020082402-A42C91` |
 | Checkpoint | DONE | `checkpoints/release-1.2.13-master-batch-20261022.zip` (report folder incl. the copy's forecast Excel + quality workbook - the copy itself was restored by phase D -, p33 scripts and state, git state, this file; SHA-256 in the `.sha256` file next to it) |
 | Next | OWNER | `reports\release-1.2.13-20261022\OWNER_RELEASE_1.2.13.ps1` (UPGRADE-1.2.13, CUSTOMER-ON, optional TRAIN) in 18:30-21:45 or 00:05-05:00; promotion decision in the UI; gross-demand source incl. cancellations; D-1 time after the 07:10 source refresh (scheduled D-1 failed SOURCE_INCOMPLETE 4/4 every day 19-22/10) |
+
+# Owner runs of 22/10 evening: deploy preflight and confirmation (2026-10-22 22:00 - 23/10 00:15) - NOT committed, NOT deployed
+
+Two owner runs stopped safely, nothing installed. Report: first two sections of `reports/release-1.2.13-20261022/FINAL_REPORT.md`.
+
+| Step | Status | Evidence |
+|---|---|---|
+| CheckOnly ~22:00 | FAIL (correct) | run from the Windows account `Administrator` (own old 1.1.0 install, own current.txt / storage.json) while 8765 is 1.2.11 of `Giau Vo`. Fix: `deploy-upgrade.ps1` checks that the app on the port is this account's installation, runs the CLI from its own backend folder, stops when the CLI returns no paths |
+| Owner run 23:10 (`Giau Vo`) | STOPPED "not confirmed" | `logs\runtime\deploy-20261022-231056.log`: CheckOnly PASS, online backup `backup-20261022-231056-manual.zip` (105BEA65...E8E1), then the answer read by `Read-Host` (~3 s after the question, after the backup) was not `UPGRADE-1.2.13`; not recorded anywhere (a transcript keeps no Read-Host prompt / answer). First upgrade on this PC confirmed by typing (all earlier ones: `-ConfirmToken`). OWNER_DEPLOY then ignored the exit code and failed in `Push-Location ...\1.2.13\backend` |
+| Fix | DONE (uncommitted) | `deploy-upgrade.ps1` confirmation branch: typeahead discarded, question printed, answer trimmed, refused answer reported, `confirmed:` logged (word, check and order unchanged). Owner scripts (reports, not versioned): word asked right after the CheckOnly and passed to `-ConfirmToken`; every non-zero exit code stops with that code; job check fixed (PS 5.1 passes a JSON list as one object); CANCELLED ends the D-1 wait; logs `owner-*-1.2.13-<time>.log` |
+| Tests | PASS | `test_v1213_deploy_preflight.py` 15 passed (5 fail on the previous script) + `reports/.../tests/test_owner_scripts.py` 15 passed (15 fail on the original owner logic): real PowerShell scripts, fake install / package (9.8.7) / stub app, isolated; full `run-tests.ps1` 23:52: backend 797 passed / 19 skipped / 0 failed, vitest 159, typecheck + build OK, lint not configured |
+| Production | NOT TOUCHED (except the 23:10 online backup made by deploy-upgrade) | 1.2.11, PID 7316, storage.json 8D79DBDD..., no 1.2.13 folder (read-only checks to 23:57) |
+| Checkpoint | DONE | `checkpoints/release-1.2.13-owner-scripts-20261023.zip` (before/ and after/ of the 4 scripts and the tests, docs, evidence, git state; SHA-256 in the `.sha256` file next to it) |
+| Next | OWNER | review; then `OWNER_RELEASE_1.2.13.ps1` as `Giau Vo` in 18:30-21:45 or 00:05-05:00, typing each word only when its question is shown (done 23/10 00:04, see below) |
+
+# Owner release run 23/10 00:04: 1.2.13 deployed; Customer ID step stopped before any change (2026-10-23 00:04 - 01:00) - NOT committed
+
+| Step | Status | Evidence |
+|---|---|---|
+| Deploy + verification | DONE (owner) | `deploy-20261023-000655.log` UPGRADE OK 1.2.11 -> 1.2.13; OWNER_DEPLOY "DEPLOYED AND VERIFIED" (data-check WARN forecast_series_meta + finalized_days_changed, gate open, six keys 6/6); production 1.2.13 PID 22004, schema 10, storage.json 8D79DBDD... unchanged |
+| Customer ID (owner, CUSTOMER-ON typed) | STOPPED, nothing changed | step 3 "Cannot bind parameter 'Headers'": `$H` (header table) replaced by `$h = <health answer>` (PowerShell names ignore case; OWNER_CUSTOMER_ID 33/62/52, same pair in OWNER_RELEASE 32/75/93 for TRAIN); the binding failed before any request. Read-only 00:39: customer_id_column empty, feature_customer off, production mode on, no settings saved since 17/10, no job since 23:59 |
+| Fix | DONE (reports, not versioned; test stub versioned, uncommitted) | `$WebHeaders`; OWNER_CUSTOMER_ID reads and prints the Customer ID state (missing field -> stop before the question), reads back every write, skips steps already done (mapping not re-sent: a save switches production off), re-checks jobs + state before the reload, stops on already_active, shows the app's HTTP answer |
+| Tests | PASS (fakes) / 1 unrelated FAIL | owner 27 passed (before the fix: 12 of the 14 related fail, the Customer ID run with the exact production error); deploy-upgrade 15 passed; full run-tests 00:42: backend 796 passed / 19 skipped / 1 failed = test_v128_fixes weekday-off demo (date-dependent: fails only with today 23/10, passes 21/22/24/10), vitest 159, typecheck + build OK |
+| Checkpoint | DONE | `checkpoints/release-1.2.13-customer-id-fix-20261023.zip` (SHA-256 in the `.sha256` file next to it) |
+| Next | OWNER | review; then ONLY `OWNER_CUSTOMER_ID_1.2.13.ps1` as `Giau Vo` (not OWNER_RELEASE: it would re-install 1.2.13); then the 07:00 training (candidate, no promotion) and read-only post_verify A/B/C |
+
+# Disk cleanup finalized, managed deploy staging, LightGBM forecast explainer (2026-10-26 11:30 - 13:45) - NOT committed, NOT deployed
+
+Owner prompt "MASTER TASK - FINALIZE DISK CLEANUP SAFELY & BUILD LIGHTGBM FORECAST EXPLAINER" (no deploy, no commit / push,
+no promotion, no change of features / schedule / source SQL / schema / public link). Report:
+`reports/forecast-explainer-20261026/FINAL_REPORT.md` (evidence/). Status READY_FOR_PRODUCTION (commit + release 1.2.14 +
+owner deploy still to approve).
+
+| Step | Status | Evidence |
+|---|---|---|
+| Backup | DONE | `backups\backup-20261026-113756-manual.zip` 249,363,253 B, SHA-256 E6514810967DF01E54B652F30C28D4C09DE1BFF0CB73EFCCA6A2431B8602D1E6 (re-hashed 13:05); testzip OK, 21 entries, integrity ok, schema 10; restored on an isolated copy: data-check 34 OK / 3 WARN (forecast_series_meta, finalized_days_changed, history_source_drift) / 0 FAIL |
+| Cleanup | DONE | 337 loose TEMP files deleted (58,526,739 B), each with evidence (`loose-temp-plan.csv` / `-results.csv`); kept: `bt` (the 22/10 backtest report is pinned to that copy, SHA 8ABD356D...), `Rar$EXa672.19942` (original archive not found), 5 deploy folders and installs 1.0.0-1.1.5 (no package to restore), loose files of unknown owner |
+| Deploy staging | DONE (uncommitted) | `scripts/_deploy_staging.ps1` (new, packaged) + `deploy-upgrade.ps1`: one marked folder `%TEMP%\DemandForecast-deploy\<stamp>`, removed only after a verified upgrade, kept on failure, warning on a failed cleanup, exit codes unchanged; `test_v1214_deploy_staging.py` 24 passed |
+| Explainer | DONE (uncommitted) | `app/ml/forecast_explainer.py`, `api/explainer_routes.py`, page `/forecast-explainer`; reads by primary key per day (first open 31.9 s -> 2.5 s); `test_v1214_forecast_explainer.py` 12 + `v1214.test.tsx` 6 |
+| Real data (isolated copies) | MATCH | backup copy: run `FCR-20261024163842-4EEFD8`, MEDX.DMTS-DON-SIL-001 x BD 26/10 -> 2429 = stored; live copy 13:14 (after `MV-20261026-105345-C73F` was promoted through the app at 11:40, run `FCR-20261026044021-330262`): same series 26/10 -> 1859 = stored, random 12 series x h1/h7/h15 = 36/36 verified and equal |
+| Tests | PASS | backend 879 passed / 19 skipped / 0 failed; vitest 165; typecheck + build OK; lint not configured |
+| Production | NOT TOUCHED by this batch (except the requested backup) | 1.2.13 PID 11964, current.txt 1.2.13, storage.json 8D79DBDD...; one write = `POST /api/system/backups` 11:37:54 (Part A), all other calls GET; C73F was promoted through the app at 11:40 (audit `MODEL_PROMOTED`, not by this session); read-only data-check 13:25: 34 OK / 3 WARN / 0 FAIL, demand_daily 1,414,512 and change log 1,374,849 = backup, forecast_values +257,250 = the promoted run |
+| Checkpoint | DONE | `checkpoints/source-1.2.13-before-explainer-staging-20261026.zip` D3614D628831861A072EB24C943D2D8ACD2D92E6BE78356E430AB56368089505 (+ `.sha256`) |
+| Next | OWNER | review; approve the commit; release 1.2.14 (`release.ps1`) and deploy with `deploy-upgrade.ps1` outside scheduler slots; the read-only public link answers 403 for `/api/forecast-explainer` until the owner allows it |
+
+# Release 1.2.14 preparation: MODEL_PROMOTED investigation, pre-commit review, local commit (2026-10-26 14:00 - 14:45) - committed locally, NOT pushed, NOT packaged, NOT deployed
+
+Owner prompt "EXECUTION TASK - INVESTIGATE MODEL PROMOTION & PREPARE RELEASE 1.2.14" (no packaging, deploy, rollback,
+push, promotion, schedule or public-link change). Report: `reports/release-1.2.14-prep-20261026/FINAL_REPORT.md`
+(evidence/); the commit hash is recorded there.
+
+| Step | Status | Evidence |
+|---|---|---|
+| MODEL_PROMOTED 26/10 11:40 | INVESTIGATED; actor NOT RECORDED | `TRN-20261026031942-53C73F` / `MV-20261026-105345-C73F` (training job `JOB-20261026031846-CE1653`, trigger MANUAL, 10:18-10:53, verdict EQUAL, kept for review) promoted at 04:40:21Z (`promotion.decision` PROMOTED_BY_USER), audit `MODEL_PROMOTED` 04:40:31Z; new run `FCR-20261026044021-330262` (257,250 rows) replaced `TRN-20261024090507-1EEA7D` / `FCR-20261024163842-4EEFD8`. Only path: `POST /api/training-runs/{id}/promote {confirm:true}` (Performance page button + `window.confirm`), synchronous, no job; Host 127.0.0.1/localhost and `X-DF-Client: web` required; no scheduler, worker, retry or rule calls `promote_candidate`; the remote proxy forwards GET/HEAD only (405) and was not listening; agent session logs hold no promote request (only write = the backup POST 11:37:54); the app records no client, user or request id for HTTP calls |
+| C635 | NOT promoted, superseded | `TRN-20261025152426-A4C635` still REJECTED / PROMOTION_REVIEW_REQUIRED; the API shows `can_promote: true` (`promotable()` ignores newer runs) but `promote_candidate` refuses it: newer ACCEPTED run C73F, then the data fingerprint |
+| Scope review | DONE | committed: explainer, staging cleanup, deploy preflight / confirmation of 22-23/10 (same script, harness of the staging tests), version 1.2.14, docs, CHANGELOG 1.2.14; left uncommitted, unchanged: remote link tooling (7 files) and its two CHANGELOG sections; checkpoint `checkpoints/worktree-before-commit-1.2.14-20261026.zip` 7F1EEA1E...8D5A |
+| Tests (commit content in a separate worktree) | PASS | backend 833 passed / 19 skipped / 0 failed (incl. explainer 12, staging 24, preflight 15); vitest 165; typecheck + build OK; lint not configured; isolated instance of the commit code on a read-only copy of the live DB 14:37: run in use 1859 = stored, random 36/36 = stored, write methods 405, no internal strings, installed proxy 403 |
+| Production | NOT TOUCHED | 1.2.13 PID 11964; GET only in this task |
+| Next | OWNER | review; decide the remote link tooling (commit separately or keep: `release.ps1` needs a clean tree); then `release.ps1` 1.2.14 and an owner deploy; promotion audit (actor / typed confirmation) and hiding promote for superseded candidates are proposals only |

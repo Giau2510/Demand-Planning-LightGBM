@@ -10,6 +10,7 @@ import ForecastHistory from "./pages/ForecastHistory";
 import Performance from "./pages/Performance";
 import Config from "./pages/Config";
 import Methodology from "./pages/Methodology";
+import ForecastExplainer from "./pages/ForecastExplainer";
 import Snapshots from "./pages/Snapshots";
 import ImportPage from "./pages/ImportPage";
 import Batches from "./pages/Batches";
@@ -53,7 +54,8 @@ function useSystemStatus(): StatusCtx {
 const NAV: { group: string; items: [string, string, IconName][] }[] = [
   { group: "nav.group.forecast", items: [["/", "nav.dashboard", "dashboard"], ["/results", "nav.results", "results"],
     ["/forecast-history", "nav.fhistory", "fhistory"], ["/performance", "nav.performance", "performance"],
-    ["/snapshots", "nav.snapshots", "snapshots"], ["/methodology", "nav.methodology", "methodology"]] },
+    ["/snapshots", "nav.snapshots", "snapshots"], ["/methodology", "nav.methodology", "methodology"],
+    ["/forecast-explainer", "nav.explainer", "explain"]] },
   { group: "nav.group.data", items: [["/import", "nav.import", "import"], ["/batches", "nav.batches", "batches"], ["/quality", "nav.quality", "quality"]] },
   { group: "nav.group.admin", items: [["/config", "nav.config", "config"], ["/bigquery", "nav.bigquery", "bigquery"], ["/mapping", "nav.mapping", "mapping"],
     ["/sql", "nav.sql", "sql"], ["/features", "nav.features", "features"], ["/schedules", "nav.schedules", "schedules"], ["/jobs", "nav.jobs", "jobs"],
@@ -215,6 +217,7 @@ export default function App() {
           <Route path="/performance" element={<Performance />} />
           <Route path="/config" element={<Config />} />
           <Route path="/methodology" element={<Methodology />} />
+          <Route path="/forecast-explainer" element={<ForecastExplainer />} />
           <Route path="/snapshots" element={<Snapshots />} />
           <Route path="/import" element={<ImportPage />} />
           <Route path="/batches" element={<Batches />} />

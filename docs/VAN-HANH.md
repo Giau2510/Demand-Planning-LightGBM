@@ -137,6 +137,32 @@ sau khi nâng cấp (job, forecast mới) sẽ không có trong bản khôi ph�
 ### Nâng cấp / rollback có kiểm soát (từ 1.1.6)
 
 - `scripts\deploy-upgrade.ps1 -Package <zip> -ExpectedSha256 <sha> [-CheckOnly]`: kiểm tra trước, backup trực tuyến, xác nhận `UPGRADE-<phiên bản>`, cài, kiểm tra sau, log.
+  - Phải chạy bằng **đúng tài khoản Windows đang chạy app**, không dùng "Run as different user" hay tài khoản Administrator riêng.
+    - Bản cài, `current.txt` và `storage.json` nằm trong `%LOCALAPPDATA%` của từng tài khoản.
+    - Một tài khoản khác có thể có bản cài cũ riêng. Ví dụ 22/10/2026: CheckOnly chạy từ tài khoản Administrator đọc `current.txt` 1.1.0 của tài khoản đó, trong khi app trên cổng 8765 là 1.2.11.
+  - Bản script của 1.2.13 (trong repo, sau release) chặn khi app trên cổng không phải bản cài của tài khoản đang chạy (khác database hoặc `storage.json`) và in tên tài khoản.
+  - Script luôn chạy CLI của bản cài từ thư mục `backend` của chính bản đó, không phải từ thư mục hiện tại.
+  - Câu hỏi `UPGRADE-<phiên bản>` hiện ra **sau** backup trực tuyến (1–2 phút sau khi chạy). Chỉ gõ khi câu hỏi đã hiện: phím gõ trước đó, kể cả Enter, bị bỏ.
+    - Khoảng trắng ở hai đầu câu trả lời được bỏ qua.
+    - Trả lời sai: script in đúng câu trả lời đã nhận (có trong log `deploy-<thời điểm>.log`) và dừng, không dừng app, không cài gì.
+    - Không có `-ConfirmToken` và không có console để hỏi (chạy tự động): cũng dừng như vậy.
+    - Ví dụ 22/10/2026 23:10: lần đầu xác nhận bằng cách gõ (mọi lần trước dùng `-ConfirmToken`) dừng "not confirmed" khoảng 3 giây sau khi câu hỏi hiện, và không có log nào ghi lại câu trả lời đã nhận.
+  - **Thư mục giải nén gói (1.2.14, `scripts\_deploy_staging.ps1`).** Gói được giải nén vào một thư mục được quản lý:
+    `%TEMP%\DemandForecast-deploy\<yyyyMMdd-HHmmss>`, có tệp đánh dấu `.df-deploy-staging.json` (lần chạy, phiên bản,
+    SHA-256 của gói).
+    - Cuối lần nâng cấp, chỉ thư mục của **chính lần đó** được xóa, và chỉ khi:
+      - kiểm tra sau nâng cấp đạt;
+      - `current.txt` là phiên bản mới;
+      - bản đã cài có `python\python.exe`;
+      - bản rollback còn cài;
+      - không tiến trình nào chạy từ thư mục giải nén;
+      - không tệp nào trong đó đang mở. Script đổi tên thư mục trước; tệp đang mở làm việc đổi tên thất bại và thư mục
+        được giữ.
+    - Nâng cấp thất bại: thư mục được **giữ** để điều tra, log ghi `staging kept ... kept for the investigation`.
+    - Không xóa được (đang mở, lỗi quyền): log ghi `WARNING`. Mã thoát vẫn theo kết quả nâng cấp; thư mục có thể xóa tay
+      sau (đường dẫn có trong log).
+    - Không bao giờ đụng tới: thư mục `%TEMP%\DemandForecast-deploy-<thời điểm>` của các lần trước 1.2.14, thư mục
+      không có tệp đánh dấu của lần chạy, liên kết / junction, hay bất cứ thứ gì ngoài thư mục được quản lý.
 - `scripts\rollback-version.ps1 -To <phiên bản> [-CheckOnly]`: kiểm tra schema DB tương thích, xác nhận `ROLLBACK-<phiên bản>`, chuyển phiên bản, health check.
 
 Chi tiết: [TRIEN-KHAI-1.1.6.md](TRIEN-KHAI-1.1.6.md).

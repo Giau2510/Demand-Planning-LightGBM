@@ -29,7 +29,7 @@ $manifestPath = Join-Path $dist "$name-win64-portable.manifest.json"
 $packagedScripts = @("_common.ps1", "start.ps1", "stop.ps1", "check-env.ps1", "backup.ps1", "restore.ps1", "install.ps1",
                      "register-autostart.ps1", "unregister-autostart.ps1", "smoke_test.py",
                      "migrate-storage.ps1", "rollback-storage.ps1", "diagnose.ps1", "repair-storage.ps1",
-                     "deploy-upgrade.ps1", "rollback-version.ps1", "eod-retention.ps1")
+                     "deploy-upgrade.ps1", "_deploy_staging.ps1", "rollback-version.ps1", "eod-retention.ps1")
 
 function Get-GitState {
     $ErrorActionPreference = "Continue"

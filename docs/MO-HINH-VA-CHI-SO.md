@@ -304,6 +304,88 @@ dựng (mở lại modal, bấm ngày trước/sau) chờ và dùng kết quả 
 (`EXPLAIN_TIMEOUT_MS`) với lỗi `REQUEST_TIMEOUT` và nút *Thử lại*; đóng modal hoặc chọn ngày khác thì hủy yêu cầu cũ và
 bỏ qua câu trả lời đến muộn. Link xem từ xa tự cắt mọi yêu cầu ở 100 s.
 
+## Màn hình "Giải thích cách tính Forecast" (1.2.14)
+
+Trang riêng `/forecast-explainer` (menu *Dự báo*), độc lập với "Xem cách tính" ở trên. Trang không dùng SHAP để giải
+thích: nó đi đúng con đường tạo ra con số.
+
+**API:** `GET /api/forecast-explainer[?sku_id=&fc_id=&target_date=]` và `GET /api/forecast-explainer/trees?offset=&limit=`
+(`backend/app/ml/forecast_explainer.py`).
+- Chỉ đọc: không huấn luyện, không tạo job, không ghi.
+- Luôn trả 200 kèm `status`: `OK`, `NO_FORECAST` (cả khi nguồn đang dùng là DEMO), `NOT_FOUND`, `NOT_LIGHTGBM`,
+  `MODEL_MISSING`, `DATA_UNAVAILABLE`, `UNSUPPORTED_STRATEGY` (model RECURSIVE), `BAD_REQUEST`.
+
+**Chọn giá trị.**
+- Forecast đang dùng = run publish mới nhất của nguồn đang hoạt động (`pipeline.incumbent`).
+- Mặc định là chuỗi LIGHTGBM có nhiều ngày dữ liệu nhất trong 28 ngày cuối (rồi đến forecast lớn nhất của ngày đó),
+  trừ 6 khóa có quy tắc giờ mở bán.
+- Ngày dự báo là ngày đầu tiên của run tính từ hôm nay.
+
+**Bước 1 – dữ liệu.**
+- Các dòng `demand_daily` của đúng chuỗi trong cửa sổ `train_start..train_end` của lần huấn luyện.
+- Danh sách ngày có dữ liệu của cả phạm vi: một ngày không có dòng nào trong cả phạm vi là "không biết" (NaN), y như
+  panel đầy đủ.
+- Quy tắc giờ mở bán của chủ hệ thống được ghi cùng run.
+- Thay đổi sau khi tạo forecast (`demand_change_log`, ghi cả dòng trước/sau từ 1.2.13):
+  - đổi một đầu vào → được hoàn về giá trị lúc tạo forecast (`REVERTED_TO_RUN`);
+  - chỉ đổi cột không phải đầu vào (ví dụ `n_orders`) hoặc tải lại cùng giá trị → `SAME_INPUTS`;
+  - mỗi bản ghi thay đổi được liệt kê.
+- Không bao giờ dựng panel toàn phạm vi. Dòng của chuỗi, danh sách ngày và nhật ký thay đổi được đọc bằng một lần tra
+  khóa chính `(scope_key, order_date, sku_id, fc_id)` cho mỗi ngày, không quét cả cửa sổ (khoảng 1,4 triệu dòng).
+
+**Bước 2 – feature.**
+- Đúng hàm production `build_panel` → `origin_features` + `direct_extra` (DIRECT), mã `sku_code` / `fc_code` lấy từ
+  tệp `.json` lưu cùng model, kiểu float32 như khi dự báo.
+- Mỗi feature được tính lại độc lập từ dữ liệu của chuỗi để hiển thị phép thay số; phải bằng giá trị đưa vào model
+  (sai số tương đối ≤ 1e-6).
+
+**Bước 3 – cây.**
+- Mọi cây của file model (SHA-256 khớp lần huấn luyện) được đi theo đúng quy tắc quyết định của LightGBM
+  (`treeshap_trace.Tree.decision`):
+  - số: `x ≤ ngưỡng` → trái;
+  - giá trị thiếu: theo `missing_type` / `default_left` của nút;
+  - phân loại: thuộc tập mã → trái.
+- Lá của từng cây phải bằng `predict(pred_leaf=True)`.
+
+**Bước 4 – tổng hợp.**
+- Điểm thô = Σ giá trị lá theo thứ tự cây, phải bằng `predict(raw_score=True)` trong sai số 1e-9.
+- Cây 0 (`shrinkage=1`) đã chứa giá trị khởi tạo (`boost_from_average`); không có init score riêng.
+- Tweedie / Poisson / Gamma: `dự đoán = e^(điểm thô)`, phải bằng `predict()`. `tweedie_variance_power` chỉ dùng khi
+  huấn luyện.
+
+**Bước 5 – kết quả.**
+- `max(0, dự đoán)` (`model._forecast_direct`).
+- Làm tròn 4 chữ số khi lưu (`pipeline._publish_run`, phép làm tròn numpy trên float64).
+- Số nguyên `⌊max(yhat, 0) + 0,5⌋` (`qty.py`).
+- So với `forecast_values.yhat` đã lưu. Khác → cảnh báo kèm nguyên nhân đã xác định; không sửa số.
+
+**Hiển thị.** Mọi số trung gian tối đa 2 chữ số thập phân, định dạng Việt Nam (`2,05`, `125,40`, `-0,35`); số nguyên
+không có phần thập phân; giá trị khác 0 nhưng nhỏ hơn 0,005 hiện `≈0,00`; forecast cuối là số nguyên. Khi các phần đã
+làm tròn không cộng đúng tổng đã làm tròn, trang ghi chú sai số làm tròn; không sửa các phần.
+
+**Đã xác minh trên dữ liệu thật** (bản sao cô lập của backup 26/10 11:37). Model `MV-20261024-163642-EA7D`, run
+`FCR-20261024163842-4EEFD8`, SKU `MEDX.DMTS-DON-SIL-001` × FC `BD`, ngày 26/10/2026, horizon 3:
+- 36/36 feature tính lại khớp; lá của 300/300 cây bằng LightGBM;
+- điểm thô 7,795147905253907 = LightGBM, chênh 0;
+- e^điểm thô = 2428,788628512767;
+- lưu 2428,7886 = giá trị đã lưu, chênh 0 → **2429**.
+
+Lần kiểm tra lại trên bản sao chỉ đọc của DB lúc 26/10 13:14, sau khi model `MV-20261026-105345-C73F` được promote qua
+ứng dụng (run `FCR-20261026044021-330262`, 26/10 11:40):
+- cùng SKU × FC, ngày 26/10 (horizon 1): điểm thô 7,527942146475376 = LightGBM, e^điểm thô = 1859,2754475280374, lưu
+  1859,2754 = giá trị đã lưu → **1859**;
+- mẫu ngẫu nhiên 12 chuỗi LightGBM (6 BD, 6 HN) × horizon 1 / 7 / 15: 36/36 khớp giá trị đã lưu, mọi kiểm tra đạt;
+- một chuỗi dùng quy tắc dự phòng trả `NOT_LIGHTGBM`.
+
+**Tài nguyên.**
+- Lần mở đầu sau khi khởi động server: khoảng 2,6 s, +34 MB bộ nhớ riêng của server; SKU / ngày khác: khoảng 1,6 s;
+  lần lặp lại (bộ nhớ đệm): khoảng 0,1 s. Trước khi đổi sang tra khóa theo ngày, lần mở đầu mất 31,9 s khi bộ nhớ đệm
+  tệp của Windows đã bị đẩy ra (máy còn khoảng 1,5 GB RAM trống).
+- Bộ nhớ đệm giữ 4 kết quả theo run / model / dữ liệu chuỗi / ngày, xóa sau 30 phút không dùng.
+- Mỗi lần chỉ tính một lời giải thích.
+
+**Link xem từ xa.** Proxy chỉ đọc không mở `/api/forecast-explainer`, nên màn hình chỉ dùng được trên máy chạy app.
+
 ## Khoảng dự báo của một run so với cấu hình
 
 Một forecast run chỉ chứa các khoảng được bật **tại thời điểm chạy** (lưu trong `horizons_json`). Bật thêm khoảng sau
