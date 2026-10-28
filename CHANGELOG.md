@@ -5,6 +5,55 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.3.1 - 2026-10-29 (LightGBM chốt: daily forecast refresh, ROUNDUP above 0.2, 35 features without sku_code, no fallback rules, accuracy report, feature table, trial mode) [reports/lgbm-chot-20261029/ + docs/bao_cao_lgbm_chot_20261029.md]
+
+Branch `feature/lgbm-chot-20261029` from 1.2.14 (`af835b8`); the frozen 1.3.0 branch is not used. Design and file:function
+list: [docs/ke_hoach_lgbm_chot.md](docs/ke_hoach_lgbm_chot.md); state before the change:
+[docs/kiem_tra_hien_trang_20261029.md](docs/kiem_tra_hien_trang_20261029.md).
+
+**Every change sits behind configuration whose default is the 1.2.14 behaviour.** The release sets the owner's plan
+(PHƯƠNG ÁN CHỐT) once with `python -m app.cli apply-preset lgbm-chot --apply` (through `settings_service`: validated,
+history kept). Migration **0011_lgbm_chot.sql** (additive only: new tables, indexes, triggers). Rollback to 1.2.14 =
+restore the pre-upgrade backup (the 1.2.14 code refuses schema 11).
+
+* **B1 model** (`ml/features.py`, `ml/model.py`): `model.feature_sku_code` (default True; preset False) drops the
+  `sku_code` feature - DIRECT model with exactly 35 features; `model.horizon_weight_short` / `horizon_weight_cutoff`
+  (default None; preset 3.0 / 7) give the training rows with horizon <= 7 the sample weight 3.0. Columns are only left
+  out, never recomputed or re-ordered: on the backtest DB copy the new code trains models byte-identical to the
+  backtest variant G2 (`reports/backtest-lgbm7-20261029`).
+* **B2** `model.fallback_enabled` (default True; preset False): no INACTIVE / NEW_SERIES / INTERMITTENT rule, LightGBM
+  forecasts every series; the rule code stays.
+* **B11 feature table** (settings section `feature_table`, `GET/PUT /api/feature-table`, page Biến đầu vào): on / off
+  and priority coefficient (`feature_contri`) per feature, default on / 1.0 (= B1, same fingerprint and model); a
+  change needs a confirmation, is kept in the settings history, is copied into the next training run's configuration
+  and changes its fingerprint. The config fingerprint leaves every new key out while it is at its default, so every
+  1.2.14 configuration keeps its fingerprint (production `8468ebe66d1706f7`).
+* **B5 "Làm mới dự báo"** (job `FORECAST_REFRESH`, `ml/daily_refresh.py`, flow `refresh`, `POST
+  /api/daily-forecast/refresh`, page **Dự báo hằng ngày**): right after today's D-1 succeeded (or by hand) the model IN
+  USE forecasts from the data up to D-1 - never a training, never a write of `forecast_runs`; retried every
+  `refresh_retry_minutes` until `schedule.refresh_deadline` (default 12:00); past it the last numbers stay, ONE
+  STALE_FORECAST record + alert, and the page shows "Số dự báo lập ngày X, dữ liệu đến ngày Y".
+* **B3 published number** = 0 when the LightGBM value rounded to 6 decimals is below `daily_forecast.rounding_threshold`
+  (0.2), else rounded UP; the raw value (float) is stored with it. The 1.2.14 Results page keeps its own rounding.
+* **B6** `openhours_by_sku` -> `open_hours_daily` (read-only BigQuery, dry run + cap), incremental, read only when the
+  source table changed since the last completed read; never blocks the forecast.
+* **B7** groups A / B / C per month (90 days, open days only), report only.
+* **B8 log**: `forecast_refresh_runs` + `forecast_refresh_values` (raw, published, group, model, config version) and
+  `actual_daily`; retention `daily_forecast.log_retention_days` (120): days 8+ of superseded runs and everything older
+  than the retention are removed, run records are kept.
+* **B9 accuracy report** (job `ACCURACY_REPORT`, Monday 09:30 + button): Đúng / Dư nhiều / Dư ít / Thiếu nhiều / Thiếu
+  ít against the actual of the same day, open days only, by month and whole period, day 1 and 7 days, groups A / B / C;
+  `.xlsx` into `<reports>\theo-doi\`. Reproduces the backtest scoring exactly (11 587 SKU/day, Qty lệch 10 813 068,
+  demand 16 710 161).
+* **B10** feature importance of every training with a model while `daily_forecast.enabled` is on (gain, split count,
+  shares, by feature group): table `training_feature_importance`, `.xlsx` in `<reports>\theo-doi\`, API + UI; with the
+  default (off) nothing new is written.
+* **B12 trial mode** `daily_forecast.trial_mode` (default ON): banner "Chạy thử – chưa dùng để mua hàng" on every page
+  and on every new export; switched off only through `POST /api/daily-forecast/trial-mode` with the typed confirmation
+  `TAT-CHAY-THU-<day>` (history + audit).
+* Schedules: two new flows (`refresh`, `report`), OFF by default; D-1, D-0, training, end-of-day backup and actual close
+  are unchanged.
+
 ## 1.2.14 - 2026-10-26 (LightGBM forecast explainer screen; managed deploy staging folder; deploy preflight and confirmation) [reports/forecast-explainer-20261026/FINAL_REPORT.md]
 
 No migration (the schema stays 10) and no change to the forecast pipeline, the features, the settings or the

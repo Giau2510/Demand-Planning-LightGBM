@@ -875,3 +875,17 @@ không đổi):
 **Lỗi BigQuery "Not found: Table ... was not found in location X"** nay trả `BQ_NOT_FOUND`: bảng không tồn tại. Trước
 1.2.1 lỗi này bị xếp nhầm thành `BQ_LOCATION_MISMATCH`. Dataset không có ở location đã cấu hình vẫn là
 `BQ_LOCATION_MISMATCH`.
+
+## 16. Giờ mở bán theo SKU `openhours_by_sku` (1.3.1)
+
+- Bảng: `daily_forecast.openhours_table` (mặc định `lakehouse-prod-394907.gold_buymed_vn2.openhours_by_sku`), lọc
+  `seller_code = daily_forecast.seller_code` (MEDX). Chỉ đọc: `SELECT` có tham số, dry-run trước, `maximum_bytes_billed`
+  (qua `connector._run`). Không DML / DDL.
+- Truy vấn: MAX(`total_open_hours`) và COUNT(DISTINCT `item_code`) theo FC × SKU × `open_date`. Ghi `open_hours_daily`
+  theo khối 200 000 dòng; giá trị NULL không bao giờ ghi đè giá trị đã lưu.
+- Đọc tăng dần: từ (ngày cuối của lần đọc hoàn tất − 3) tới D-1; lần đầu (hoặc khi chưa có lần đọc phủ cửa sổ) đọc 93
+  ngày (cửa sổ nhóm 90 ngày + 3). Mốc đọc hoàn tất (`aux_source_reads`) chỉ ghi sau khối cuối cùng.
+- "Sau khi nguồn làm mới": đọc thời điểm sửa của bảng (metadata `get_table().modified`, không tốn byte); nếu không đổi
+  so với lần đọc hoàn tất trước thì không đọc lại (`OPEN_HOURS_SOURCE_NOT_REFRESHED`).
+- Lỗi đọc không chặn dự báo: ghi vào chi tiết lần làm mới + MỘT cảnh báo `OPEN_HOURS_READ_FAILED` mỗi ngày.
+- Lưu ý dữ liệu: nguồn làm mới khoảng 04:10 nhưng chỉ có tới D-2.

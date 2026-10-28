@@ -18,6 +18,10 @@ STAGES = {
     "D1_SYNC": ["QUEUED", "STARTED", "SYNCING", "DONE"],
     "EOD_FORECAST_SNAPSHOT": ["QUEUED", "STARTED", "SNAPSHOTTING", "DONE"],
     "ACTUAL_CLOSE": ["QUEUED", "STARTED", "CLOSING", "DONE"],
+    # 1.3.1 daily forecast refresh and weekly accuracy report (ml/daily_refresh.py, ml/accuracy_report.py)
+    "FORECAST_REFRESH": ["QUEUED", "STARTED", "VALIDATING_DATA", "VERIFYING_MODEL", "PREPARING_DATA", "SYNCING",
+                         "FORECASTING", "PUBLISHING", "DONE"],
+    "ACCURACY_REPORT": ["QUEUED", "STARTED", "VALIDATING_DATA", "EVALUATING", "REPORTING", "DONE"],
 }
 TERMINAL_STAGES = ("DONE", "FAILED", "SKIPPED", "INTERRUPTED")
 

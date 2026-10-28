@@ -184,7 +184,24 @@ def calendar_names(cfg) -> list[str]:
     return [n for n in CALENDAR if (wk if n in WEEKDAY else cfg.feature_calendar)]
 
 
-def feature_names(cfg) -> list[str]:
+def _rule_enabled(rule) -> bool:
+    """enabled of one feature-table rule: a FeatureRule, or the plain dict of a stored configuration."""
+    if isinstance(rule, dict):
+        return bool(rule.get("enabled", True))
+    return bool(getattr(rule, "enabled", True))
+
+
+def dropped_features(cfg) -> set[str]:
+    """1.3.1 (B1, B11): features left out of the model input. sku_code when model.feature_sku_code is False, plus every
+    name switched off in the run's feature-table snapshot (model.feature_table). Configurations without the fields
+    (every model trained before 1.3.1) drop nothing."""
+    drop = set() if getattr(cfg, "feature_sku_code", True) else {"sku_code"}
+    table = getattr(cfg, "feature_table", None) or {}
+    return drop | {n for n, r in table.items() if not _rule_enabled(r)}
+
+
+def _all_names(cfg) -> list[str]:
+    """The columns of features_at for cfg, in their computed order (nothing dropped)."""
     names = ["sku_code", "fc_code", "series_age"]
     if cfg.feature_lags:
         names += [f"lag_{k}" for k in LAGS]
@@ -202,11 +219,18 @@ def feature_names(cfg) -> list[str]:
         names += OPEN_HOURS
     if customer_on(cfg):
         names += CUSTOMER
+    return names
+
+
+def feature_names(cfg) -> list[str]:
+    names = _all_names(cfg)
     if is_direct(cfg):
         # features at the ORIGIN (calendar removed), then the calendar of the TARGET day and the horizon (1 = first
         # forecast day); same column order as the experiment harness (L7_direct)
         names = [n for n in names if n not in CALENDAR] + calendar_names(cfg) + ["horizon"]
-    return names
+    drop = dropped_features(cfg)
+    # 1.3.1: dropped columns are left out, the order of the others is kept
+    return [n for n in names if n not in drop] if drop else names
 
 
 def _nanmean(a):
@@ -300,6 +324,13 @@ def features_at(p: Panel, Y: np.ndarray, price: np.ndarray, disc: np.ndarray, pr
             cols.append(_nanmean(n))        # mean distinct customers of the known days
             cols.append(_ratio(r, n))       # share of repeat customers
             cols.append(_ratio(iv, r))      # mean days since the previous order of the repeat customers
+    drop = dropped_features(cfg)
+    if drop:
+        # 1.3.1: the dropped columns are left out; every other column is the same value as without the rule
+        names = _all_names(cfg)
+        if len(names) != len(cols):
+            raise ValueError(f"feature columns: {len(cols)} built, {len(names)} names")
+        cols = [col for n, col in zip(names, cols) if n not in drop]
     with np.errstate(all="ignore"):
         return np.column_stack(cols).astype(np.float32)
 
@@ -324,9 +355,12 @@ def calendar_row(d, cfg=None) -> list[float]:
 
 
 def direct_extra(cfg, target_day, h: int) -> list[float]:
-    """Columns appended to the origin features of a DIRECT row: target-day calendar (if on) + horizon h (1-based)."""
+    """Columns appended to the origin features of a DIRECT row: target-day calendar (if on) + horizon h (1-based).
+    1.3.1: a dropped calendar column (feature table) is left out."""
     cal = calendar_names(cfg)
-    return [v for n, v in zip(CALENDAR, calendar_row(target_day, cfg)) if n in cal] + [float(h)]
+    vals = [(n, v) for n, v in zip(CALENDAR, calendar_row(target_day, cfg)) if n in cal] + [("horizon", float(h))]
+    drop = dropped_features(cfg)
+    return [v for n, v in vals if n not in drop]
 
 
 def origin_features(p: Panel, Y, price, disc, promo, dates, t0: int, cfg, sc, fcc) -> np.ndarray:

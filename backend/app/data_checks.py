@@ -31,6 +31,66 @@ FINAL_TRIGGERS = ("trg_afn_no_delete", "trg_afn_keys_fixed", "trg_afn_born_unsea
 # 1.2.13 (migration 0010): held lines, change log, sync runs and their per-key decisions are append-only
 HISTORY_SYNC_TRIGGERS = ("trg_dhl_no_delete", "trg_dhl_fixed", "trg_dcl_no_update", "trg_dcl_no_delete", "trg_dsr_no_delete",
                          "trg_dsr_fixed", "trg_dsk_no_update", "trg_dsk_no_delete")
+# 1.3.1 (migration 0011): the forecast refresh runs and values are immutable, the source-read records append-only
+REFRESH_TRIGGERS = ("trg_frr_no_update", "trg_frr_no_delete", "trg_frv_no_update", "trg_asr_no_update", "trg_asr_no_delete")
+REFRESH_RECENT_DAYS = 7         # the row checks of forecast_refresh_values cover the runs of the last 7 forecast days (size)
+REFRESH_GROUPS = ("A", "B", "C")
+
+
+def _refresh_run_ids(c) -> list[str]:
+    """Distinct run_id of forecast_refresh_values by seeks on its primary key (one seek per run, never a full scan)."""
+    out, last = [], ""
+    while True:
+        r = c.execute("SELECT run_id FROM forecast_refresh_values WHERE run_id > ? ORDER BY run_id LIMIT 1",
+                      (last,)).fetchone()
+        if r is None:
+            return out
+        out.append(r[0])
+        last = r[0]
+
+
+def _refresh_checks(c) -> list[dict]:
+    """1.3.1 (migration 0011, ml/daily_refresh.py): protection triggers; every refresh value belongs to an existing run;
+    the row rules of the runs of the last REFRESH_RECENT_DAYS forecast days (target day, integer quantity >= 0) in one
+    pass; SKU group codes; open hours in range. Skipped before migration 0011."""
+    if not _q(c, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='forecast_refresh_values'"):
+        return []
+    have = {r[0] for r in _q(c, "SELECT name FROM sqlite_master WHERE type='trigger'")}
+    out = [_check("refresh_protection_triggers", "every trigger that keeps the forecast refresh runs and values immutable "
+                  "and the source read records append-only exists (migration 0011)",
+                  [(t,) for t in sorted(set(REFRESH_TRIGGERS) - have)])]
+    runs = {r[0] for r in _q(c, "SELECT id FROM forecast_refresh_runs")}         # about one run a day: small
+    from .timeutil import today_vn
+    since = str(today_vn() - timedelta(days=REFRESH_RECENT_DAYS))
+    recent = ("FROM forecast_refresh_runs r CROSS JOIN forecast_refresh_values v ON v.run_id = r.id "
+              "WHERE r.forecast_date >= ?")
+    bad = {
+        "target": "v.target_date IS NOT date(r.forecast_date, '+' || (v.horizon - 1) || ' days')",
+        "final": "v.final_qty IS NULL OR typeof(v.final_qty) != 'integer' OR v.final_qty < 0",
+    }
+    n = dict(zip(bad, c.execute("SELECT " + ", ".join(f"TOTAL({e})" for e in bad.values()) + " " + recent,
+                                (since,)).fetchone()))
+
+    def ex(k):
+        return _q(c, f"SELECT v.run_id, r.forecast_date, v.target_date, v.horizon, v.fc_code, v.sku_code, v.final_qty "
+                     f"{recent} AND ({bad[k]}) LIMIT 5", (since,)) if n[k] else []
+    out.append(_check("refresh_values_run_reference",
+                      "every forecast_refresh_values row belongs to an existing forecast_refresh_runs record",
+                      [(rid, "no such run") for rid in _refresh_run_ids(c) if rid not in runs]))
+    out.append(_check("refresh_values_target_date",
+                      f"target_date = forecast_date of the run + horizon - 1 (runs since {since})", int(n["target"]),
+                      examples=ex("target")))
+    out.append(_check("refresh_values_final_qty", f"final_qty is an integer >= 0 (runs since {since})", int(n["final"]),
+                      examples=ex("final")))
+    out.append(_check("sku_group_codes", f"sku_group group_code is one of {', '.join(REFRESH_GROUPS)}",
+                      _q(c, "SELECT scope_key, fc_code, sku_code, computed_for, group_code FROM sku_group WHERE group_code "
+                            f"IS NULL OR group_code NOT IN ({', '.join(repr(x) for x in REFRESH_GROUPS)}) LIMIT 50")))
+    out.append(_check("open_hours_daily_range", "open_hours_daily total_open_hours is NULL (unknown) or a number in 0..24 "
+                      "(a value outside comes from the source: check it)",
+                      _q(c, "SELECT source_table, seller_code, fc_code, sku_code, open_date, total_open_hours FROM "
+                            "open_hours_daily WHERE total_open_hours IS NOT NULL AND (typeof(total_open_hours) NOT IN "
+                            "('real', 'integer') OR total_open_hours < 0 OR total_open_hours > 24) LIMIT 50"), fail=False))
+    return out
 
 
 def _history_sync_checks(c) -> list[dict]:
@@ -377,6 +437,7 @@ def _run(c, db_path: Path, models_dir: Path | None) -> dict:
                           "every trigger that keeps a finalized actual frozen exists (migration 0009)",
                           [(t,) for t in sorted(set(FINAL_TRIGGERS) - have)]))
     out.extend(_history_sync_checks(c))
+    out.extend(_refresh_checks(c))
     model_bad = []
     if models_dir is not None:
         for rid, mv, mp, sha in _q(c, "SELECT id, model_version, model_path, model_sha256 FROM training_runs "

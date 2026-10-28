@@ -67,7 +67,10 @@ def test_every_read_of_the_viewing_pages_passes():
     by_design = {"/api/settings/X1/history",                     # administration history: not remote
                  "/api/schedules/X1/preview",                    # 1.2.6 operator dry run: local only (proxy unchanged)
                  "/api/sync/backfill/preview",                   # 1.2.9 backfill preview: operator only (proxy unchanged)
-                 "/api/data-quality"}                            # 1.2.11: stores a report on a cache miss (history stays open)
+                 "/api/data-quality",                            # 1.2.11: stores a report on a cache miss (history stays open)
+                 # 1.3.1 LightGBM chốt: local only until the remote-access batch (outside this release, owner decision
+                 # 29/10/2026) opens them in the proxy; through the link the trial banner and these sections are hidden
+                 "/api/daily-forecast/status", "/api/feature-table", "/api/training-runs/X1/feature-importance"}
     blocked = sorted(p for p in used - by_design if rp.classify("GET", p) is not None)
     assert blocked == [], blocked
     assert all(rp.classify("GET", p) for p in by_design)

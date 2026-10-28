@@ -21,6 +21,9 @@
   eod-retention [--db FILE] [--apply --plan ID]   1.2.6: 90-day retention of the end-of-day forecast backup. Default:
                                             dry run (read-only) printing the plan and its plan_id; --apply deletes
                                             exactly that reviewed plan after a verified backup
+  apply-preset lgbm-chot [--apply]          1.3.1: settings of PHUONG AN CHOT (model, daily_forecast, flows refresh +
+                                            report). Default: dry run (read-only) printing the changes; --apply saves
+                                            them through settings_service / the schedule flows (idempotent)
 Exit codes: 0 ok, 1 problems, 2 refused (app running / unsafe), 3 storage error.
 """
 from __future__ import annotations
@@ -160,6 +163,9 @@ def main(argv=None) -> int:
     hl.add_argument("--apply", action="store_true")
     sub.add_parser("history-check", help="1.2.13: compare the stored history before the D-1 window with the source now "
                                          "(read-only BigQuery; records the day checks)")
+    ap_ = sub.add_parser("apply-preset", help="1.3.1: settings of a release preset (dry run unless --apply)")
+    ap_.add_argument("name", choices=sorted(PRESETS))
+    ap_.add_argument("--apply", action="store_true", help="save the settings and switch the preset's flows ON")
     a = ap.parse_args(argv)
     from . import paths
     try:
@@ -288,6 +294,8 @@ def _run(a) -> int:
         db.migrate()
         print(json.dumps({"ok": True, "config": cfg, "paths": paths.describe()}, indent=2, ensure_ascii=False))
         return 0
+    if a.cmd == "apply-preset":
+        return _apply_preset(a)
 
     from .logging_setup import setup_logging
     if a.cmd == "serve":
@@ -406,6 +414,97 @@ def _run(a) -> int:
         print(json.dumps({"version": __version__, "data_dir": str(paths.data_dir()), "db": str(paths.db_path()),
                           "frontend": str(paths.frontend_dist())}, indent=2))
     return 0
+
+
+# 1.3.1 PHUONG AN CHOT (docs/ke_hoach_lgbm_chot.md section 1): the settings a release sets once at deployment
+PRESET_NOTE = "PRESET lgbm-chot 1.3.1 (PHUONG AN CHOT)"
+PRESETS = {"lgbm-chot": {
+    "sections": {
+        "model": {"feature_sku_code": False, "horizon_weight_short": 3.0, "horizon_weight_cutoff": 7,
+                  "fallback_enabled": False},
+        # trial_mode is left as stored (True by default): only its own confirmed endpoint changes it
+        "daily_forecast": {"enabled": True, "rounding_threshold": 0.2, "log_retention_days": 120,
+                           "report_subdir": "theo-doi"}},
+    "flows": ("refresh", "report")}}
+
+
+def _codes(reasons) -> list[dict]:
+    return [{"code": x.get("code"), "detail": x.get("detail")} for x in reasons or []]
+
+
+def _apply_preset(a) -> int:
+    """1.3.1 `apply-preset <name> [--apply]`. Dry run (default): the planned changes and the readiness of the flows,
+    read-only. --apply: each section saved once through settings_service (validated, history note PRESET_NOTE), then
+    the flows switched ON through flows.update_flow exactly as PUT /api/schedules/{flow} (readiness, *_enabled_at); a
+    flow that is not ready is reported, never forced. Idempotent: a second --apply saves nothing. Never touches
+    storage.json, the active source or the other flows. Exit 0 ok, 1 a flow not ready, 2 refused."""
+    from . import db, paths
+    from . import settings_service as ss
+    from .jobs import flows
+    from .messages import AppError
+    preset = PRESETS[a.name]
+    with db.read() as c:
+        try:
+            schema = c.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] or 0
+        except Exception:  # noqa: BLE001 - no migration table: an empty or foreign database
+            schema = 0
+        cur = {s: ss.get(s, c) for s in preset["sections"]}
+    latest = max(v for v, _ in db.available_migrations())
+    changes = [{"section": s, "key": k, "from": getattr(cur[s], k), "to": v}
+               for s, vals in preset["sections"].items() for k, v in vals.items() if getattr(cur[s], k) != v]
+    new = {s: {**cur[s].model_dump(), **vals} for s, vals in preset["sections"].items()}
+    out = {"preset": a.name, "dry_run": not a.apply, "schema_version": schema, "schema_required": latest}
+
+    def _refuse(why: str) -> int:
+        print(json.dumps({"ok": False, **out, "refused": why, "changes": changes}, indent=2, ensure_ascii=False,
+                         default=str))
+        return 2
+    try:
+        for s, v in new.items():
+            ss.SECTIONS[s].model_validate(v)        # nothing is saved unless every section is valid
+    except ValueError as e:
+        return _refuse(f"{type(e).__name__}: {e}"[:800])
+    if not a.apply:
+        res = []
+        for f in preset["flows"]:
+            on = bool(getattr(ss.get("schedule"), flows.FLOWS[f]["flag"]))
+            # the preset switches daily_forecast ON before its flows: that reason goes away with it
+            reasons = [x for x in flows.readiness(f)["reasons"]
+                       if not (x.get("code") == "DAILY_FORECAST_DISABLED" and new["daily_forecast"]["enabled"])]
+            res.append({"flow": f, "from": on, "to": on or not reasons, "ready": not reasons, "reasons": _codes(reasons)})
+        print(json.dumps({"ok": True, **out, "changes": changes, "flows": res,
+                          "changed": bool(changes or any(r["to"] != r["from"] for r in res))},
+                         indent=2, ensure_ascii=False, default=str))
+        return 0
+    from .logging_setup import setup_logging
+    setup_logging()
+    paths.ensure_storage()
+    if schema < latest:
+        return _refuse(f"database schema {schema} is older than {latest}: start the new version once (it migrates) "
+                       "before applying the preset")
+    if changes:
+        with db.tx() as c:
+            for s in preset["sections"]:
+                if any(ch["section"] == s for ch in changes):
+                    ss.save(s, new[s], note=PRESET_NOTE, conn=c)
+            db.audit(c, "PRESET_APPLIED", "settings", a.name, {"changes": changes})
+    res = []
+    for f in preset["flows"]:
+        if getattr(ss.get("schedule"), flows.FLOWS[f]["flag"]):
+            r = flows.readiness(f)
+            res.append({"flow": f, "from": True, "to": True, "ready": r["ready"], "reasons": _codes(r["reasons"])})
+            continue
+        try:
+            flows.update_flow(f, {"enabled": True})
+            res.append({"flow": f, "from": False, "to": True, "ready": True, "reasons": []})
+        except AppError as e:
+            res.append({"flow": f, "from": False, "to": False, "ready": False,
+                        "reasons": _codes(e.params.get("reasons") or [{"code": e.code, "detail": e.detail}])})
+    changed = bool(changes or any(r["to"] != r["from"] for r in res))
+    print(json.dumps({"ok": True, **out, "changes": changes, "flows": res, "changed": changed,
+                      "message": None if changed else "nothing to change: the preset is already applied"},
+                     indent=2, ensure_ascii=False, default=str))
+    return 1 if any(not r["to"] for r in res) else 0
 
 
 def _bq_check() -> int:

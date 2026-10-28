@@ -28,7 +28,21 @@ class Cancelled(Exception):
     pass
 
 
-def lgb_params(cfg, seed: int = 7) -> dict:
+def feature_contri(cfg, names: list[str]) -> list[float] | None:
+    """1.3.1 (B11): LightGBM feature_contri aligned with `names` from the run's feature-table snapshot
+    (model.feature_table; a rule as a FeatureRule or the plain dict of a stored configuration). None when every
+    feature keeps 1.0 (the parameter is then left out: exactly the training before 1.3.1)."""
+    table = getattr(cfg, "feature_table", None) or {}
+
+    def contri(rule) -> float:
+        return float(rule.get("contri", 1.0) if isinstance(rule, dict) else getattr(rule, "contri", 1.0))
+    vals = [contri(table[n]) if n in table else 1.0 for n in names]
+    return vals if any(v != 1.0 for v in vals) else None
+
+
+def lgb_params(cfg, seed: int = 7, names: list[str] | None = None) -> dict:
+    """names (1.3.1): the model's feature names, to add the feature_contri of the feature table (none given or no rule
+    away from 1.0: the 1.2.14 parameters)."""
     p = {"objective": cfg.objective, "learning_rate": cfg.learning_rate, "num_leaves": cfg.num_leaves,
          "min_data_in_leaf": 20, "feature_fraction": 0.9, "bagging_fraction": 0.9, "bagging_freq": 1,
          "lambda_l2": 1.0, "verbose": -1, "seed": seed, "deterministic": True, "force_row_wise": True}
@@ -36,6 +50,9 @@ def lgb_params(cfg, seed: int = 7) -> dict:
         p["tweedie_variance_power"] = 1.2
     if cfg.num_threads:
         p["num_threads"] = cfg.num_threads
+    fc = feature_contri(cfg, names) if names is not None else None
+    if fc is not None:
+        p["feature_contri"] = fc
     return p
 
 
@@ -47,10 +64,18 @@ def direct_max_horizon(cfg) -> int:
 def train(p: Panel, cfg, cancel=None, weights: np.ndarray | None = None) -> tuple[lgb.Booster | None, dict]:
     """weights (1.2.9b, experiments only - the application's training never passes it): optional S x T matrix of the
     panel; each training row gets the weight of its (series, target day). The targets and features stay the real
-    values. None = every row weight 1 (exactly the training as before)."""
+    values. None = every row weight 1 (exactly the training as before).
+    1.3.1 (B1, from 1.3.0): without `weights`, a DIRECT model with cfg.horizon_weight_short / horizon_weight_cutoff set
+    weights its rows by horizon: horizon_weight_short when horizon <= horizon_weight_cutoff, else 1.0. The categorical
+    codes are the ones still in the features (sku_code is dropped by model.feature_sku_code=False)."""
+    hw = (getattr(cfg, "horizon_weight_short", None), getattr(cfg, "horizon_weight_cutoff", None))
+    names = feature_names(cfg)
     if weights is None:
         X, y = direct_training_matrix(p, cfg, direct_max_horizon(cfg)) if is_direct(cfg) else training_matrix(p, cfg)
         w = None
+        if is_direct(cfg) and None not in hw:
+            short = X[:, names.index("horizon")] <= hw[1]
+            w = np.where(short, float(hw[0]), 1.0).astype(float)
     else:
         if weights.shape != p.Y.shape:
             raise ValueError(f"weights {weights.shape} != panel {p.Y.shape}")
@@ -61,22 +86,28 @@ def train(p: Panel, cfg, cancel=None, weights: np.ndarray | None = None) -> tupl
             raise ValueError("training weights must be finite and >= 0")
     info = {"n_rows": int(len(y)), "n_series": p.n_series,
             "forecast_strategy": "DIRECT" if is_direct(cfg) else "RECURSIVE"}
-    if w is not None:
+    if w is not None and weights is None:
+        info["horizon_weight"] = {"short": float(hw[0]), "cutoff": int(hw[1]), "rows_weighted": int(np.sum(short))}
+    elif w is not None:
         info["weights"] = {"rows_below_1": int(np.sum(w < 1)), "sum": float(w.sum()), "rows": int(len(w))}
     if len(y) < 100 or np.nansum(y) <= 0:
         info["error"] = "too few training rows"
         return None, info
     if cancel and cancel():
         raise Cancelled()
-    names = feature_names(cfg)
-    ds = lgb.Dataset(X, y, weight=w, feature_name=names, categorical_feature=["sku_code", "fc_code"], free_raw_data=True)
+    cats = [c for c in ("sku_code", "fc_code") if c in names]
+    ds = lgb.Dataset(X, y, weight=w, feature_name=names, categorical_feature=cats, free_raw_data=True)
     # 1.2.13: the Dataset is now the only holder of the raw matrix; LightGBM drops it once the data is binned
     # (free_raw_data), so the float32 matrix no longer stays in memory through all the boosting rounds (same model)
     del X, y, w
-    booster = lgb.train(lgb_params(cfg), ds, num_boost_round=cfg.num_boost_round)
+    booster = lgb.train(lgb_params(cfg, names=names), ds, num_boost_round=cfg.num_boost_round)
     imp = booster.feature_importance(importance_type="gain")
     info["feature_importance"] = sorted(({"feature": n, "gain": float(g)} for n, g in zip(names, imp)),
                                         key=lambda r: -r["gain"])
+    # 1.3.1 (B10): every feature in model order with its gain and its number of splits
+    split = booster.feature_importance(importance_type="split")
+    info["feature_importance_full"] = [{"feature": n, "gain": float(g), "split": int(k)}
+                                       for n, g, k in zip(names, imp, split)]
     return booster, info
 
 
@@ -98,6 +129,8 @@ def classification_details(p: Panel, cfg) -> dict:
          (rate = sum / count of known days in the last fallback_window_days)
       4. otherwise                                                                  -> LIGHTGBM
     Known day = not NaN (days before the series started and calendar days without any data are excluded).
+    1.3.1 (B2): with model.fallback_enabled False no rule applies - every series is LIGHTGBM (LIGHTGBM_ELIGIBLE, rate
+    0); every other quantity is still computed (explanations).
     """
     S, T = p.Y.shape
     methods = np.array([METHOD_LGBM] * S, dtype=object)
@@ -120,7 +153,7 @@ def classification_details(p: Panel, cfg) -> dict:
         hist_cnt = np.sum(~np.isnan(p.Y), axis=1)
         hist_sum = np.nansum(p.Y, axis=1)
         hist_rate = np.where(hist_cnt > 0, hist_sum / np.maximum(hist_cnt, 1), 0.0)
-    for s in range(S):
+    for s in range(S if getattr(cfg, "fallback_enabled", True) else 0):
         if not sold_recent[s] and age[s] >= cfg.inactive_days:
             methods[s], rate[s], reasons[s] = FB_INACTIVE, 0.0, "INACTIVE"
         elif age[s] < cfg.min_series_history_days:
@@ -151,11 +184,14 @@ def series_meta(p: Panel, cfg, details: dict, s: int) -> dict:
             "rate_used": float(details["rate"][s]), "rule": rule}
 
 
-def forecast(p: Panel, booster: lgb.Booster | None, cfg, horizon: int, cancel=None, capture: int | None = None) -> dict:
+def forecast(p: Panel, booster: lgb.Booster | None, cfg, horizon: int, cancel=None, capture: int | None = None,
+             sku_codes: dict | None = None, fc_codes: dict | None = None) -> dict:
     """Recursive daily forecast for days T..T+horizon-1 (T = first day after the panel).
 
     capture: optional series index; the exact feature row fed to the model for that series at every step is
-    returned in "captured" (used by explanations - nothing is approximated)."""
+    returned in "captured" (used by explanations - nothing is approximated).
+    sku_codes / fc_codes (1.3.0): the category codes the booster was trained with (its model json), for a panel built
+    later than the training (daily refresh); None = the panel's own codes (every caller before)."""
     S, T = p.Y.shape
     methods, rate = classify_series(p, cfg)
     if booster is None:
@@ -166,14 +202,14 @@ def forecast(p: Panel, booster: lgb.Booster | None, cfg, horizon: int, cancel=No
             mr = np.where(cnt > 0, np.nansum(w, axis=1) / np.maximum(cnt, 1), 0.0)
         rate = np.where(methods == FB_MODEL_UNAVAILABLE, mr, rate)
     if is_direct(cfg):
-        return _forecast_direct(p, booster, cfg, horizon, methods, rate, cancel, capture)
+        return _forecast_direct(p, booster, cfg, horizon, methods, rate, cancel, capture, sku_codes, fc_codes)
     dates = p.dates.append(pd.date_range(p.dates[-1] + pd.Timedelta(days=1), periods=horizon, freq="D"))
     Y = np.concatenate([p.Y, np.full((S, horizon), np.nan)], axis=1)
     # unknown future: price held at last known value; no planned promotion information -> 0
     price = np.concatenate([p.price, np.repeat(p.price[:, -1:], horizon, axis=1)], axis=1)
     disc = np.concatenate([p.disc, np.repeat(p.disc[:, -1:], horizon, axis=1)], axis=1)
     promo = np.concatenate([p.promo, np.zeros((S, horizon))], axis=1)
-    sc, fcc = static_codes(p)
+    sc, fcc = static_codes(p, sku_codes, fc_codes)
     lgbm_mask = methods == METHOD_LGBM
     yhat = np.zeros((S, horizon))
     captured = []
@@ -193,14 +229,15 @@ def forecast(p: Panel, booster: lgb.Booster | None, cfg, horizon: int, cancel=No
     return {"dates": dates[T:], "yhat": yhat, "methods": methods, "captured": captured}
 
 
-def _forecast_direct(p: Panel, booster, cfg, horizon: int, methods, rate, cancel=None, capture=None) -> dict:
+def _forecast_direct(p: Panel, booster, cfg, horizon: int, methods, rate, cancel=None, capture=None,
+                     sku_codes: dict | None = None, fc_codes: dict | None = None) -> dict:
     """DIRECT: one prediction per horizon day from the features at the origin T (data < T only) + the target-day
     calendar + h. No forecast is fed back into any feature. Fallback series keep their constant rate."""
     S, T = p.Y.shape
     if horizon > direct_max_horizon(cfg):
         raise ValueError(f"DIRECT_HORIZON_EXCEEDS_TRAINING: {horizon} > {direct_max_horizon(cfg)} days")
     future = pd.date_range(p.dates[-1] + pd.Timedelta(days=1), periods=horizon, freq="D")
-    sc, fcc = static_codes(p)
+    sc, fcc = static_codes(p, sku_codes, fc_codes)
     lgbm_mask = methods == METHOD_LGBM
     Xb = (origin_features(p, p.Y, p.price, p.disc, p.promo, p.dates, T, cfg, sc, fcc)
           if booster is not None and lgbm_mask.any() else None)

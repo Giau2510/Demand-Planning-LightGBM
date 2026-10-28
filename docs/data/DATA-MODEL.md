@@ -189,6 +189,8 @@ Customer counts (schema 8, migration 0008, `app/data/customers.py`): `customer_c
 | Training / backtest / forecast | VN business dates; forecast origin = last complete VN date + 1 | `ml/pipeline.py` |
 | Application logs | UTC (`ts` in JSON logs) | `logging_setup.py` |
 | Backup file names | VN local time | `backup.py` |
+| 1.3.1 `open_hours_daily.open_date` | the BigQuery `openhours_by_sku.open_date` column, type DATE (read from INFORMATION_SCHEMA in the backtest of 27/10/2026, `reports/backtest-prereg-v2-20261027/open_date_type.json`), stored as `YYYY-MM-DD` without conversion | `bq/aux_sources.fetch_open_hours` |
+| 1.3.1 `forecast_refresh_runs.forecast_date` / `data_as_of`, `forecast_refresh_values.target_date`, `actual_daily.date`, `sku_group.computed_for` | Vietnam calendar dates (day D of the refresh = `timeutil.today_vn()`; data up to D-1) | `ml/daily_refresh.py`, `ml/sku_group.py` |
 
 **Model-input window (1.1.7).** Training, backtest, forecast panels and the data-quality report use only complete
 Vietnam days from `data_policy.window_start_date` (default 2026-01-01) to yesterday (`data.demand.data_window`).
@@ -311,3 +313,32 @@ discount, promotion, voucher and source-update fields switch feature groups on o
 Data validation on a read-only copy of the live DB (2026-10-15, `python -m app.cli data-check --db <copy>`): integrity
 ok, 0 FK violations, 1 ACTIVE DEMO batch, closed batches hold no rows, demand = order lines (38,533 day rows,
 1,015,057 units), forecasts complete (3 runs, 4,368 values), model file hash matches, no stuck jobs; WARN as noted above.
+
+## 12. LightGBM chốt (1.3.1, migration 0011, additive)
+
+New tables (nothing is written into them while `daily_forecast.enabled` is false; no existing table changes):
+`open_hours_daily`, `aux_source_reads` (append-only), `sku_group` (A / B / C, reports only), `forecast_refresh_runs`
+(immutable), `forecast_refresh_values` (never updated; rows deleted only by the log retention), `actual_daily`,
+`accuracy_report_runs`, `training_feature_importance`. Columns: [DATA-DICTIONARY.md](DATA-DICTIONARY.md).
+
+Invariants (`data_checks.py`): run / trigger protection present; every refresh value links to a run; `final_qty` integer
+>= 0; `target_date` = forecast day + horizon - 1; group codes A / B / C; open hours in [0, 24] or NULL.
+
+The refresh never writes `forecast_runs` / `forecast_values` / `training_runs`. New settings sections:
+`daily_forecast` (enabled, trial_mode, rounding_threshold, log_retention_days, openhours_table, seller_code,
+report_subdir) and `feature_table` (per-feature rules); new `model` keys `feature_sku_code`, `fallback_enabled`,
+`horizon_weight_short`, `horizon_weight_cutoff`, `feature_table` (set by the training only); new `schedule` keys
+`refresh_*`, `report_*`. Defaults = 1.2.14 behaviour.
+
+**Retention and growth** (measured 29/10/2026 on a copy of the production DB, 17 161 series, page size 4 096):
+- one refresh run with horizon 15 = 257 415 value rows = **21.2 MB**, written in one transaction in 3.1 s;
+- a run trimmed to days 1-7 (every run but the latest of the scope) = **9.9 MB**; with
+  `daily_forecast.log_retention_days` = 120 the log stays at about **1.2 GB** (values older than the retention are
+  deleted after each refresh, run records are kept);
+- `actual_daily`: one row per open day x series of the scope, same retention;
+- `open_hours_daily` has **no retention** (a stored day is never deleted: it is source data, AGENTS.md section 4);
+  about one row per FC x SKU x day of the seller;
+- every online backup (before a migration / deploy) grows by the same amount.
+
+**Whole-scope data gaps.** A day on which the scope has no demand row at all is unknown, never 0: it gets no
+`actual_daily` row and does not count in the group computation (open days with at least one demand row of the scope).

@@ -532,3 +532,16 @@ Indexes: `ix_validation_reports_scope`(scope_key, created_at)
 of the same run date).
 
 `trg_forecast_values_no_update`, `trg_forecast_values_no_delete`, `trg_forecast_runs_no_update`, `trg_forecast_runs_no_delete`, `trg_d0_values_no_update`, `trg_series_meta_no_update`, `trg_series_meta_no_delete` - all block UPDATE/DELETE of published forecast data or UPDATE of D0 snapshot values (immutability).
+
+## 1.3.1 tables (migration 0011)
+
+| Table | Key | Columns |
+|---|---|---|
+| `open_hours_daily` | source_table, seller_code, fc_code, sku_code, open_date | total_open_hours (MAX over the items, NULL = unknown), n_items, loaded_at (UTC) |
+| `aux_source_reads` | id | source_table, seller_code, kind (OPEN_HOURS), range_start, range_end, n_rows, last_day, source_modified (UTC), completed_at (UTC); append-only |
+| `sku_group` | scope_key, fc_code, sku_code, computed_for | group_code (A / B / C), window_start, window_end, n_open_days, qty, avg_per_open_day, zero_days, zero_share, rule_version, computed_at |
+| `forecast_refresh_runs` | id (FRR-...) | scope_key, forecast_date, data_as_of (D-1), status (PUBLISHED), trigger, training_run_id, model_version, model_fingerprint, config_version, trial_mode, horizon, n_series, n_lightgbm, n_fallback, group_computed_for, job_id, created_at, detail_json; immutable |
+| `forecast_refresh_values` | run_id, horizon, fc_code, sku_code | target_date, lgb_raw (raw forecast, float), final_qty (published integer, B3), method, group_code, flags; no update |
+| `actual_daily` | scope_key, date, fc_code, sku_code | demand (0 on an open day without order), total_open_hours, updated_at |
+| `accuracy_report_runs` | id | scope_key, run_kind (SCHEDULED / MANUAL), run_date, period_start, period_end, n_cells, status, summary_json, report_path, error, job_id, created_at |
+| `training_feature_importance` | training_run_id, feature | feature_group, gain, split, gain_share, split_share, rank |

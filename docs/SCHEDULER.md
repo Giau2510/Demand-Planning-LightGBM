@@ -204,3 +204,18 @@ không đạt / lỗi, `failed_stage`) và **kết quả publish** được hi�
 Chỉ publish khi: dữ liệu đạt kiểm tra, không cũ (với nguồn bị kiểm tra), backtest đủ tin cậy và đạt ngưỡng. Nếu không,
 forecast hợp lệ trước đó vẫn là bản hiện hành và lý do được ghi vào lần huấn luyện, job và cảnh báo. Dữ liệu
 không đổi → `NO_NEW_DATA` (bỏ qua, không huấn luyện thừa). Mở dashboard **không** kích hoạt huấn luyện.
+
+## Làm mới dự báo và báo cáo độ chính xác (1.3.1)
+
+Hai luồng mới, mặc định TẮT. Chỉ chạy khi `daily_forecast.enabled` bật. Các luồng D-1, D-0, huấn luyện, sao lưu cuối
+ngày và chốt thực bán không đổi.
+
+| Luồng | Job | Khi nào | Cấu hình |
+|---|---|---|---|
+| `refresh` | `FORECAST_REFRESH` (nặng, hủy được) | ngay sau khi D-1 của hôm nay thành công; thử lại mỗi `refresh_retry_minutes` (10) tới `refresh_deadline` (12:00); lập trước TRAIN_PUBLISH trong cùng tick | `schedule.refresh_enabled`, `refresh_deadline`, `refresh_retry_minutes` |
+| `report` | `ACCURACY_REPORT` (nhẹ) | thứ `report_weekday` (1 = thứ 2) lúc `report_time` (09:30); lỡ giờ thì chạy bù một lần trong ngày | `schedule.report_enabled`, `report_weekday`, `report_time` |
+
+- Kết quả làm mới: PUBLISHED → SUCCEEDED; NOT_READY / SKIPPED → SKIPPED (lịch thử lại); FAILED → FAILED.
+- Quá hạn chót mà chưa có lần làm mới PUBLISHED của hôm nay: MỘT bản ghi `STALE_FORECAST` + cảnh báo ERROR cho ngày đó.
+  Số cũ được giữ. Một lần thử còn chờ sau hạn chót bị đóng `REFRESH_DEADLINE_PASSED`.
+- Nút chạy tay: `POST /api/daily-forecast/refresh` và `POST /api/accuracy-reports/run` (trigger MANUAL).

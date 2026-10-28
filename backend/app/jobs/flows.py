@@ -5,6 +5,8 @@
   train  daily training on closed days (candidate / first publication)          job TRAIN_PUBLISH schedule.train_enabled
   eod    1.2.6 end-of-day backup of the next 7 forecast days (local copy)       job EOD_FORECAST_SNAPSHOT schedule.eod_enabled
   close  1.2.6 actual close of the day at 23:59 + late-data revisions (local)   job ACTUAL_CLOSE  schedule.close_enabled
+  refresh 1.3.1 forecast refresh of today with the model in use, after D-1      job FORECAST_REFRESH schedule.refresh_enabled
+  report  1.3.1 weekly accuracy report of the refreshed forecasts (.xlsx)       job ACCURACY_REPORT schedule.report_enabled
 
 A flow can be switched ON only when it is READY for the active data source. Saving times never runs a job. eod and
 close are OFF until switched on here (1.2.6 default, also for a stored schedule without their keys).
@@ -28,14 +30,18 @@ FLOWS = {"d1": {"job_type": "D1_SYNC", "flag": "d1_enabled"},
          "d0": {"job_type": "D0_SYNC", "flag": "d0_enabled"},
          "train": {"job_type": "TRAIN_PUBLISH", "flag": "train_enabled"},
          "eod": {"job_type": "EOD_FORECAST_SNAPSHOT", "flag": "eod_enabled"},
-         "close": {"job_type": "ACTUAL_CLOSE", "flag": "close_enabled"}}
+         "close": {"job_type": "ACTUAL_CLOSE", "flag": "close_enabled"},
+         "refresh": {"job_type": "FORECAST_REFRESH", "flag": "refresh_enabled"},
+         "report": {"job_type": "ACCURACY_REPORT", "flag": "report_enabled"}}
 # editable fields per flow: API name -> schedule setting
 FIELDS = {"d1": {"time": "d1_signal_poll_start", "fallback_time": "d1_fallback_time",
                  "poll_interval_minutes": "d1_poll_interval_minutes"},
           "d0": {"times": "d0_times", "catchup_policy": "d0_catchup_policy"},
           "train": {"time": "train_time", "catchup_policy": "train_catchup_policy"},
           "eod": {"time": "eod_time", "timezone": "eod_timezone"},
-          "close": {"time": "close_time", "timezone": "close_timezone"}}
+          "close": {"time": "close_time", "timezone": "close_timezone"},
+          "refresh": {"deadline": "refresh_deadline", "retry_minutes": "refresh_retry_minutes"},
+          "report": {"weekday": "report_weekday", "time": "report_time"}}
 TIMEZONE = "Asia/Ho_Chi_Minh"
 # 1.2.6 day-end flows: switching one ON is confirmed by the running scheduler or not saved at all (never a false ON)
 DAY_END = ("eod", "close")
@@ -133,6 +139,20 @@ def readiness(flow: str, conn=None) -> dict:
                 r0, n0 = d0_feed.readiness(c)
                 reasons += r0
                 notes += n0
+        elif flow in ("refresh", "report"):
+            # 1.3.1 flows: they also need the daily forecast switched on (settings section "daily_forecast")
+            if not ss.get("daily_forecast", c).enabled:
+                reasons.append(_reason("DAILY_FORECAST_DISABLED"))
+            if flow == "refresh":
+                if src != "BIGQUERY":
+                    reasons.append(_reason("NOT_APPLICABLE_FOR_SOURCE", src))
+                else:
+                    _bq_ready(c, reasons)
+            from ..data.demand import resolve_scope
+            try:
+                resolve_scope(c)
+            except AppError as e:
+                reasons.append(_reason(e.code, e.detail))
         elif flow in ("eod", "close"):
             # local copies of the active scope's own data: they need a dataset, never a BigQuery connection
             from ..data.demand import resolve_scope
@@ -222,8 +242,22 @@ def _active_valid(src) -> bool:
 
 
 def _times(flow: str, sched) -> list[str]:
+    # refresh: no fixed slot (it starts once today's D-1 succeeded); report: weekly, see _next_runs
     return {"d1": [sched.d1_signal_poll_start], "d0": list(sched.d0_times), "train": [sched.train_time],
-            "eod": [sched.eod_time], "close": [sched.close_time]}[flow]
+            "eod": [sched.eod_time], "close": [sched.close_time], "refresh": [],
+            "report": [sched.report_time]}[flow]
+
+
+def _next_runs(flow: str, sched, now: datetime, n: int) -> list[str]:
+    if flow != "report":
+        return next_runs(_times(flow, sched), now, n)
+    out: list[str] = []
+    d = now.date()
+    while len(out) < n:
+        if d.isoweekday() == sched.report_weekday and vn_slot(d, sched.report_time) > now:
+            out.append(vn_slot(d, sched.report_time).isoformat())
+        d += timedelta(days=1)
+    return out
 
 
 def next_runs(times: list[str], now: datetime, n: int) -> list[str]:
@@ -315,8 +349,8 @@ def flow_view(flow: str, conn=None, now: datetime | None = None, sched_view: dic
         out = {"flow": flow, "job_type": f["job_type"], "enabled": on, "state": state, "config": config,
                "enabled_at": getattr(sched, f"{flow}_enabled_at"),
                "timezone": config.get("timezone", TIMEZONE), "readiness": ready, "manual_readiness": _manual(flow, ready),
-               "next_runs": next_runs(_times(flow, sched), now, 3) if on else [],
-               "planned_times_if_enabled": next_runs(_times(flow, sched), now, 3),
+               "next_runs": _next_runs(flow, sched, now, 3) if on else [],
+               "planned_times_if_enabled": _next_runs(flow, sched, now, 3),
                "last_run": next((r for r in rows if r["status"] != "SKIPPED"), None),
                "last_skipped": next((r for r in rows if r["status"] == "SKIPPED"), None),
                "history": rows, "loaded_by_scheduler": loaded}

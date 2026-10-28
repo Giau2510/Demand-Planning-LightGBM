@@ -384,6 +384,74 @@ CATALOG: dict[str, tuple[str, str]] = {
                                   "A history backfill runs only after a 'Preview' of EXACTLY that window, with the same mapping and source SQL, within 6 hours; each preview is used for one backfill. Click 'Preview (no write)', check the rows that would change, then run the backfill."),
     "BACKFILL_BACKUP_FAILED": ("Không tạo được bản sao lưu cơ sở dữ liệu trước khi đọc lại lịch sử — không ghi gì. Kiểm tra dung lượng và thư mục sao lưu rồi thử lại.",
                                "The database backup before the history backfill could not be made — nothing was written. Check free space and the backup folder, then try again."),
+    # 1.3.1: daily forecast refresh with the model in use, open hours, SKU groups, accuracy and feature reports, feature
+    # table and trial mode (docs/ke_hoach_lgbm_chot.md)
+    "STALE_FORECAST": ("Đến giờ chốt làm mới (refresh_deadline) vẫn chưa có dự báo làm mới của hôm nay. Dự báo làm mới đã công bố trước đó được giữ nguyên, không có gì khác bị thay đổi. Xem các lần thử của job FORECAST_REFRESH hôm nay để biết lý do (D-1, giờ mở bán, dữ liệu, mô hình).",
+                       "No refreshed forecast of today was published by the refresh deadline (refresh_deadline). The previously published refreshed forecast is kept; nothing else changed. See today's FORECAST_REFRESH attempts for the reason (D-1, open hours, data, model)."),
+    "REFRESH_DEADLINE_PASSED": ("Lần thử làm mới dự báo này chưa chạy trước giờ chốt (hoặc đã qua ngày của nó) — được đóng lại là bỏ qua, không chạy nữa.",
+                                "This forecast refresh attempt did not run before the deadline (or its day is over) — closed as skipped, never run."),
+    "DATA_NOT_UP_TO_DATE": ("Dữ liệu nhu cầu chưa đến ngày hôm qua (D-1) — chưa làm mới dự báo. Sẽ thử lại theo lịch đến giờ chốt.",
+                            "The demand data does not reach yesterday (D-1) yet — the forecast is not refreshed. Retried on schedule until the deadline."),
+    "NO_MODEL_IN_USE": ("Phạm vi dữ liệu đang dùng chưa có mô hình đang sử dụng (chưa có lần dự báo nào được công bố) — không làm mới dự báo.",
+                        "The active data scope has no model in use (no forecast published yet) — the forecast is not refreshed."),
+    "MODEL_FILE_MISMATCH": ("File mô hình đang sử dụng bị thiếu, đã bị sửa (mã băm SHA-256 khác) hoặc thiếu bảng mã SKU/FC đi kèm — không dự báo bằng file này.",
+                            "The model file in use is missing, modified (SHA-256 differs) or lacks its SKU/FC code table — it is not used for a forecast."),
+    "REFRESH_SCHEDULE_DISABLED": ("Lịch làm mới dự báo đang TẮT — lần chạy theo lịch được ghi là bỏ qua.",
+                                  "The forecast refresh schedule is OFF — the scheduled run is recorded as skipped."),
+    "REFRESH_WAITS_FOR_D1": ("Làm mới dự báo của hôm nay chỉ chạy sau khi D-1 hôm nay thành công.",
+                             "Today's forecast refresh runs only after today's D-1 load succeeded."),
+    "REPORT_SCHEDULE_DISABLED": ("Lịch báo cáo độ chính xác đang TẮT — lần chạy theo lịch được ghi là bỏ qua.",
+                                 "The accuracy report schedule is OFF — the scheduled run is recorded as skipped."),
+    "DAILY_FORECAST_DISABLED": ("Làm mới dự báo hằng ngày đang TẮT trong cấu hình (daily_forecast.enabled) — không chạy, không ghi gì.",
+                                "The daily forecast refresh is OFF in the settings (daily_forecast.enabled) — nothing runs, nothing is written."),
+    "DAILY_FORECAST_PUBLISHED": ("Đã làm mới dự báo của hôm nay bằng mô hình đang sử dụng. Khi chế độ 'Chạy thử – chưa dùng để mua hàng' đang bật, số này chưa dùng để mua hàng. Màn hình Kết quả và các file xuất hiện có không đổi.",
+                                 "Today's forecast was refreshed with the model in use. While the trial mode ('Trial run – not used for purchasing') is on, these numbers are not used for purchasing. The Results screen and the existing exports are unchanged."),
+    "DAILY_ACTUAL_FAILED": ("Dự báo đã được làm mới nhưng bước cập nhật thực bán (actual_daily) bị lỗi — dự báo vẫn giữ nguyên; lần làm mới sau sẽ cập nhật lại các ngày gần nhất.",
+                            "The forecast was refreshed but updating the actuals (actual_daily) failed — the forecast stands; the next refresh updates the recent days again."),
+    "FORECAST_REFRESH_FAILED": ("Làm mới dự báo bị lỗi — số dự báo đã công bố trước đó vẫn giữ nguyên; lịch sẽ thử lại tới hạn chót. Xem chi tiết lỗi của job.",
+                                "The forecast refresh failed — the forecast published before stays as it is; the schedule retries until the deadline. See the job's error detail."),
+    "ALREADY_PUBLISHED": ("Dự báo của ngày này đã được công bố — lần làm mới theo lịch không chạy lại, không ghi gì. Muốn làm mới lần nữa, hãy chạy thủ công.",
+                          "The forecast of this day is already published — the scheduled refresh does not run again and writes nothing. Run it manually to refresh it again."),
+    "DAILY_RETENTION_FAILED": ("Dự báo đã được làm mới nhưng bước xóa nhật ký quá hạn lưu bị lỗi — không mất dữ liệu nào; lần làm mới sau sẽ thử lại.",
+                               "The forecast was refreshed but removing log rows past the retention period failed — no data is lost; the next refresh tries again."),
+    "ACCURACY_REPORT_FAILED": ("Chạy báo cáo độ chính xác bị lỗi — không có file mới; dữ liệu dự báo và thực bán không bị đổi. Xem chi tiết lỗi của job.",
+                               "The accuracy report failed — no new file; the forecast and actual data are unchanged. See the job's error detail."),
+    "OPEN_HOURS_READ_FAILED": ("Không đọc được bảng giờ mở bán trên BigQuery (daily_forecast.openhours_table) — không ghi mốc đọc hoàn tất, nên lần đọc sau sẽ đọc lại khoảng ngày này. Xem chi tiết lỗi của job.",
+                               "The BigQuery open-hours table (daily_forecast.openhours_table) could not be read — no completed-read record is written, so the next read covers this range again. See the job's error detail."),
+    "OPEN_HOURS_SOURCE_NOT_REFRESHED": ("Bảng giờ mở bán trên BigQuery chưa được làm mới kể từ lần đọc hoàn tất gần nhất — không đọc lại (không tốn byte); dùng giờ mở bán đã lưu.",
+                                        "The BigQuery open-hours table has not been refreshed since the last completed read — not read again (no bytes billed); the stored open hours are used."),
+    "GROUPS_DEFERRED_OPEN_HOURS_LAG": ("Giờ mở bán chưa có đủ đến cuối khoảng tính nhóm nên chưa tính lại nhóm SKU (A / B / C) tháng này — tạm dùng nhóm đã lưu gần nhất (nếu có); sẽ tính lại ở lần làm mới sau.",
+                                       "The open hours do not reach the end of the grouping window yet, so this month's SKU groups (A / B / C) are not recomputed — the latest stored groups are used (if any); recomputed at a later refresh."),
+    "ACCURACY_REPORT_WRITTEN": ("Đã ghi báo cáo độ chính xác (file .xlsx mới, không ghi đè file cũ).",
+                                "The accuracy report was written (a new .xlsx file; no earlier file is overwritten)."),
+    "ACCURACY_REPORT_NOT_WRITTEN": ("Báo cáo độ chính xác đã tính xong nhưng không ghi được file .xlsx — kết quả vẫn được lưu. Kiểm tra thư mục báo cáo rồi chạy lại.",
+                                    "The accuracy report was computed but its .xlsx file could not be written — the result is kept. Check the reports folder and run it again."),
+    "ACCURACY_REPORT_NO_DATA": ("Nhật ký chưa có ngày đích nào đã đóng có cả dự báo làm mới và thực bán — không lập báo cáo độ chính xác.",
+                                "The log has no closed target day with both a refreshed forecast and its actual yet — no accuracy report is made."),
+    "FEATURE_REPORT_NOT_WRITTEN": ("Không ghi được file tỷ trọng biến (.xlsx) của lần huấn luyện — lần huấn luyện và mô hình không bị ảnh hưởng.",
+                                   "The feature-importance file (.xlsx) of the training run could not be written — the training run and its model are not affected."),
+    "TRIAL_MODE_CONFIRM_REQUIRED": ("Chế độ 'Chạy thử – chưa dùng để mua hàng' chỉ đổi qua thao tác riêng có gõ cụm xác nhận (ghi lịch sử và nhật ký), không đổi được cùng các cấu hình khác hay khi khôi phục mặc định.",
+                                    "The trial mode ('Trial run – not used for purchasing') is changed only through its own action with a typed confirmation (history and audit kept), never together with other settings or by a reset."),
+    "TRIAL_MODE_CONFIRMATION_MISMATCH": ("Cụm xác nhận gõ vào không đúng — chế độ 'Chạy thử – chưa dùng để mua hàng' không đổi.",
+                                         "The typed confirmation does not match — the trial mode ('Trial run – not used for purchasing') was not changed."),
+    "TRIAL_MODE_CHANGED": ("Đã đổi chế độ 'Chạy thử – chưa dùng để mua hàng' sau khi xác nhận; thay đổi được ghi vào lịch sử cấu hình và nhật ký.",
+                           "The trial mode ('Trial run – not used for purchasing') was changed after confirmation; recorded in the settings history and the audit log."),
+    "FEATURE_TABLE_CONFIRM_REQUIRED": ("Thay đổi bảng cấu hình biến cần xác nhận rõ ràng (confirm) — chưa lưu gì. Thay đổi chỉ có hiệu lực từ lần huấn luyện sau.",
+                                       "A feature-table change needs an explicit confirmation (confirm) — nothing was saved. A change takes effect from the next training only."),
+    "FEATURE_TABLE_VIA_OWN_API": ("Bảng cấu hình biến chỉ sửa qua thao tác riêng có xác nhận (ghi lịch sử và nhật ký), không sửa hay khôi phục mặc định được bằng trình sửa cấu hình chung.",
+                                  "The feature table is changed only through its own confirmed action (history and audit kept), never by the generic settings editor or its reset."),
+    "FEATURE_TABLE_SET_BY_TRAINING": ("model.feature_table là bản chụp bảng cấu hình biến do lần huấn luyện lưu cùng lần chạy — không đặt được trong cấu hình mô hình. Hãy sửa bảng cấu hình biến; thay đổi có hiệu lực từ lần huấn luyện sau.",
+                                      "model.feature_table is the feature-table snapshot a training run stores with the run — it cannot be set in the model settings. Edit the feature table instead; the change takes effect from the next training."),
+    "FEATURE_NOT_IN_TABLE": ("Biến sku_code không thuộc bảng cấu hình biến: bật / tắt bằng cấu hình mô hình (model.feature_sku_code).",
+                             "sku_code is not part of the feature table: it is switched by the model setting model.feature_sku_code."),
+    "FEATURE_REQUIRED": ("Biến horizon (số ngày tới ngày đích của mô hình DIRECT) là bắt buộc — không tắt được trong bảng cấu hình biến.",
+                         "The horizon feature (days ahead of the DIRECT model) is mandatory — it cannot be switched off in the feature table."),
+    "FEATURE_UNKNOWN": ("Tên biến không có trong danh sách biến của mô hình hoặc sai dạng (chữ thường, số, '_', bắt đầu bằng chữ) — không lưu gì.",
+                        "The feature name is not a model feature or is malformed (lowercase letters, digits, '_', starting with a letter) — nothing was saved."),
+    "HORIZON_WEIGHT_INCOMPLETE": ("Trọng số theo horizon cần đặt đủ cả hai giá trị (horizon_weight_short và horizon_weight_cutoff) hoặc để trống cả hai.",
+                                  "Horizon weights need both values (horizon_weight_short and horizon_weight_cutoff) or neither."),
+    "HORIZON_WEIGHT_DIRECT_ONLY": ("Trọng số theo horizon chỉ dùng với chiến lược dự báo DIRECT — với RECURSIVE chúng bị bỏ qua nhưng vẫn làm đổi dấu vân tay cấu hình, nên không được lưu.",
+                                   "Horizon weights apply to the DIRECT forecast strategy only — RECURSIVE would ignore them but they would still change the configuration fingerprint, so they are not saved."),
 }
 
 
@@ -394,7 +462,7 @@ def msg(code: str) -> dict:
 
 def category(code: str) -> str:
     """Stable error category for the UI: INPUT | DATABASE | CONFIG | BIGQUERY | MODEL | STORAGE | INTERNAL."""
-    if code.startswith(("BQ_", "SQL_", "OAUTH_")):
+    if code.startswith(("BQ_", "SQL_", "OAUTH_")) or code in ("OPEN_HOURS_READ_FAILED", "OPEN_HOURS_SOURCE_NOT_REFRESHED"):
         return "BIGQUERY"
     if code.startswith("DATABASE_") or code in ("DATA_CONSISTENCY", "BACKFILL_BACKUP_FAILED"):
         return "DATABASE"
@@ -405,13 +473,20 @@ def category(code: str) -> str:
                 "NOT_LIGHTGBM", "TRACE_TOO_LARGE", "TRACE_TIMEOUT", "UNSUPPORTED_MODEL", "PROMOTION_REVIEW_REQUIRED",
                 "PROMOTION_NOT_ALLOWED", "DIRECT_HORIZON_EXCEEDS_TRAINING", "QUALITY_GATE_EXCEPTION_ACTIVE",
                 "RELEASED_WITH_GATE_EXCEPTION", "FORECAST_PUBLISHED_WITH_WARNING", "NO_FORECAST_FOR_ACTIVE_SOURCE",
-                "OPEN_HOURS_INVALID"):
+                "OPEN_HOURS_INVALID", "STALE_FORECAST", "REFRESH_DEADLINE_PASSED", "DATA_NOT_UP_TO_DATE", "NO_MODEL_IN_USE",
+                "MODEL_FILE_MISMATCH", "DAILY_FORECAST_PUBLISHED", "DAILY_ACTUAL_FAILED", "GROUPS_DEFERRED_OPEN_HOURS_LAG",
+                "FORECAST_REFRESH_FAILED", "DAILY_RETENTION_FAILED", "ACCURACY_REPORT_FAILED", "ALREADY_PUBLISHED",
+                "ACCURACY_REPORT_WRITTEN", "ACCURACY_REPORT_NOT_WRITTEN", "ACCURACY_REPORT_NO_DATA",
+                "FEATURE_REPORT_NOT_WRITTEN"):
         return "MODEL"
     if code in ("NO_ACTIVE_DATASET", "ACTIVE_DATASET_INCONSISTENT", "SOURCE_NOT_READY", "SCHEDULER_DISABLED",
                 "FLOW_NOT_READY", "D0_SCHEDULE_DISABLED", "D1_SCHEDULE_DISABLED", "TRAIN_SCHEDULE_DISABLED",
                 "SCHEDULE_SWITCH_VIA_FLOW_API", "SCHEDULER_NOT_RUNNING", "D0_MAPPING_INCOMPLETE", "D0_REVALIDATE_REQUIRED",
                 "TRAIN_WAITS_FOR_D1", "EOD_SCHEDULE_DISABLED", "CLOSE_SCHEDULE_DISABLED", "CLOSE_SOURCE_MANUAL_IMPORT",
-                "SCHEDULE_NOT_REGISTERED"):
+                "SCHEDULE_NOT_REGISTERED", "REFRESH_SCHEDULE_DISABLED", "REFRESH_WAITS_FOR_D1", "REPORT_SCHEDULE_DISABLED",
+                "DAILY_FORECAST_DISABLED", "TRIAL_MODE_CONFIRM_REQUIRED", "FEATURE_TABLE_CONFIRM_REQUIRED",
+                "FEATURE_TABLE_VIA_OWN_API", "FEATURE_TABLE_SET_BY_TRAINING", "HORIZON_WEIGHT_INCOMPLETE",
+                "HORIZON_WEIGHT_DIRECT_ONLY", "TRIAL_MODE_CHANGED"):
         return "CONFIG"
     if code in ("INTERNAL_ERROR",):
         return "INTERNAL"

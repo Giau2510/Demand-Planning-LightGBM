@@ -629,3 +629,38 @@ toàn mạng), nên mọi mục tiêu về Over phải ghi rõ mức tổng hợ
 Hiệu chỉnh walk-forward (thí nghiệm): hệ số chỉ học từ các kỳ đánh giá **trước** mốc; nhóm có ít khối lượng dùng hệ số
 chung, nhóm khác co về hệ số chung. Kết quả và giới hạn ở `reports/demandforecast_multi_item_overforecast_20261020.md`;
 đưa vào ứng dụng cần quyết định riêng.
+
+## LightGBM chốt (1.3.1)
+
+Mọi mục dưới đây nằm sau cấu hình, mặc định = 1.2.14. Bản phát hành đặt theo PHƯƠNG ÁN CHỐT bằng
+`python -m app.cli apply-preset lgbm-chot --apply`. Chi tiết: [ke_hoach_lgbm_chot.md](ke_hoach_lgbm_chot.md).
+
+| Mục | Cấu hình | Giá trị chốt | Code |
+|---|---|---|---|
+| Bỏ biến `sku_code` (35 biến) | `model.feature_sku_code` | False | `ml/features.py` `dropped_features()`, `feature_names()`, `features_at()` |
+| Trọng số mẫu theo horizon | `model.horizon_weight_short` / `horizon_weight_cutoff` | 3,0 / 7 | `ml/model.py` `train()` |
+| Tắt luật dự phòng | `model.fallback_enabled` | False | `ml/model.py` `classification_details()` |
+| Bảng cấu hình biến (Bật/tắt, `feature_contri`) | section `feature_table` | mọi biến Bật, 1,0 | `ml/pipeline.py` `feature_table_snapshot()`, `ml/model.py` `lgb_params(names=)` |
+| Số công bố | `daily_forecast.rounding_threshold` | 0,2 | `ml/daily_refresh.py` `published_qty()` |
+
+- **35 biến:** fc_code, series_age, lag_1..7, lag_14, lag_21, lag_28, roll_mean_7/14/28/56, roll_std_7, roll_std_28,
+  zero_share_28, days_since_last_sale, roll_max_28, price_last, price_rel_28, open_hours_last, open_hours_mean_7,
+  cust_mean_28, cust_repeat_share_28, cust_repeat_interval_28, dow, dom, month, weekofyear, is_weekend,
+  days_to_month_end, horizon.
+- Cột bị bỏ chỉ được loại khỏi ma trận, các cột khác giữ nguyên giá trị và thứ tự. Trên bản sao DB backtest, model của
+  1.3.1 trùng từng byte với biến thể G2 (`reports/backtest-lgbm7-20261029`).
+- **Fingerprint cấu hình** (`pipeline.config_fingerprint`): các khóa mới không được đưa vào khi đang ở mặc định, nên mọi
+  cấu hình 1.2.14 giữ fingerprint cũ (production `8468ebe66d1706f7`). Bảng cấu hình biến ở mặc định không đổi
+  fingerprint; một dòng khác mặc định làm đổi fingerprint, chỉ có hiệu lực ở lần huấn luyện sau.
+- **Số công bố (B3):** v = giá trị LightGBM làm tròn 6 chữ số; v < 0,2 thì 0, ngược lại làm tròn lên số nguyên. Giá trị
+  gốc (float) lưu kèm. Chỉ áp cho số của tác vụ Làm mới dự báo; trang Kết quả của 1.2.14 giữ quy tắc `qty.py`.
+- **Làm mới dự báo (B5):** model ĐANG DÙNG, cấu hình lưu cùng model, dữ liệu đến D-1, không huấn luyện, không ghi
+  `forecast_runs`. Khung dự báo H = max(7, max(`horizons.enabled`)).
+- **Nhóm A / B / C (B7, chỉ để báo cáo):** 90 ngày tới D-1, chỉ ngày mở bán (giờ mở bán > 0); A = TB > 20 sp/ngày và tỷ
+  lệ ngày không đơn ≤ 20 %; C = TB ≤ 5 và tỷ lệ > 20 %; B = còn lại (kể cả < 14 ngày mở bán).
+- **Báo cáo độ chính xác (B9):** lệch = dự báo − thực của đúng ngày đó, chỉ ngày mở bán. Đúng khi |lệch| ≤ 3 sp (A, B)
+  hoặc ≤ 1 sp (C), hoặc |lệch| / thực ≤ 20 %; Ít: 20–50 %; Nhiều: > 50 % (kể cả thực = 0 vượt ngưỡng sp); Dư khi lệch > 0,
+  Thiếu khi lệch < 0. Bốn bảng theo tháng và cả kỳ, ngày thứ 1 và 7 ngày: số SKU bình quân/ngày (số ô / số cặp ngày
+  đích × h), tỷ trọng SKU, Qty lệch (Σ|lệch|) + tổng demand, Qty lệch / tổng demand.
+- **Tỷ trọng biến (B10):** gain và số lần chia nhánh của từng biến, % trên tổng, theo nhóm biến; bảng
+  `training_feature_importance` + file `.xlsx` sau mỗi lần huấn luyện có model.

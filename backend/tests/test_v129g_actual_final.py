@@ -45,6 +45,14 @@ def reverse_0010(c) -> None:
     c.execute("DELETE FROM schema_migrations WHERE version = 10")
 
 
+def reverse_0011(c) -> None:
+    """1.3.1: the reverse statements in the header of migration 0011 (copy only) - reversed before 0010."""
+    for t in ("training_feature_importance", "accuracy_report_runs", "actual_daily", "forecast_refresh_values",
+              "forecast_refresh_runs", "sku_group", "aux_source_reads", "open_hours_daily"):
+        c.execute(f"DROP TABLE {t}")
+    c.execute("DELETE FROM schema_migrations WHERE version = 11")
+
+
 @pytest.fixture
 def frozen():
     """20/10/2026 10:00 Vietnam time (03:00 UTC); set_now_override can move it."""
@@ -403,18 +411,21 @@ def test_legacy_rows_get_no_status_from_the_migration_and_the_dry_run_measures_t
                                                                           "2026-10-16": "D1L-1"}
     res = db.migrate(src)
     # 1.2.13: the upgrade path continues with 0010 (history sync); 0009 is still applied first
-    assert res["applied"] == ["0009_actual_finalization.sql", "0010_history_sync.sql"] and res["to"] == 10
+    assert res["applied"] == ["0009_actual_finalization.sql", "0010_history_sync.sql",
+                              "0011_lgbm_chot.sql"] and res["to"] == 11             # 1.3.1: + 0011, additive
     c = sqlite3.connect(src)
     assert c.execute("SELECT * FROM demand_daily ORDER BY rowid").fetchall() == before    # nothing changed
     assert [c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in FINAL_TABLES] == [0, 0]   # no status invented
     assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    reverse_0011(c)                                                       # 1.3.1: the newest migration first
     reverse_0010(c)                                                       # 1.2.13: the newer migration first
     reverse_0009(c)                                                       # the header's reverse statements (copy only)
     c.commit()
     assert not c.execute("SELECT 1 FROM sqlite_master WHERE name IN ('actual_finals', 'actual_final_values') "
                          "OR name LIKE 'trg_af%'").fetchall()
     c.close()
-    assert db.migrate(src)["applied"] == ["0009_actual_finalization.sql", "0010_history_sync.sql"]
+    assert db.migrate(src)["applied"] == ["0009_actual_finalization.sql", "0010_history_sync.sql",
+                                          "0011_lgbm_chot.sql"]
     assert db.migrate(src)["applied"] == []
 
 

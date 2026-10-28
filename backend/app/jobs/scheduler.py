@@ -13,6 +13,16 @@ its own switch (1.1.8, see jobs/flows.py) and is planned only when that switch i
                         midnight (grace, retry, catch-up) still works on that day. The slot of YESTERDAY is caught up
                         once when it was missed; older days are recorded as missed. Slots before the moment this version
                         first ran (sync_state 'flows_first_seen') are never run or caught up.
+  FORECAST_REFRESH      schedule.refresh_enabled AND daily_forecast.enabled (1.3.1, default OFF): forecast refresh of
+                        today with the model in use, once today's D-1 succeeded; one attempt every
+                        refresh_retry_minutes until PUBLISHED, never
+                        after refresh_deadline (train_catchup_policy does not apply). No PUBLISHED by the deadline: ONE
+                        STALE_FORECAST record + ERROR alert for the day. Planned before TRAIN_PUBLISH (both heavy).
+                        An attempt waiting for its retry (e.g. LOCKED) counts as under way until the deadline; one still
+                        waiting after the deadline (or its day) is closed SKIPPED REFRESH_DEADLINE_PASSED.
+  ACCURACY_REPORT       schedule.report_enabled AND daily_forecast.enabled (1.3.1, default OFF, light job): weekly, on
+                        ISO weekday report_weekday at report_time; a missed slot runs once later the same day, earlier
+                        weeks are never caught up.
 
 Missed slots (machine off / app closed) are recorded as SKIPPED (MISSED_SLOT_NO_BACKFILL). For D0 the policy
 `d0_catchup_policy` decides: LATEST_ONCE = at most ONE catch-up snapshot of TODAY (stamped with the real time, flagged
@@ -30,11 +40,14 @@ from datetime import date, datetime, timedelta
 
 from .. import db
 from .. import settings_service as ss
-from ..timeutil import now_iso, now_utc, now_vn, parse_iso, vn_slot
+from ..timeutil import VN_TZ, now_iso, now_utc, now_vn, parse_iso, vn_slot
 from . import resources, runner
 
 log = logging.getLogger("df.scheduler")
 MAX_MISSED_LOOKBACK_DAYS = 14
+# 1.3.1: a refresh row still PENDING this long after its deadline belongs to no live attempt (a starting job leaves
+# PENDING at once); a younger one is left to the job that is starting
+PENDING_CLOSE_AFTER = timedelta(minutes=5)
 # 1.2.13: explanation caches (a run's whole panel, SHAP traces) are given back after this long without a request
 IDLE_CACHE_SECONDS = 30 * 60
 _PKG = __name__.rsplit(".", 2)[0]
@@ -48,17 +61,19 @@ DAY_END_FLOWS = (("EOD_FORECAST_SNAPSHOT", "eod"), ("ACTUAL_CLOSE", "close"))   
 
 
 def plan(now: datetime, sched, active_source: str, last_heartbeat: datetime | None, conn,
-         first_seen: dict | None = None) -> list[dict]:
+         first_seen: dict | None = None, inflight=()) -> list[dict]:
     """Pure-ish planning step (reads job_runs only). Returns actions:
-    {"action": "run"|"skip", job_type, key, trigger, scheduled_for, params, reason}"""
+    {"action": "run"|"skip", job_type, key, trigger, scheduled_for, params, reason}
+    inflight: keys submitted to the scheduler's workers and not finished yet (1.3.1: used by FORECAST_REFRESH only)."""
     actions: list[dict] = []
     today = now.date()
     existing = {r["idempotency_key"]: r for r in db.rows(
-        conn, "SELECT idempotency_key, status, next_attempt_at FROM job_runs WHERE created_at>=?",
+        conn, "SELECT idempotency_key, status, next_attempt_at, created_at FROM job_runs WHERE created_at>=?",
         ((now_utc() - timedelta(days=MAX_MISSED_LOOKBACK_DAYS + 2)).isoformat(),))}
     grace = timedelta(minutes=sched.slot_grace_minutes)
     on = {"D0_SYNC": sched.d0_enabled, "D1_SYNC": sched.d1_enabled, "TRAIN_PUBLISH": sched.train_enabled,
-          "EOD_FORECAST_SNAPSHOT": sched.eod_enabled, "ACTUAL_CLOSE": sched.close_enabled}
+          "EOD_FORECAST_SNAPSHOT": sched.eod_enabled, "ACTUAL_CLOSE": sched.close_enabled,
+          "FORECAST_REFRESH": sched.refresh_enabled, "ACCURACY_REPORT": sched.report_enabled}
     since = {"D0_SYNC": parse_iso(sched.d0_enabled_at), "D1_SYNC": parse_iso(sched.d1_enabled_at),
              "TRAIN_PUBLISH": parse_iso(sched.train_enabled_at),
              **{jt: parse_iso(getattr(sched, f"{f}_enabled_at")) or parse_iso((first_seen or {}).get(f))
@@ -127,6 +142,10 @@ def plan(now: datetime, sched, active_source: str, last_heartbeat: datetime | No
             actions.append({"action": "run", "job_type": "D1_SYNC", "key": k1, "trigger": "SCHEDULE",
                             "scheduled_for": vn_slot(today, sched.d1_signal_poll_start).isoformat(), "params": {}})
 
+    # ---- 1.3.1 forecast refresh: planned first; a training due in the same tick waits for the next tick
+    refresh_now = (_plan_refresh(now, sched, active_source, conn, existing, k1, actions, inflight)
+                   if sched.refresh_enabled else False)
+
     # ---- training + publish
     kt = f"TRAIN_PUBLISH:{today.isoformat()}"
     train_slot = vn_slot(today, sched.train_time)
@@ -138,6 +157,8 @@ def plan(now: datetime, sched, active_source: str, last_heartbeat: datetime | No
             d1_ok = d1_success_today(conn, now) is not None
         if active_source == "BIGQUERY" and not d1_ok:
             pass  # wait for D-1; re-evaluated every tick (visible as pending on the dashboard)
+        elif refresh_now:
+            pass  # 1.3.1: the forecast refresh starts first (one heavy job at a time); planned again on the next tick
         elif late and sched.train_catchup_policy == "SKIP":
             actions.append({"action": "skip", "job_type": "TRAIN_PUBLISH", "key": kt, "trigger": "SCHEDULE",
                             "scheduled_for": train_slot.isoformat(), "reason": "MISSED_SLOT_NO_BACKFILL"})
@@ -156,14 +177,156 @@ def plan(now: datetime, sched, active_source: str, last_heartbeat: datetime | No
                                 "trigger": "SCHEDULE" if now - slot <= grace else "CATCH_UP",
                                 "scheduled_for": slot.isoformat(), "params": {"business_date": d.isoformat()}})
 
+    # ---- 1.3.1 weekly accuracy report (light job): its weekday slot; a missed slot runs once later the same day,
+    # earlier weeks are never caught up
+    if sched.report_enabled:
+        _plan_report(now, sched, conn, existing, grace, actions)
+
+    # ---- 1.3.1: a refresh attempt still waiting (LOCKED / retry) after its day's deadline is closed, never left open
+    for k, r in existing.items():
+        if k.startswith("FORECAST_REFRESH:") and r["status"] in ("RETRY_WAIT", "PENDING") \
+                and not _refresh_retry_allowed(k, r.get("created_at"), now, sched) \
+                and (r["status"] == "RETRY_WAIT" or _older_than(r.get("created_at"), PENDING_CLOSE_AFTER)):
+            actions.append({"action": "close", "job_type": "FORECAST_REFRESH", "key": k, "trigger": "SCHEDULE",
+                            "scheduled_for": None, "reason": "REFRESH_DEADLINE_PASSED"})
+
     # ---- retries that are due (a flow switched OFF is not retried; manual jobs are never retried)
+    refresh_first = sched.refresh_enabled and _refresh_under_way(now, sched, conn, existing, inflight, refresh_now)
     for k, r in existing.items():
         if r["status"] == "RETRY_WAIT" and (not r["next_attempt_at"] or parse_iso(r["next_attempt_at"]) <= now_utc()):
             jt = k.split(":", 1)[0]
+            if jt == "FORECAST_REFRESH" and not _refresh_retry_allowed(k, r.get("created_at"), now, sched):
+                continue    # 1.3.1: only today's attempts, never after refresh_deadline (closed above)
+            if jt == "TRAIN_PUBLISH" and refresh_first:
+                continue    # 1.3.1: today's forecast refresh goes first (one heavy job at a time); a later tick
             if jt in runner.JOB_TYPES and on.get(jt, True):
                 actions.append({"action": "run", "job_type": jt, "key": k, "trigger": "RETRY", "scheduled_for": None,
                                 "params": {}})
     return actions
+
+
+def _refresh_day(key: str, created_at: str | None) -> str | None:
+    """Business date of a refresh attempt: from its key FORECAST_REFRESH:<day>:<suffix>, else (a manual job of the
+    flow API, FORECAST_REFRESH:MANUAL:<id>) the Vietnam day it was created on."""
+    parts = key.split(":")
+    if len(parts) >= 3 and len(parts[1]) == 10 and parts[1][4] == "-" and parts[1][7] == "-":
+        return parts[1]
+    at = parse_iso(created_at)
+    return at.astimezone(VN_TZ).date().isoformat() if at else None
+
+
+def _refresh_retry_allowed(key: str, created_at: str | None, now: datetime, sched) -> bool:
+    """A waiting refresh attempt may still run: it belongs to today and today's refresh_deadline has not passed."""
+    return _refresh_day(key, created_at) == now.date().isoformat() and now <= vn_slot(now.date(), sched.refresh_deadline)
+
+
+def _older_than(created_at: str | None, age: timedelta) -> bool:
+    at = parse_iso(created_at)
+    return at is None or now_utc() - at > age
+
+
+def _refresh_under_way(now: datetime, sched, conn, existing: dict, inflight, refresh_now: bool) -> bool:
+    """1.3.1 (schedule.refresh_enabled is ON): a forecast refresh attempt of today is planned in this tick, or before
+    today's refresh_deadline it is PENDING, RUNNING, RETRY_WAIT or in the scheduler's workers, with daily_forecast ON:
+    a due TRAIN_PUBLISH retry then waits for a later tick."""
+    if refresh_now:
+        return True
+    today = now.date()
+    if now > vn_slot(today, sched.refresh_deadline) or not ss.get("daily_forecast", conn).enabled:
+        return False
+    prefix = runner.refresh_key(today.isoformat(), "")
+    return any(k.startswith(prefix) for k in inflight) or any(
+        k.startswith("FORECAST_REFRESH:") and r["status"] in ("PENDING", "RUNNING", "RETRY_WAIT")
+        and _refresh_day(k, r.get("created_at")) == today.isoformat() for k, r in existing.items())
+
+
+def _plan_refresh(now: datetime, sched, active_source: str, conn, existing: dict, k1: str, actions: list,
+                  inflight=()) -> bool:
+    """1.3.1 FORECAST_REFRESH of today (schedule.refresh_enabled is ON). Appends its action(s); True when an attempt
+    is planned in this tick. Every attempt has its own key FORECAST_REFRESH:<day>:<HH:MM>. inflight: keys still in the
+    scheduler's workers (an attempt submitted there has no job row until it starts)."""
+    today = now.date()
+    deadline = vn_slot(today, sched.refresh_deadline)
+    since = parse_iso(sched.refresh_enabled_at)
+    if since is not None and since > deadline:
+        return False            # switched on after today's deadline: starts tomorrow, no stale alert for today
+    if not ss.get("daily_forecast", conn).enabled:
+        return False
+    try:                        # published for the ACTIVE scope only (the refresh log is kept per scope)
+        from ..data.demand import resolve_scope
+        sk = resolve_scope(conn)["scope_key"]
+    except Exception:  # noqa: BLE001 - no active scope
+        sk = None
+    if active_source == "BIGQUERY" and sk is None:
+        return False            # nothing to refresh, no stale verdict
+    if sk is not None and db.one(conn, "SELECT id FROM forecast_refresh_runs WHERE forecast_date=? AND "
+                                       "status='PUBLISHED' AND scope_key=? LIMIT 1", (today.isoformat(), sk)):
+        return False
+    prefix = runner.refresh_key(today.isoformat(), "")
+    if active_source != "BIGQUERY":
+        k = prefix + "NA"
+        if k not in existing:
+            actions.append({"action": "skip", "job_type": "FORECAST_REFRESH", "key": k, "trigger": "SCHEDULE",
+                            "scheduled_for": None, "reason": "NOT_APPLICABLE_FOR_SOURCE"})
+        return False
+    from .flows import _vn_day_start_utc
+    rows = db.rows(conn, "SELECT idempotency_key, status, created_at FROM job_runs WHERE job_type='FORECAST_REFRESH' "
+                         "AND created_at>=?", (_vn_day_start_utc(now),))
+    # an attempt is under way, also one waiting for its retry (e.g. LOCKED by a heavy job) until the deadline: no
+    # second attempt meanwhile; a stale verdict waits for its end (after the deadline a waiting one is closed)
+    waiting = ("PENDING", "RUNNING") + (("RETRY_WAIT",) if now <= deadline else ())
+    if any(r["status"] in waiting for r in rows) or any(k.startswith(prefix) for k in inflight):
+        return False
+    if now > deadline:
+        k = prefix + "STALE"
+        if k not in existing:
+            actions.append({"action": "stale", "job_type": "FORECAST_REFRESH", "key": k, "trigger": "SCHEDULE",
+                            "scheduled_for": deadline.isoformat(), "reason": "STALE_FORECAST",
+                            "params": {"business_date": today.isoformat()}})
+        return False
+    d1_ok = existing.get(k1, {}).get("status") == "SUCCEEDED"
+    if not d1_ok:
+        from .flows import d1_success_today
+        d1_ok = d1_success_today(conn, now) is not None
+    if not d1_ok:
+        return False            # waits for today's D-1
+    last = max((parse_iso(r["created_at"]) for r in rows), default=None)
+    if last is not None and now - last < timedelta(minutes=sched.refresh_retry_minutes):
+        return False
+    slot = now.replace(second=0, microsecond=0)
+    k = prefix + slot.strftime("%H:%M")
+    if k in existing:
+        return False
+    actions.append({"action": "run", "job_type": "FORECAST_REFRESH", "key": k, "trigger": "SCHEDULE",
+                    "scheduled_for": slot.isoformat(), "params": {"business_date": today.isoformat()}})
+    return True
+
+
+def _plan_report(now: datetime, sched, conn, existing: dict, grace: timedelta, actions: list) -> None:
+    """1.3.1 ACCURACY_REPORT (schedule.report_enabled is ON): on ISO weekday report_weekday at report_time (Vietnam),
+    key ACCURACY_REPORT:<day>, only while daily_forecast.enabled and not before the moment the flow was switched on."""
+    today = now.date()
+    if today.isoweekday() != sched.report_weekday:
+        return
+    slot = vn_slot(today, sched.report_time)
+    since = parse_iso(sched.report_enabled_at)
+    k = f"ACCURACY_REPORT:{today.isoformat()}"
+    if slot > now or (since is not None and slot < since) or k in existing:
+        return
+    if not ss.get("daily_forecast", conn).enabled:
+        return
+    actions.append({"action": "run", "job_type": "ACCURACY_REPORT", "key": k,
+                    "trigger": "SCHEDULE" if now - slot <= grace else "CATCH_UP", "scheduled_for": slot.isoformat(),
+                    "params": {"business_date": today.isoformat()}})
+
+
+def loaded_flows(sched) -> dict:
+    """Flows ON in a schedule as the running scheduler reports them. 1.3.1: refresh / report are listed only while ON
+    (switched OFF the report is exactly the one of 1.2.14)."""
+    out = {"d1": sched.d1_enabled, "d0": sched.d0_enabled, "train": sched.train_enabled, "eod": sched.eod_enabled,
+           "close": sched.close_enabled}
+    out.update({f: True for f, on in (("refresh", sched.refresh_enabled), ("report", sched.report_enabled)) if on})
+    return out
 
 
 class Scheduler:
@@ -182,9 +345,7 @@ class Scheduler:
         """Read the saved schedule NOW (no job is run): lets the UI confirm right after a save that the running
         scheduler has the new state. Ticks do the same before planning."""
         sched = ss.get("schedule")
-        self.loaded = {"at": now_iso(), "flows": {"d1": sched.d1_enabled, "d0": sched.d0_enabled,
-                                                  "train": sched.train_enabled, "eod": sched.eod_enabled,
-                                                  "close": sched.close_enabled}}
+        self.loaded = {"at": now_iso(), "flows": loaded_flows(sched)}
         return self.loaded
 
     def start(self) -> None:
@@ -245,16 +406,16 @@ class Scheduler:
 
     def tick(self, now: datetime | None = None, wait: bool = False) -> list[dict]:
         sched = ss.get("schedule")
-        self.loaded = {"at": now_iso(), "flows": {"d1": sched.d1_enabled, "d0": sched.d0_enabled,
-                                                  "train": sched.train_enabled, "eod": sched.eod_enabled,
-                                                  "close": sched.close_enabled}}
+        self.loaded = {"at": now_iso(), "flows": loaded_flows(sched)}
         now = now or now_vn()
         first_seen = self._first_seen(now)
         with db.read() as c:
             hb = db.one(c, "SELECT value_json FROM sync_state WHERE name='scheduler_heartbeat'")
             last_hb = parse_iso(json.loads(hb["value_json"])["at"]) if hb else None
             general = ss.get("general", c)
-            actions = plan(now, sched, general.active_source, last_hb, c, first_seen)
+            with self._lock:
+                inflight = frozenset(self._inflight)
+            actions = plan(now, sched, general.active_source, last_hb, c, first_seen, inflight)
         with db.tx() as c:
             c.execute("INSERT INTO sync_state(name, value_json, updated_at) VALUES ('scheduler_heartbeat', ?, ?) "
                       "ON CONFLICT(name) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at",
@@ -265,6 +426,12 @@ class Scheduler:
         for a in actions:
             if a["action"] == "skip":
                 runner.record_skipped(a["job_type"], a["key"], a["trigger"], a["scheduled_for"], a["reason"])
+                continue
+            if a["action"] == "stale":
+                runner.record_stale(a["key"], a["params"]["business_date"], a["scheduled_for"])
+                continue
+            if a["action"] == "close":
+                runner.close_waiting(a["key"], a["reason"])
                 continue
             if a["trigger"] == "CATCH_UP":
                 if runs >= sched.max_catchup_jobs_per_tick:
