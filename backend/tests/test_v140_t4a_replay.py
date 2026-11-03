@@ -56,7 +56,8 @@ def test_bootstrap_is_resumable(sel2_on, monkeypatch):
     _seed()
     today = date(2026, 10, 28)
     r = pipeline.bootstrap(8, scope_key=SCOPE, today=today)
-    assert [t["origin"] for t in r["trainings"]] == ["2026-10-19", "2026-10-26"]
+    # 1.4.0 (owner 03/11): the origin of today is trained first (it brings the temporary Excel forward), then the others
+    assert [t["origin"] for t in r["trainings"]] == ["2026-10-26", "2026-10-19"]
     assert all(t["trained"] == list(pipeline.TRAIN_ORDER) for t in r["trainings"])
     assert r["past_days"] == ["STORED"] * 8 and r["today"]["status"] == "PUBLISHED"
     with db.read() as c:
