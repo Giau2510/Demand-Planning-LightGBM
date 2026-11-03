@@ -5,6 +5,87 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.4.0 (03/11/2026) (SEL2: per-SKU model selection among 6 candidates, forecast source per SKU x FC, daily Excel)
+
+User guide: [docs/03_van_hanh/HUONG-DAN-NGUON-DU-BAO.md](docs/03_van_hanh/HUONG-DAN-NGUON-DU-BAO.md); upload template
+`docs/mau/mau_cau_hinh_nguon_du_bao.xlsx`. Owner decisions: [docs/05_nhat_ky_quyet_dinh.md](docs/05_nhat_ky_quyet_dinh.md);
+documentation index: [docs/README.md](docs/README.md) (documents restructured into docs/01_quy_tac .. 05, _luu_tru).
+
+* **SEL2 pipeline** (`backend/app/ml/sel2/`): 6 candidates per SKU x FC (MOC, V33_L112, V36_two_stage@0.6 = LightGBM,
+  retrained weekly; TSB, DOW4, AVG7); scope = >= 1 sale day and >= 1 open-hours day in D-90..D-1; SEL2 = mean of the
+  2 candidates with the best share of "Đúng" over target days D-28..D-1 (tie -> lower shortage), < 14 days ->
+  V33_L112; published = 0 below 0.2, else rounded up. Published into `forecast_refresh_runs` with config_version
+  `SEL2:<hash>`. Open-hours lag rule (at most 2 days, flag `OPEN_HOURS_LAG`).
+* **Forecast source per SKU x FC** (AVG_DEMAND default / LIGHTGBM): page Nguồn dự báo (`/forecast-source`),
+  `/api/sel2/source-config` (list, one change with confirmation, Excel upload preview + apply in one transaction,
+  download, history); append-only history.
+* **AVG_DEMAND** read-only from BigQuery (`fact_avg_demand_sku`, `..._historical`): one seller row per SKU x FC is
+  expected and used as is (owner 03/11: checked 0 SKU x FC with more than one row, current table and 36 days of
+  history); more than one row -> no value under `avg_seller_rule` = PENDING + WARNING alert
+  `AVG_DEMAND_MULTI_SELLER` (count, 10 examples, rule) with the read; never chosen automatically.
+* **Daily Excel** `<data>\exports\du_bao\YYYYMMDD\du_bao_YYYYMMDD_vN.xlsx` (+ latest copy `du_bao_YYYYMMDD.xlsx`),
+  sheets DU_BAO / TOM_TAT / CONFIG; a stale file at 06:30 when today has no SEL2 run and no file.
+* **First start** (`sel2-bootstrap`, owner 03/11): 28 past days by default (was 35); today's origin is trained first,
+  then a temporary `du_bao_YYYYMMDD_TAM.xlsx` (V33_L112 for every SKU x FC, published rounding, TOM_TAT "bản tạm – chưa
+  chọn mô hình theo SKU", trigger `BOOTSTRAP_TEMP`; not a version, not the latest copy, not published, not in
+  `export_runs`; replaced by a re-run of the same day; a failure never fails the bootstrap), then the other origins,
+  the past days and today's SEL2 + official export; result fields `temp_export`, `timings`.
+* **Migration 0012_sel2_pipeline.sql** (additive): `candidate_train_runs`, `candidate_runs`, `candidate_forecasts`,
+  `forecast_source_config` (+ `_history`, triggers `trg_fsch_*`), `avg_demand_daily`, `avg_demand_reads`,
+  `export_runs`. Rollback = restore the pre-upgrade backup.
+* **Settings** section `sel2_pipeline` (ON by default; `enabled = False` = emergency switch, exact 1.3.1 behaviour).
+* **Jobs**: `CANDIDATE_TRAIN` (retraining weekday after D-1, one catch-up per week, child process), `FORECAST_EXPORT`
+  (stale / AVG re-export); `FORECAST_REFRESH` runs SEL2; `TRAIN_PUBLISH` skipped `SEL2_PIPELINE_ACTIVE`; at 06:20 the
+  previous week's models (`MODEL_PREV_WEEK`) + one forced re-run after the training. CLI `sel2-*` (plan only without
+  `--yes`).
+* **Manual export** (`POST /api/sel2/export`, `confirm=true`) = a `FORECAST_EXPORT` background job (mode `MANUAL`,
+  trigger `MANUAL`); an export already queued / running is returned (`already_active`) instead of a second one.
+* **Trainings**: model files per run id under `<models>/sel2/<scope hash>/<origin>/` (`<model>_<run id>.txt`, two-stage
+  `<model>_clf_<run id>.txt` + `<model>_reg_<run id>.txt`; paths + sha256 in `model_files_json`); one training of a
+  scope at a time across processes (OS lock `train.lock` in the scope folder, else `SEL2_TRAIN_BUSY`, retryable);
+  the RUNNING record holds its pid, a RUNNING training whose process is gone or older than `train_timeout_seconds` +
+  10 min becomes FAILED (`INTERRUPTED`). `CANDIDATE_TRAIN` runner timeout = `train_timeout_seconds` + 120 s.
+* **Child processes** (Windows): a Job Object with KILL_ON_JOB_CLOSE, the children end with the server process.
+* **Memory** (03/11): the open-hours calendar is read with one sequential scan (`NOT INDEXED`: the date index read
+  ~15 M rows one by one, 8,142 s -> 147 s); `sel2-replay` computes FIXED groups first from a separate read and frees
+  it, and writes `candidates.parquet` in row groups through `candidates.parquet.part` (was one fetchall of every
+  candidate row: > 9.8 GB at 27.6 M rows; now peak 1,562 MB private for the 15/07 replay at full scale); per-step lines
+  `sel2 <run> step` (seconds, private MB now / peak) in `<logs>/<command>.log` of each `sel2-*` child (never on its
+  stdout, never in app.log). A day's run starts only with >= 1500 MB free commit (else `SEL2_LOW_MEMORY`, retryable); each training
+  needs >= 3072 MB; `FORECAST_REFRESH` may run next to `CANDIDATE_TRAIN` only after `prev_week_deadline` with >= 3072
+  MB free commit.
+* **Export versions across processes**: version reserved with an exclusive `.du_bao_YYYYMMDD_vN.reserved` file
+  (`.reserved` / `.tmp` older than 1 hour removed before reserving); after the latest copy the highest recorded version
+  is checked again and copied again when newer. `export_runs.flags`: `STALE` / `NO_SEL2_RUN`, `AVG_NO_READ` (day
+  without a completed AVG_DEMAND read), `LATEST_COPY_LOCKED` (latest file open, e.g. in Excel: version kept, latest
+  copy updated at the next export), `LATEST_COPY_FAILED`, plus the row flags. Job result flag `AVG_READ_FAILED` (the
+  AVG_DEMAND read of the job failed; never blocks).
+* **sel2-replay** `--yes` runs only on a DB copy: `copy_info.json` next to `app.db`, or `--copy-ok`; else
+  `SEL2_REPLAY_NOT_A_COPY`. `sel2-avg-read --date` = today only (`AVG_CURRENT_ONLY_TODAY`); past days with
+  `--hist-from` / `--hist-to`.
+* **Error codes**: `SEL2_*` (DISABLED, PIPELINE_DISABLED, NO_MODEL, EMPTY_SCOPE, MISSING_FORECAST, HISTORY_INVALID,
+  MODEL_FILE_MISMATCH, LOW_MEMORY, TRAIN_FAILED, ORIGIN_INVALID, SCOPE_CONFLICT, WINDOW_NOT_COVERED, CONFIRM_REQUIRED,
+  PIPELINE_ACTIVE, CHILD_FAILED / TIMEOUT / CANCELLED, AVG_UNCHANGED, AVG_REEXPORT_DAY_PASSED, EXPORT_NOT_FOUND /
+  CONFIRM_REQUIRED / PATH_INVALID / WRITE_FAILED, STALE_EXPORT_NOT_NEEDED, TRAIN_BUSY, INTERNAL_ERROR,
+  REPLAY_NOT_A_COPY, PUBLISHED), `SOURCE_CONFIG_*`, `AVG_DEMAND_CONFLICTING_ROWS`, `AVG_CURRENT_ONLY_TODAY`.
+* **data-check**: 7 new checks for migration 0012 (triggers, data cut-off, target days, runs per candidate day, stuck
+  trainings, config vs history, export files).
+* **Periodic cleanup** (owner 03/11): `scripts/ops/don_dep_dinh_ky.ps1` (dry run unless `-Apply`: backups, daily
+  exports older than 90 days, logs older than 30 days archived first, `-TmpRoot` entries older than 1 day, data files of
+  packaged reports, dist plan) and `scripts/ops/register-don-dep-task.ps1` (weekly task, `-Plan` / `-Unregister`).
+  Never through a junction / symlink (group root, candidate, log archive or any parent: reported, skipped);
+  `prune-artifacts.ps1` is not run at all while anything under dist\ / release\ is a junction or unreadable;
+  `-IncludeDist` only with `-DistKeep <rollback version>`; refused (exit 2): a ProjectRoot inside
+  `%LOCALAPPDATA%\Programs\DemandForecast` or `%LOCALAPPDATA%\DemandForecast` (8.3 short names expanded first) or an
+  installed version folder (VERSION + current.txt), a `-TmpRoot` that is a drive root or the project / data /
+  %LOCALAPPDATA% folder or one of their parents. See docs/03_van_hanh/VAN-HANH.md "Dọn dung lượng định kỳ".
+* **Known limits**: AVG re-export off (`avg_reexport_time` None); about 75 M candidate
+  rows at 120 days of retention; the reproduction test against the research package (D3: 15/07 and 15/10 on a copy of the production DB) is
+  reported in docs/05_nhat_ky_quyet_dinh.md;
+  Excel holds at most 32,767 characters per cell: a longer `ghi_chu` is written untruncated in the downloaded
+  configuration file (Excel cannot show it whole); a sheet holds at most 1,048,575 data rows (Excel's limit): a bigger
+  sheet is refused before any row beyond the limit is written (no version recorded).
+
 ## 1.3.1 - 2026-10-29 (LightGBM chốt: daily forecast refresh, ROUNDUP above 0.2, 35 features without sku_code, no fallback rules, accuracy report, feature table, trial mode) [reports/lgbm-chot-20261029/ + docs/bao_cao_lgbm_chot_20261029.md]
 
 Branch `feature/lgbm-chot-20261029` from 1.2.14 (`af835b8`); the frozen 1.3.0 branch is not used. Design and file:function

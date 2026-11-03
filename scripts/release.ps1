@@ -5,7 +5,7 @@
            3. scripts\build-package.ps1 (skips the build when the same sources were already packaged and verified)
            4. verification: .sha256 matches the zip, VERSION and BUILD-INFO.json inside match version / commit
            5. retention plan (dry run) of scripts\prune-artifacts.ps1 - nothing is deleted here
-           Deployment is a separate, explicit step (docs\PHAT-TRIEN-QA-PHAT-HANH.md, docs\TRIEN-KHAI-VPS.md).
+           Deployment is a separate, explicit step (docs\01_quy_tac\PHAT-TRIEN-QA-PHAT-HANH.md, docs\03_van_hanh\TRIEN-KHAI-VPS.md).
 #>
 param([switch]$AllowDirty, [switch]$Force)
 . "$PSScriptRoot\_common.ps1"
@@ -53,4 +53,4 @@ Write-Host "== Retention plan (nothing deleted)" -ForegroundColor Cyan
 & (Join-Path $PSScriptRoot "prune-artifacts.ps1")
 Write-Host ""
 Write-Host "Next (explicit, separate): this PC  -> scripts\deploy-upgrade.ps1 -Package `"$zip`" -ExpectedSha256 $sha -CheckOnly"
-Write-Host "                           VPS      -> docs\TRIEN-KHAI-VPS.md"
+Write-Host "                           VPS      -> docs\03_van_hanh\TRIEN-KHAI-VPS.md"

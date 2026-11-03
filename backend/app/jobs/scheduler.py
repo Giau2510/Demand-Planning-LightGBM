@@ -23,6 +23,22 @@ its own switch (1.1.8, see jobs/flows.py) and is planned only when that switch i
   ACCURACY_REPORT       schedule.report_enabled AND daily_forecast.enabled (1.3.1, default OFF, light job): weekly, on
                         ISO weekday report_weekday at report_time; a missed slot runs once later the same day, earlier
                         weeks are never caught up.
+1.4.0 SEL2 (sel2_pipeline.enabled True; False = the emergency switch: every plan above exactly as 1.3.1):
+  TRAIN_PUBLISH         not run: its slot is recorded SKIPPED SEL2_PIPELINE_ACTIVE
+  FORECAST_REFRESH      as above (D-1, retries, deadline, stale verdict) but runs the SEL2 pipeline (ml/sel2/jobs.py:
+                        AVG_DEMAND read, then sel2-day in a child process; the export follows the publication); published
+                        = a SEL2 run of today. On the retraining weekday it waits while today's CANDIDATE_TRAIN is
+                        planned / PENDING / RUNNING / RETRY_WAIT until prev_week_deadline, then runs with the previous
+                        week's models (flag MODEL_PREV_WEEK); once that training SUCCEEDED, ONE forced re-run of the day
+                        (key FORECAST_REFRESH:<day>:RERUN, until refresh_deadline) publishes a new run + export version.
+  CANDIDATE_TRAIN       schedule.train_enabled: on ISO weekday retrain_weekday once today's D-1 succeeded (heavy). On
+                        another weekday, when a model of this week's origin (the latest retrain_weekday) has no
+                        SUCCEEDED training: ONE catch-up CANDIDATE_TRAIN:<origin>:CATCHUP (same origin, same data
+                        before it) once today's Excel exists or from export_deadline; once it SUCCEEDED, ONE forced
+                        re-run of today (key FORECAST_REFRESH:<day>:RERUN, until refresh_deadline) as above.
+  FORECAST_EXPORT       schedule.refresh_enabled: at export_deadline, ONE stale Excel of today when no SEL2 run is
+                        published and no export exists (key FORECAST_EXPORT:<day>:STALE); from avg_reexport_time (None =
+                        off) ONE job per day re-exporting when the AVG_DEMAND table changed (key FORECAST_EXPORT:<day>:AVG)
 
 Missed slots (machine off / app closed) are recorded as SKIPPED (MISSED_SLOT_NO_BACKFILL). For D0 the policy
 `d0_catchup_policy` decides: LATEST_ONCE = at most ONE catch-up snapshot of TODAY (stamped with the real time, flagged
@@ -79,6 +95,9 @@ def plan(now: datetime, sched, active_source: str, last_heartbeat: datetime | No
              **{jt: parse_iso(getattr(sched, f"{f}_enabled_at")) or parse_iso((first_seen or {}).get(f))
                 for jt, f in DAY_END_FLOWS}}
     day_end_time = {"EOD_FORECAST_SNAPSHOT": sched.eod_time, "ACTUAL_CLOSE": sched.close_time}
+    sel2 = ss.get("sel2_pipeline", conn)                # 1.4.0: enabled False = exact 1.3.1 planning
+    if sel2.enabled:
+        on.update({"CANDIDATE_TRAIN": sched.train_enabled, "FORECAST_EXPORT": sched.refresh_enabled})
 
     def live(jt: str, slot: datetime) -> bool:
         """The flow is ON and the slot is not earlier than the moment it was switched on. An end-of-day flow without
@@ -142,14 +161,27 @@ def plan(now: datetime, sched, active_source: str, last_heartbeat: datetime | No
             actions.append({"action": "run", "job_type": "D1_SYNC", "key": k1, "trigger": "SCHEDULE",
                             "scheduled_for": vn_slot(today, sched.d1_signal_poll_start).isoformat(), "params": {}})
 
+    # ---- 1.4.0 weekly training of the SEL2 candidates (before the refresh: on that day the refresh waits for it)
+    train_wait = (_plan_candidate_train(now, sel2, active_source, conn, existing, k1, actions, inflight)
+                  if sel2.enabled and sched.train_enabled else False)
+
     # ---- 1.3.1 forecast refresh: planned first; a training due in the same tick waits for the next tick
-    refresh_now = (_plan_refresh(now, sched, active_source, conn, existing, k1, actions, inflight)
+    refresh_now = (_plan_refresh(now, sched, active_source, conn, existing, k1, actions, inflight,
+                                 sel2=sel2.enabled, train_wait=train_wait)
                    if sched.refresh_enabled else False)
+    if sel2.enabled and sched.refresh_enabled and active_source == "BIGQUERY":
+        _plan_sel2_followups(now, sched, sel2, conn, existing, actions, inflight)
+    if sel2.enabled and sched.train_enabled:
+        _plan_candidate_catchup(now, sel2, active_source, conn, existing, actions, inflight)
 
     # ---- training + publish
     kt = f"TRAIN_PUBLISH:{today.isoformat()}"
     train_slot = vn_slot(today, sched.train_time)
-    if live("TRAIN_PUBLISH", train_slot) and train_slot <= now and kt not in existing:
+    if sel2.enabled:
+        if live("TRAIN_PUBLISH", train_slot) and train_slot <= now and kt not in existing:
+            actions.append({"action": "skip", "job_type": "TRAIN_PUBLISH", "key": kt, "trigger": "SCHEDULE",
+                            "scheduled_for": train_slot.isoformat(), "reason": "SEL2_PIPELINE_ACTIVE"})
+    elif live("TRAIN_PUBLISH", train_slot) and train_slot <= now and kt not in existing:
         late = now - train_slot > grace
         d1_ok = existing.get(k1, {}).get("status") == "SUCCEEDED"
         if not d1_ok and active_source == "BIGQUERY":
@@ -241,16 +273,18 @@ def _refresh_under_way(now: datetime, sched, conn, existing: dict, inflight, ref
 
 
 def _plan_refresh(now: datetime, sched, active_source: str, conn, existing: dict, k1: str, actions: list,
-                  inflight=()) -> bool:
+                  inflight=(), sel2: bool = False, train_wait: bool = False) -> bool:
     """1.3.1 FORECAST_REFRESH of today (schedule.refresh_enabled is ON). Appends its action(s); True when an attempt
     is planned in this tick. Every attempt has its own key FORECAST_REFRESH:<day>:<HH:MM>. inflight: keys still in the
-    scheduler's workers (an attempt submitted there has no job row until it starts)."""
+    scheduler's workers (an attempt submitted there has no job row until it starts).
+    1.4.0 sel2: the SEL2 pipeline runs (daily_forecast.enabled not required), published = a SEL2 run of today;
+    train_wait: today's CANDIDATE_TRAIN goes first (until prev_week_deadline)."""
     today = now.date()
     deadline = vn_slot(today, sched.refresh_deadline)
     since = parse_iso(sched.refresh_enabled_at)
     if since is not None and since > deadline:
         return False            # switched on after today's deadline: starts tomorrow, no stale alert for today
-    if not ss.get("daily_forecast", conn).enabled:
+    if not sel2 and not ss.get("daily_forecast", conn).enabled:
         return False
     try:                        # published for the ACTIVE scope only (the refresh log is kept per scope)
         from ..data.demand import resolve_scope
@@ -259,8 +293,12 @@ def _plan_refresh(now: datetime, sched, active_source: str, conn, existing: dict
         sk = None
     if active_source == "BIGQUERY" and sk is None:
         return False            # nothing to refresh, no stale verdict
-    if sk is not None and db.one(conn, "SELECT id FROM forecast_refresh_runs WHERE forecast_date=? AND "
-                                       "status='PUBLISHED' AND scope_key=? LIMIT 1", (today.isoformat(), sk)):
+    if sel2:
+        from ..ml.sel2 import jobs as sel2_jobs
+        if sk is not None and sel2_jobs.published_run(conn, today):
+            return False
+    elif sk is not None and db.one(conn, "SELECT id FROM forecast_refresh_runs WHERE forecast_date=? AND "
+                                         "status='PUBLISHED' AND scope_key=? LIMIT 1", (today.isoformat(), sk)):
         return False
     prefix = runner.refresh_key(today.isoformat(), "")
     if active_source != "BIGQUERY":
@@ -290,6 +328,8 @@ def _plan_refresh(now: datetime, sched, active_source: str, conn, existing: dict
         d1_ok = d1_success_today(conn, now) is not None
     if not d1_ok:
         return False            # waits for today's D-1
+    if train_wait:
+        return False            # 1.4.0: today's CANDIDATE_TRAIN first, until prev_week_deadline
     last = max((parse_iso(r["created_at"]) for r in rows), default=None)
     if last is not None and now - last < timedelta(minutes=sched.refresh_retry_minutes):
         return False
@@ -300,6 +340,96 @@ def _plan_refresh(now: datetime, sched, active_source: str, conn, existing: dict
     actions.append({"action": "run", "job_type": "FORECAST_REFRESH", "key": k, "trigger": "SCHEDULE",
                     "scheduled_for": slot.isoformat(), "params": {"business_date": today.isoformat()}})
     return True
+
+
+def _plan_candidate_train(now: datetime, sel2, active_source: str, conn, existing: dict, k1: str, actions: list,
+                          inflight=()) -> bool:
+    """1.4.0 CANDIDATE_TRAIN:<day> on ISO weekday sel2.retrain_weekday (origin = today) once today's D-1 succeeded
+    (BIGQUERY only). True when today's FORECAST_REFRESH must wait for it: the training is planned in this tick or
+    PENDING / RUNNING / RETRY_WAIT (or in the workers) and prev_week_deadline has not passed."""
+    today = now.date()
+    if today.isoweekday() != sel2.retrain_weekday or active_source != "BIGQUERY":
+        return False
+    k = f"CANDIDATE_TRAIN:{today.isoformat()}"
+    before = now < vn_slot(today, sel2.prev_week_deadline)
+    if k in inflight:
+        return before
+    if k in existing:
+        return before and existing[k]["status"] in ("PENDING", "RUNNING", "RETRY_WAIT")
+    d1_ok = existing.get(k1, {}).get("status") == "SUCCEEDED"
+    if not d1_ok:
+        from .flows import d1_success_today
+        d1_ok = d1_success_today(conn, now) is not None
+    if not d1_ok:
+        return False
+    actions.append({"action": "run", "job_type": "CANDIDATE_TRAIN", "key": k, "trigger": "SCHEDULE",
+                    "scheduled_for": now.replace(second=0, microsecond=0).isoformat(),
+                    "params": {"origin": today.isoformat()}})
+    return before
+
+
+def _plan_sel2_followups(now: datetime, sched, sel2, conn, existing: dict, actions: list, inflight=()) -> None:
+    """1.4.0 (SEL2 on, refresh flow ON, BIGQUERY): the forced re-run of today after the weekly training, the stale
+    export at export_deadline and the AVG_DEMAND re-export (avg_reexport_time). Each one key, at most once per day."""
+    from ..ml.sel2 import jobs as sel2_jobs
+    today = now.date()
+    day = today.isoformat()
+    run = sel2_jobs.published_run(conn, today)
+    # forced re-run: today's run used the previous week's models and this week's training (or its catch-up) has
+    # SUCCEEDED since
+    kr = runner.refresh_key(day, "RERUN")
+    origin = today - timedelta(days=(today.isoweekday() - sel2.retrain_weekday) % 7)
+    kt = f"CANDIDATE_TRAIN:{origin.isoformat()}"
+    busy = any(k.startswith(runner.refresh_key(day, "")) for k in inflight) or any(
+        k.startswith("FORECAST_REFRESH:") and r["status"] in ("PENDING", "RUNNING", "RETRY_WAIT")
+        and _refresh_day(k, r.get("created_at")) == day for k, r in existing.items())
+    trained = any(existing.get(k, {}).get("status") == "SUCCEEDED" for k in (kt, f"{kt}:CATCHUP"))
+    if run is not None and kr not in existing and not busy and trained \
+            and "MODEL_PREV_WEEK" in sel2_jobs.run_flags(run) and now <= vn_slot(today, sched.refresh_deadline):
+        actions.append({"action": "run", "job_type": "FORECAST_REFRESH", "key": kr, "trigger": "SCHEDULE",
+                        "scheduled_for": now.replace(second=0, microsecond=0).isoformat(),
+                        "params": {"business_date": day, "force": True}})
+    # stale export: no SEL2 run of today and no export of today at export_deadline
+    ks = f"FORECAST_EXPORT:{day}:STALE"
+    slot = vn_slot(today, sel2.export_deadline)
+    if now >= slot and ks not in existing and ks not in inflight and run is None \
+            and sel2_jobs.latest_export(conn, today) is None:
+        actions.append({"action": "run", "job_type": "FORECAST_EXPORT", "key": ks, "trigger": "SCHEDULE",
+                        "scheduled_for": slot.isoformat(), "params": {"business_date": day, "mode": "STALE"}})
+    # AVG_DEMAND re-export (off while avg_reexport_time is None): one job per day once an export of today exists; the
+    # job itself re-checks the table every refresh_retry_minutes until it changed (or the day ends)
+    ka = f"FORECAST_EXPORT:{day}:AVG"
+    if sel2.avg_reexport_time and now >= vn_slot(today, sel2.avg_reexport_time) and ka not in existing \
+            and ka not in inflight and sel2_jobs.latest_export(conn, today) is not None:
+        actions.append({"action": "run", "job_type": "FORECAST_EXPORT", "key": ka, "trigger": "SCHEDULE",
+                        "scheduled_for": vn_slot(today, sel2.avg_reexport_time).isoformat(),
+                        "params": {"business_date": day, "mode": "AVG"}})
+
+
+def _plan_candidate_catchup(now: datetime, sel2, active_source: str, conn, existing: dict, actions: list,
+                            inflight=()) -> None:
+    """1.4.0 ONE catch-up CANDIDATE_TRAIN:<origin>:CATCHUP on a weekday other than retrain_weekday, origin = this week's
+    retraining weekday, when a model of that origin has no SUCCEEDED training in the active scope (app closed on that
+    day, training failed, SEL2 switched on later in the week). Planned once today's Excel exists or from
+    export_deadline (the day's forecast goes first); the child trains on the data before the origin exactly as the
+    weekly training, finished models are skipped. BIGQUERY only; not while the weekly training is still under way."""
+    today = now.date()
+    if today.isoweekday() == sel2.retrain_weekday or active_source != "BIGQUERY":
+        return
+    origin = today - timedelta(days=(today.isoweekday() - sel2.retrain_weekday) % 7)
+    kw = f"CANDIDATE_TRAIN:{origin.isoformat()}"
+    kc = f"{kw}:CATCHUP"
+    if kc in existing or kc in inflight or kw in inflight \
+            or existing.get(kw, {}).get("status") in ("PENDING", "RUNNING", "RETRY_WAIT"):
+        return              # once per origin; the weekly training (or its retry) is still under way
+    from ..ml.sel2 import jobs as sel2_jobs
+    if now < vn_slot(today, sel2.export_deadline) and sel2_jobs.latest_export(conn, today) is None:
+        return
+    if not sel2_jobs.models_missing(conn, origin):
+        return
+    actions.append({"action": "run", "job_type": "CANDIDATE_TRAIN", "key": kc, "trigger": "SCHEDULE",
+                    "scheduled_for": now.replace(second=0, microsecond=0).isoformat(),
+                    "params": {"origin": origin.isoformat()}})
 
 
 def _plan_report(now: datetime, sched, conn, existing: dict, grace: timedelta, actions: list) -> None:

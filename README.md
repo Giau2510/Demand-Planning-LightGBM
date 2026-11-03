@@ -50,14 +50,14 @@ powershell -ExecutionPolicy Bypass -File scripts\build-package.ps1  # tạo gói
 
 ## 4. Thử với dữ liệu Excel của bạn
 
-Xem chi tiết: [docs/IMPORT-EXCEL.md](docs/IMPORT-EXCEL.md). Tóm tắt: trang **Import dữ liệu lịch sử** → tải
+Xem chi tiết: [docs/03_van_hanh/IMPORT-EXCEL.md](docs/03_van_hanh/IMPORT-EXCEL.md). Tóm tắt: trang **Import dữ liệu lịch sử** → tải
 **file Excel mẫu** → điền dữ liệu → tải lên → ánh xạ cột → **Kiểm tra dữ liệu** → xem lỗi/xem trước →
 **Xác nhận lưu** → đổi nguồn thành `MANUAL_IMPORT` (ô chọn góc trên phải) → **Huấn luyện & dự báo ngay**.
 
 ## 5. Dữ liệu được lưu ở đâu
 
 Mặc định ở `%LOCALAPPDATA%\DemandForecast`; có thể đặt ở thư mục khác (vd. ổ D) bằng `storage.json` —
-xem [docs/LUU-TRU.md](docs/LUU-TRU.md). Vị trí thực tế luôn hiển thị ở **Hệ thống & sao lưu → Vị trí lưu trữ đang dùng**.
+xem [docs/02_kien_truc_du_lieu/LUU-TRU.md](docs/02_kien_truc_du_lieu/LUU-TRU.md). Vị trí thực tế luôn hiển thị ở **Hệ thống & sao lưu → Vị trí lưu trữ đang dùng**.
 
 | Mục | Vị trí (tương đối với thư mục dữ liệu) |
 |---|---|
@@ -72,15 +72,16 @@ tạo database trống ở nơi khác khi thư mục đã cấu hình không kh�
 
 ## 6. Tài liệu
 
-- [Hướng dẫn sử dụng giao diện](docs/HUONG-DAN-SU-DUNG.md)
-- [Import dữ liệu bằng Excel](docs/IMPORT-EXCEL.md)
-- [Cấu hình BigQuery](docs/BIGQUERY.md)
-- [Cấu hình scheduler](docs/SCHEDULER.md)
-- [Mô hình & chỉ số chất lượng](docs/MO-HINH-VA-CHI-SO.md)
-- [Lưu trữ: đường dẫn, di chuyển dữ liệu, rollback](docs/LUU-TRU.md)
-- [Vận hành: sao lưu, khôi phục, nâng cấp, rollback, khắc phục sự cố](docs/VAN-HANH.md)
-- [Kiến trúc & luồng dữ liệu](docs/KIEN-TRUC.md)
-- [Checkpoint của batch triển khai](docs/CHECKPOINT.md)
+- [Danh mục toàn bộ tài liệu và cấu trúc thư mục docs](docs/README.md)
+- [Hướng dẫn sử dụng giao diện](docs/03_van_hanh/HUONG-DAN-SU-DUNG.md)
+- [Import dữ liệu bằng Excel](docs/03_van_hanh/IMPORT-EXCEL.md)
+- [Cấu hình BigQuery](docs/02_kien_truc_du_lieu/BIGQUERY.md)
+- [Cấu hình scheduler](docs/03_van_hanh/SCHEDULER.md)
+- [Mô hình & chỉ số chất lượng](docs/04_mo_hinh_ket_qua/MO-HINH-VA-CHI-SO.md)
+- [Lưu trữ: đường dẫn, di chuyển dữ liệu, rollback](docs/02_kien_truc_du_lieu/LUU-TRU.md)
+- [Vận hành: sao lưu, khôi phục, nâng cấp, rollback, khắc phục sự cố](docs/03_van_hanh/VAN-HANH.md)
+- [Kiến trúc & luồng dữ liệu](docs/02_kien_truc_du_lieu/KIEN-TRUC.md)
+- [Checkpoint của batch triển khai](docs/03_van_hanh/CHECKPOINT.md)
 
 ## 7. Bảo mật (MVP)
 

@@ -35,6 +35,21 @@ def data_dir(tmp_path, monkeypatch):
     secret_store.set_store(None)
 
 
+@pytest.fixture(autouse=True)
+def sel2_off(data_dir):
+    """1.4.0: every test runs in exact 1.3.1 mode (emergency switch sel2_pipeline.enabled = False) unless it opts in
+    with `sel2_on`."""
+    from app import settings_service as ss
+    ss.update("sel2_pipeline", {"enabled": False}, note="tests: 1.3.1 mode")
+
+
+@pytest.fixture
+def sel2_on(sel2_off):
+    """1.4.0: opt-in for the new pipeline (sel2_pipeline.enabled = True)."""
+    from app import settings_service as ss
+    return ss.update("sel2_pipeline", {"enabled": True}, note="tests: 1.4.0 pipeline on")
+
+
 @pytest.fixture
 def fast_model():
     """Small, fast model/backtest settings so ML tests run in seconds."""

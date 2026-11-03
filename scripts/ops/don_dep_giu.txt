@@ -1,0 +1,8 @@
+# Keep list of scripts\ops\don_dep_dinh_ky.ps1 (owner rule 03/11/2026): one folder name of <project>\reports per line.
+# A listed folder is excluded from the cleanup entirely. Lines starting with # are comments.
+cai-tien-20261031
+backtest-lgbm7-20261029
+backtest-2025-deal-20261030
+forecast-2025-deal-20261030
+dong-bo-lich-su-20261102
+don-dep-20261102

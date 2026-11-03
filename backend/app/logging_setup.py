@@ -33,7 +33,9 @@ class JsonFormatter(logging.Formatter):
 _configured = False
 
 
-def setup_logging(level: str = "INFO", max_bytes: int = 10 * 1024 * 1024, backups: int = 5) -> None:
+def setup_logging(level: str = "INFO", max_bytes: int = 10 * 1024 * 1024, backups: int = 5,
+                  console: bool = True, filename: str = "app.log") -> None:
+    """console=False / filename: for a child process whose stdout is its JSON result (1.4.0 sel2-* commands)."""
     global _configured
     if _configured:
         return
@@ -41,19 +43,21 @@ def setup_logging(level: str = "INFO", max_bytes: int = 10 * 1024 * 1024, backup
     root.setLevel(level)
     file_error = None
     try:
-        fh = logging.handlers.RotatingFileHandler(paths.logs_dir() / "app.log", maxBytes=max_bytes,
+        fh = logging.handlers.RotatingFileHandler(paths.logs_dir() / filename, maxBytes=max_bytes,
                                                   backupCount=backups, encoding="utf-8")
         fh.setFormatter(JsonFormatter())
         root.addHandler(fh)
     except (OSError, paths.StorageError) as e:  # e.g. configured drive unplugged: console only, say so
         file_error = f"{type(e).__name__}: {e}"
-    sh = logging.StreamHandler(sys.stdout)
-    sh.setFormatter(JsonFormatter())
-    root.addHandler(sh)
+    if console:
+        sh = logging.StreamHandler(sys.stdout)
+        sh.setFormatter(JsonFormatter())
+        root.addHandler(sh)
     root.propagate = False
     _configured = True
     if file_error:
-        root.warning("file logging unavailable - console only", extra={"ctx": {"error": file_error}})
+        root.warning("file logging unavailable - console only" if console else "file logging unavailable - no log file",
+                     extra={"ctx": {"error": file_error}})
 
 
 def log_file() -> str | None:

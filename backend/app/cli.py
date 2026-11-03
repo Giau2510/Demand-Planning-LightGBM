@@ -24,6 +24,22 @@
   apply-preset lgbm-chot [--apply]          1.3.1: settings of PHUONG AN CHOT (model, daily_forecast, flows refresh +
                                             report). Default: dry run (read-only) printing the changes; --apply saves
                                             them through settings_service / the schedule flows (idempotent)
+  sel2-openhours-backfill [--start D] [--end D] [--yes]     1.4.0: open-hours history from BigQuery (read-only)
+  sel2-train --origin D [--yes]             1.4.0: LightGBM candidates of a weekly origin (finished models skipped)
+  sel2-day [--date D] [--force] [--yes]     1.4.0: candidates + SEL2 + publication of a forecast day
+  sel2-replay --from D --to D --out DIR [--group-mode FIXED --group-start D --group-end D]
+              [--history-start-rule BACKTEST] [--copy-ok] [--yes]   1.4.0: reproduction on a DB COPY (no
+                                            publication); with --yes refused unless the database folder holds
+                                            copy_info.json (copy marker) or --copy-ok states that it is a copy
+  sel2-bootstrap [--days 28] [--yes]        1.4.0: first start (today's trainings, temporary Excel
+                                            du_bao_YYYYMMDD_TAM.xlsx with V33_L112, other trainings, past
+                                            candidates, today)
+  sel2-export --date D [--yes]              1.4.0: a new version of the daily Excel of forecast day D
+                                            sel2-*: without --yes only the database path and the plan
+                                            sel2-train / sel2-day: [--trigger T] [--job-id ID] recorded with the
+                                            runs (default trigger cli; the app's jobs pass their own)
+                                            sel2-* / sel2-export: an unexpected error prints {ok: false, code
+                                            SEL2_INTERNAL_ERROR (SEL2_LOW_MEMORY for MemoryError), detail}, exit 1
 Exit codes: 0 ok, 1 problems, 2 refused (app running / unsafe), 3 storage error.
 """
 from __future__ import annotations
@@ -166,6 +182,44 @@ def main(argv=None) -> int:
     ap_ = sub.add_parser("apply-preset", help="1.3.1: settings of a release preset (dry run unless --apply)")
     ap_.add_argument("name", choices=sorted(PRESETS))
     ap_.add_argument("--apply", action="store_true", help="save the settings and switch the preset's flows ON")
+    # 1.4.0 SEL2: AVG_DEMAND read from BigQuery (read-only) into avg_demand_daily (ml/sel2/avg_demand.py)
+    sar = sub.add_parser("sel2-avg-read", help="1.4.0: read AVG_DEMAND from BigQuery (current snapshot for --date, or "
+                                               "the historical days) into the configured database (plan only unless --yes)")
+    sar.add_argument("--date", help="business day (Vietnam, YYYY-MM-DD) the current snapshot is stored as")
+    sar.add_argument("--hist-from", help="first day of the historical table (YYYY-MM-DD)")
+    sar.add_argument("--hist-to", help="last day of the historical table (YYYY-MM-DD)")
+    sar.add_argument("--yes", action="store_true", help="read and store (without it: the plan only, nothing read)")
+    # 1.4.0 SEL2 pipeline (ml/sel2/pipeline.py); every command writes: without --yes the database path and the plan
+    s2o = sub.add_parser("sel2-openhours-backfill", help="1.4.0: read the open-hours history from BigQuery (read-only)")
+    s2o.add_argument("--start", help="first day (default sel2_pipeline.open_hours_history_start)")
+    s2o.add_argument("--end", help="last day (default yesterday)")
+    s2t = sub.add_parser("sel2-train", help="1.4.0: train the LightGBM candidates of a weekly origin")
+    s2t.add_argument("--origin", required=True, help="training origin (the retraining weekday, YYYY-MM-DD)")
+    s2d = sub.add_parser("sel2-day", help="1.4.0: candidates + SEL2 + publication of a forecast day")
+    s2d.add_argument("--date", help="forecast day (default today, Vietnam)")
+    s2d.add_argument("--force", action="store_true", help="compute and publish again an already published day")
+    s2r = sub.add_parser("sel2-replay", help="1.4.0: reproduction on a DB COPY (no publication, parquet files)")
+    s2r.add_argument("--from", dest="date_from", required=True)
+    s2r.add_argument("--to", dest="date_to", required=True)
+    s2r.add_argument("--out", required=True, help="output folder of the parquet files")
+    s2r.add_argument("--group-mode", choices=["ROLLING_B7", "FIXED"])
+    s2r.add_argument("--group-start")
+    s2r.add_argument("--group-end")
+    s2r.add_argument("--history-start-rule", choices=["BACKTEST"])
+    s2r.add_argument("--copy-ok", action="store_true",
+                     help="the configured database is a COPY (needed with --yes when its folder has no copy_info.json)")
+    s2b = sub.add_parser("sel2-bootstrap", help="1.4.0: first start (today's trainings + temporary V33_L112 Excel _TAM, "
+                                                  "then trainings + candidates of the last days + today)")
+    s2b.add_argument("--days", type=int, default=28, help="past days replayed (1..120, default 28)")
+    for p_ in (s2o, s2t, s2d, s2r, s2b):
+        p_.add_argument("--yes", action="store_true", help="run (without it: the database path and the plan only)")
+    for p_ in (s2t, s2d):       # the app's jobs (ml/sel2/jobs.py) pass the job row's trigger and id
+        p_.add_argument("--trigger", default="cli", help="trigger recorded with the runs / exports (default cli)")
+        p_.add_argument("--job-id", default=None, help="job id recorded with the runs / trainings / exports")
+    # 1.4.0 SEL2 daily Excel (ml/sel2/export.py)
+    s2x = sub.add_parser("sel2-export", help="1.4.0: write a new version of the daily Excel of a forecast day")
+    s2x.add_argument("--date", required=True, help="forecast day (Vietnam, YYYY-MM-DD)")
+    s2x.add_argument("--yes", action="store_true", help="write (without it: the database path and the target file)")
     a = ap.parse_args(argv)
     from . import paths
     try:
@@ -296,6 +350,12 @@ def _run(a) -> int:
         return 0
     if a.cmd == "apply-preset":
         return _apply_preset(a)
+    if a.cmd == "sel2-export":
+        return _sel2_export(a)
+    if a.cmd.startswith("sel2-") and a.cmd != "sel2-avg-read":
+        return _sel2(a)
+    if a.cmd == "sel2-avg-read":
+        return _sel2_avg_read(a)
 
     from .logging_setup import setup_logging
     if a.cmd == "serve":
@@ -430,6 +490,195 @@ PRESETS = {"lgbm-chot": {
 
 def _codes(reasons) -> list[dict]:
     return [{"code": x.get("code"), "detail": x.get("detail")} for x in reasons or []]
+
+
+def _sel2_avg_read(a) -> int:
+    """1.4.0 `sel2-avg-read --date D | --hist-from D1 --hist-to D2 [--yes]` on the configured database. Without --yes:
+    the database path and the plan, nothing read or written. Never migrates (needs schema 12). Exit 0 ok, 1 the read
+    failed (nothing recorded), 2 refused."""
+    from datetime import date
+    from . import db, paths
+    from . import settings_service as ss
+    from .messages import AppError
+    from .ml.sel2 import avg_demand
+    paths.ensure_storage()
+    out = {"db": str(paths.db_path()), "dry_run": not a.yes}
+
+    def _refuse(why: str) -> int:
+        print(json.dumps({"ok": False, **out, "refused": why}, indent=2, ensure_ascii=False, default=str))
+        return 2
+    hist = bool(a.hist_from or a.hist_to)
+    if bool(a.date) == hist or (hist and not (a.hist_from and a.hist_to)):
+        return _refuse("give either --date or both --hist-from and --hist-to")
+    try:
+        days = [date.fromisoformat(x) for x in ((a.hist_from, a.hist_to) if hist else (a.date,))]
+    except ValueError:
+        return _refuse("dates must be YYYY-MM-DD")
+    if not hist:
+        try:                                    # the current snapshot is today's table only
+            avg_demand.require_today(days[0])
+        except AppError as e:
+            print(json.dumps({"ok": False, **out, "refused": "--date must be today (Vietnam); a past day: "
+                              "--hist-from D1 --hist-to D2", **e.to_dict()}, indent=2, ensure_ascii=False, default=str))
+            return 2
+    with db.read() as c:
+        try:
+            schema = c.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] or 0
+        except Exception:  # noqa: BLE001 - no migration table
+            schema = 0
+        cfg = ss.get("sel2_pipeline", c) if schema >= 12 else None
+    out["schema_version"] = schema
+    if schema < 12:
+        return _refuse(f"database schema {schema}: the AVG_DEMAND tables need schema 12 (release 1.4.0); nothing was "
+                       "changed")
+    out.update(kind="HISTORICAL" if hist else "CURRENT",
+               table=cfg.avg_demand_hist_table if hist else cfg.avg_demand_table,
+               range=[d.isoformat() for d in days], seller_rule=cfg.avg_seller_rule)
+    if not cfg.enabled:
+        return _refuse("sel2_pipeline.enabled = False (1.3.1 mode): nothing is written")
+    if not a.yes:
+        print(json.dumps({"ok": True, **out, "note": "plan only: add --yes to read and store"}, indent=2,
+                         ensure_ascii=False))
+        return 0
+    try:
+        res = avg_demand.read_historical(days[0], days[1], cfg) if hist else avg_demand.read_current(days[0], cfg)
+    except AppError as e:
+        print(json.dumps({"ok": False, **out, **e.to_dict()}, indent=2, ensure_ascii=False, default=str))
+        return 1
+    print(json.dumps({"ok": True, **out, "result": res}, indent=2, ensure_ascii=False, default=str))
+    return 0
+
+
+def _sel2_export(a) -> int:
+    """1.4.0 `sel2-export --date D [--yes]` on the configured database. Without --yes: the database path, the target
+    file and the versions already written, nothing written. Never migrates (needs schema 12). Exit 0 ok, 1 failed
+    (AppError printed), 2 refused."""
+    from datetime import date
+    from . import db, paths
+    from . import settings_service as ss
+    from .messages import AppError
+    paths.ensure_storage()
+    out = {"db": str(paths.db_path()), "dry_run": not a.yes}
+
+    def _refuse(why: str) -> int:
+        print(json.dumps({"ok": False, **out, "refused": why}, indent=2, ensure_ascii=False, default=str))
+        return 2
+    try:
+        d = date.fromisoformat(a.date)
+    except ValueError:
+        return _refuse("--date must be YYYY-MM-DD")
+    with db.read() as c:
+        try:
+            schema = c.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] or 0
+        except Exception:  # noqa: BLE001 - no migration table
+            schema = 0
+        cfg = ss.get("sel2_pipeline", c) if schema >= 12 else None
+    out["schema_version"] = schema
+    if schema < 12:
+        return _refuse(f"database schema {schema}: the export needs schema 12 (release 1.4.0); nothing was changed")
+    from .ml.sel2 import export
+    try:
+        folder, latest = export.file_names(d)
+        out.update(forecast_date=d.isoformat(), target_file=str(export.export_root(cfg) / folder / latest),
+                   versions=[r["version"] for r in export.runs(d)])
+    except AppError as e:
+        print(json.dumps({"ok": False, **out, **e.to_dict()}, indent=2, ensure_ascii=False, default=str))
+        return 1
+    if not cfg.enabled:
+        return _refuse("sel2_pipeline.enabled = False (1.3.1 mode): nothing is written")
+    if not a.yes:
+        print(json.dumps({"ok": True, **out, "code": "SEL2_CONFIRM_REQUIRED", "note": "plan only: add --yes to write"},
+                         indent=2, ensure_ascii=False, default=str))
+        return 0
+    try:
+        res = export.write_daily_export(d, trigger="CLI")
+    except AppError as e:
+        print(json.dumps({"ok": False, **out, **e.to_dict()}, indent=2, ensure_ascii=False, default=str))
+        return 1
+    except Exception as e:  # noqa: BLE001 - printed as JSON for the job (never a bare traceback only)
+        return _sel2_unexpected(out, e)
+    print(json.dumps({"ok": True, **out, "result": res}, indent=2, ensure_ascii=False, default=str))
+    return 0
+
+
+def _sel2_unexpected(out: dict, e: BaseException) -> int:
+    """An exception that is not an AppError in a sel2-* command: {ok: false, code, detail} on stdout (MemoryError ->
+    SEL2_LOW_MEMORY, retryable; anything else -> SEL2_INTERNAL_ERROR, not retried by the jobs), traceback on stderr."""
+    import traceback
+    from .messages import AppError
+    traceback.print_exc(file=sys.stderr)
+    code = "SEL2_LOW_MEMORY" if isinstance(e, MemoryError) else "SEL2_INTERNAL_ERROR"
+    err = AppError(code, status=500, detail=f"{type(e).__name__}: {e}"[:1000])
+    print(json.dumps({"ok": False, **out, **err.to_dict(), "code": code}, indent=2, ensure_ascii=False, default=str))
+    return 1
+
+
+def _sel2(a) -> int:
+    """1.4.0 sel2-* commands on the configured database. Without --yes: the database path and the plan, nothing read
+    from BigQuery or written. sel2-replay --yes runs only on a DB copy (copy_info.json next to app.db, or --copy-ok).
+    Exit 0 ok, 1 failed (AppError or unexpected error printed as JSON), 2 refused."""
+    from datetime import date
+    from . import paths
+    from .messages import AppError
+    from .ml.sel2 import pipeline
+    paths.ensure_storage()
+    out = {"db": str(paths.db_path()), "command": a.cmd, "dry_run": not a.yes}
+    try:
+        day = (lambda v: date.fromisoformat(v) if v else None)
+        args = {"sel2-openhours-backfill": lambda: {"start": day(a.start), "end": day(a.end)},
+                "sel2-train": lambda: {"origin": day(a.origin), "trigger": a.trigger, "job_id": a.job_id},
+                "sel2-day": lambda: {"date": day(a.date), "force": a.force, "trigger": a.trigger,
+                                     "job_id": a.job_id},
+                "sel2-replay": lambda: {"from": day(a.date_from), "to": day(a.date_to), "out": a.out,
+                                        "group_mode": a.group_mode, "group_start": a.group_start,
+                                        "group_end": a.group_end, "history_start_rule": a.history_start_rule},
+                "sel2-bootstrap": lambda: {"days": a.days}}[a.cmd]()
+    except ValueError:
+        print(json.dumps({"ok": False, **out, "refused": "dates must be YYYY-MM-DD"}, indent=2, ensure_ascii=False))
+        return 2
+    out["args"] = args
+    if a.cmd == "sel2-replay" and args["from"] > args["to"]:
+        print(json.dumps({"ok": False, **out, "refused": "--from must not be after --to"}, indent=2, ensure_ascii=False, default=str))
+        return 2
+    if a.cmd == "sel2-bootstrap" and not 1 <= args["days"] <= 120:
+        print(json.dumps({"ok": False, **out, "refused": "--days must be 1..120"}, indent=2, ensure_ascii=False, default=str))
+        return 2
+    if a.cmd == "sel2-replay":
+        marker = paths.db_path().parent / "copy_info.json"
+        out["copy_check"] = {"copy_info": str(marker), "marker_found": marker.exists(), "copy_ok_flag": a.copy_ok}
+        if a.yes and not (marker.exists() or a.copy_ok):
+            print(json.dumps({"ok": False, **out, "code": "SEL2_REPLAY_NOT_A_COPY",
+                              "refused": "sel2-replay writes trainings and candidates: run it on a DB COPY (copy_info.json "
+                                         "next to app.db, or --copy-ok)"}, indent=2, ensure_ascii=False, default=str))
+            return 2
+    if not a.yes:
+        print(json.dumps({"ok": True, **out, "code": "SEL2_CONFIRM_REQUIRED", "note": "plan only: add --yes to run"},
+                         indent=2, ensure_ascii=False, default=str))
+        return 0
+    from .logging_setup import setup_logging
+    # the step lines of pipeline (seconds, private MB) go to <command>.log (e.g. sel2-day.log): never to stdout (the job
+    # reads one JSON document there) and never to a file another process rotates (app.log of the server, or a sel2-day
+    # next to a sel2-train: two rotating handlers on one file break rollover on Windows)
+    setup_logging(console=False, filename=f"{a.cmd}.log")
+    try:
+        if a.cmd == "sel2-openhours-backfill":
+            res = pipeline.openhours_backfill(args["start"], args["end"])
+        elif a.cmd == "sel2-train":
+            res = pipeline.train_week(args["origin"], job_id=args["job_id"])
+        elif a.cmd == "sel2-day":
+            res = pipeline.run_day(args["date"], trigger=args["trigger"], job_id=args["job_id"], force=args["force"])
+        elif a.cmd == "sel2-replay":
+            res = pipeline.replay(args["from"], args["to"], args["out"], args["group_mode"], args["history_start_rule"],
+                                  args["group_start"], args["group_end"])
+        else:
+            res = pipeline.bootstrap(args["days"])
+    except AppError as e:
+        print(json.dumps({"ok": False, **out, **e.to_dict()}, indent=2, ensure_ascii=False, default=str))
+        return 1
+    except Exception as e:  # noqa: BLE001 - printed as JSON for the job (never a bare traceback only)
+        return _sel2_unexpected(out, e)
+    print(json.dumps({"ok": True, **out, "result": res}, indent=2, ensure_ascii=False, default=str))
+    return 0
 
 
 def _apply_preset(a) -> int:

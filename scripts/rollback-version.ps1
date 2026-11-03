@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS  Switch back to an installed older version (program folder kept side by side). ASCII only.
            No database restore: refused if the database schema is newer than the target version supports
-           (then restore the pre-upgrade backup instead, see docs\VAN-HANH.md).
+           (then restore the pre-upgrade backup instead, see docs\03_van_hanh\VAN-HANH.md).
 .PARAMETER To            Version to go back to, e.g. 1.1.5
 .PARAMETER CheckOnly     Only check (nothing is stopped or changed)
 .PARAMETER ConfirmToken  Non-interactive confirmation: must equal ROLLBACK-<To>
@@ -22,7 +22,7 @@ if (-not $paths.db_exists) { Write-Host "[FAIL] database not found: $($paths.db_
 $code = "import sqlite3,sys,pathlib; c=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True); v=c.execute('select max(version) from schema_migrations').fetchone()[0]; m=max(int(p.name.split('_')[0]) for p in pathlib.Path(sys.argv[2]).glob('*.sql')); print(v, m)"
 $vm = (& $tpy -c $code $paths.db_path (Join-Path $target "backend\app\migrations")) -split ' '
 Write-Host "database schema $($vm[0]); $To supports up to $($vm[1])"
-if ([int]$vm[0] -gt [int]$vm[1]) { Write-Host "[FAIL] the database is newer than $To supports: restore the pre-upgrade backup instead (docs\VAN-HANH.md)." -ForegroundColor Red; exit 3 }
+if ([int]$vm[0] -gt [int]$vm[1]) { Write-Host "[FAIL] the database is newer than $To supports: restore the pre-upgrade backup instead (docs\03_van_hanh\VAN-HANH.md)." -ForegroundColor Red; exit 3 }
 Write-Host "[OK] rollback possible without restoring the database" -ForegroundColor Green
 if ($CheckOnly) { exit 0 }
 $want = "ROLLBACK-$To"

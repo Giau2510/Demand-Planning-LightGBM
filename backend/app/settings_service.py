@@ -669,6 +669,140 @@ class DailyForecastSettings(BaseModel):
         return v
 
 
+# 1.4.0 (SEL2): the candidate forecasts of every SKU x FC, exact names used in the tables and files
+CANDIDATE_MODELS = ("MOC", "V33_L112", "V36_two_stage@0.6", "TSB", "DOW4", "AVG7")
+SELLER_RULE_RE = re.compile(r"^(PENDING|SUM|MAX|SELLER:[A-Za-z0-9_\-]{1,64})$")
+SUBDIR_PART_RE = re.compile(r"^[A-Za-z0-9_\-. ]{1,64}$")
+
+
+def _iso_date(v: str, name: str) -> str:
+    from datetime import date as _d
+    if not v or not DATE_RE.match(v):
+        raise ValueError(f"{name} must be YYYY-MM-DD")
+    try:
+        _d.fromisoformat(v)
+    except ValueError as e:
+        raise ValueError(f"{name} is not a valid date: {v}") from e
+    return v
+
+
+class Sel2PipelineSettings(BaseModel):
+    """1.4.0 (SEL2): daily pipeline of 6 candidate forecasts per SKU x FC (CANDIDATE_MODELS), the per-SKU selection
+    SEL2, the published integer quantity and the daily Excel export; it replaces the 1.3.1 daily training + refresh.
+    ON by default. enabled = False is the EMERGENCY switch: it restores the exact 1.3.1 behaviour (daily training and
+    forecast refresh of the model in use; nothing of this section runs or is written)."""
+    enabled: bool = True
+    # selection: probability cut-off of the two-stage candidate (fixed: it is part of the candidate name
+    # V36_two_stage@0.6 stored in the tables), selection window and minimum days of a series, candidate used when the
+    # selection cannot choose
+    p_threshold: Literal[0.6] = 0.6
+    window_days: int = Field(28, ge=1, le=365)
+    min_days: int = Field(14, ge=1, le=365)
+    fallback_model: str = "V33_L112"
+    # period of the selection: rolling (ROLLING_B7) or a fixed period (both dates required, Vietnam days)
+    group_mode: Literal["ROLLING_B7", "FIXED"] = "ROLLING_B7"
+    group_fixed_start: str | None = None
+    group_fixed_end: str | None = None
+    # days of candidate forecasts kept (at least the 28-day selection window + the 7 horizon days)
+    retention_days: int = Field(120, ge=35, le=3650)
+    # daily Excel: <data folder>\<export_subdir>\, deadlines in Vietnam time (prev_week_deadline before export_deadline)
+    export_subdir: str = "exports\\du_bao"
+    export_deadline: str = "06:30"
+    prev_week_deadline: str = "06:20"
+    # re-export of the day after the AVG_DEMAND table refresh (HH:MM, Vietnam time; None = off, pending owner approval):
+    # from that time, once per day, a new Excel version when the table changed after the read used by the latest export
+    avg_reexport_time: str | None = None
+    # weekly retraining of the LightGBM candidates (ISO weekday 1 = Monday ... 7 = Sunday)
+    retrain_weekday: int = Field(1, ge=1, le=7)
+    # time limit (seconds) of the CANDIDATE_TRAIN child process (instead of schedule.timeout_seconds): 3 trainings
+    train_timeout_seconds: int = Field(10800, ge=600, le=43200)
+    # lag of the BigQuery open hours in days (0 = off) and the first day read
+    open_hours_lag_days: int = Field(2, ge=0, le=2)
+    open_hours_history_start: str = "2026-01-01"
+    # TSB candidate (Teunter-Syntetos-Babai): smoothing of the demand probability and size, history start
+    tsb_alpha: float = Field(0.1, gt=0, le=1)
+    tsb_beta: float = Field(0.1, gt=0, le=1)
+    tsb_start: str = "2026-01-01"
+    # AVG_DEMAND source (read-only BigQuery): current and historical tables, rows per seller
+    avg_demand_table: str = "lakehouse-prod-394907.gold_buymed_vn2.fact_avg_demand_sku"
+    avg_demand_hist_table: str = "lakehouse-prod-394907.gold_buymed_vn2.fact_avg_demand_sku_historical"
+    # how the seller rows of a SKU x FC x day become one value: PENDING = not approved by the owner yet, SUM, MAX, or
+    # SELLER:<CODE> (one seller only)
+    avg_seller_rule: str = "PENDING"
+
+    @field_validator("fallback_model")
+    @classmethod
+    def _model(cls, v):
+        if v not in CANDIDATE_MODELS:
+            raise ValueError(f"fallback_model must be one of {', '.join(CANDIDATE_MODELS)}")
+        return v
+
+    @field_validator("group_fixed_start", "group_fixed_end")
+    @classmethod
+    def _group_date(cls, v, info):
+        return None if v is None else _iso_date(v, info.field_name)
+
+    @field_validator("open_hours_history_start", "tsb_start")
+    @classmethod
+    def _date(cls, v, info):
+        return _iso_date(v, info.field_name)
+
+    @field_validator("export_subdir")
+    @classmethod
+    def _subdir(cls, v):
+        # relative to the data folder: no drive, no root, no '..' (never written outside the data folder)
+        parts = (v or "").replace("/", "\\").split("\\")
+        if not v or any(not SUBDIR_PART_RE.match(p) or p.strip(" .") == "" for p in parts):
+            raise ValueError("export_subdir must be a relative folder (letters, digits, ' ', '.', '-', '_'; "
+                             "no drive, no leading '\\', no '..')")
+        return v
+
+    @field_validator("export_deadline", "prev_week_deadline")
+    @classmethod
+    def _hhmm(cls, v):
+        if not HHMM.match(v):
+            raise ValueError("time must be HH:MM (24h)")
+        return v
+
+    @field_validator("avg_reexport_time")
+    @classmethod
+    def _hhmm_opt(cls, v):
+        if v is not None and not HHMM.match(v):
+            raise ValueError("avg_reexport_time must be HH:MM (24h) or empty")
+        return v
+
+    @field_validator("avg_demand_table", "avg_demand_hist_table")
+    @classmethod
+    def _table(cls, v, info):
+        v = (v or "").strip()
+        if not TABLE_ID_RE.match(v):
+            raise ValueError(f"{info.field_name} must be project.dataset.table")
+        return v
+
+    @field_validator("avg_seller_rule")
+    @classmethod
+    def _seller_rule(cls, v):
+        if not SELLER_RULE_RE.match(v or ""):
+            raise ValueError("avg_seller_rule must be PENDING, SUM, MAX or SELLER:<CODE>")
+        return v
+
+    @model_validator(mode="after")
+    def _consistent(self):
+        if self.min_days > self.window_days:
+            raise ValueError(f"min_days ({self.min_days}) must not exceed window_days ({self.window_days})")
+        if self.group_mode == "FIXED":
+            if not (self.group_fixed_start and self.group_fixed_end):
+                raise ValueError("group_mode FIXED needs group_fixed_start and group_fixed_end")
+            if self.group_fixed_start > self.group_fixed_end:
+                raise ValueError("group_fixed_start must not be after group_fixed_end")
+        if self.prev_week_deadline >= self.export_deadline:
+            raise ValueError("prev_week_deadline must be before export_deadline")
+        if self.retention_days < self.window_days + 7:
+            raise ValueError(f"retention_days ({self.retention_days}) must be at least window_days + 7 "
+                             f"({self.window_days + 7}): the selection reads the forecasts of the last window + 7 days")
+        return self
+
+
 SECTIONS: dict[str, type[BaseModel]] = {
     "sql_sources": SqlSourcesSettings,
     "general": GeneralSettings,
@@ -681,6 +815,7 @@ SECTIONS: dict[str, type[BaseModel]] = {
     "bigquery": BigQuerySettings,
     "daily_forecast": DailyForecastSettings,        # 1.3.1
     "feature_table": FeatureTableSettings,          # 1.3.1
+    "sel2_pipeline": Sel2PipelineSettings,          # 1.4.0
 }
 
 

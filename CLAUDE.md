@@ -2,12 +2,16 @@
 
 @AGENTS.md
 
+## Quy tắc dữ liệu bắt buộc
+
+@docs/01_quy_tac/quy_tac_du_lieu.md
+
 ## Claude Code specifics
 
 * Shared rules are in `AGENTS.md` (imported above); this file adds only what is specific to Claude Code.
 * Project subagents: `.claude/agents/repo-scout.md` (read-only search, `haiku`) and `.claude/agents/data-reviewer.md`
   (read-only data/migration review, `sonnet`). Use them only under the task contract in
-  [docs/agents/GOVERNANCE.md](docs/agents/GOVERNANCE.md); at most two specialists at a time; do not pass a per-call
+  [docs/01_quy_tac/GOVERNANCE.md](docs/01_quy_tac/GOVERNANCE.md); at most two specialists at a time; do not pass a per-call
   `model` override except for a recorded escalation.
 * Project settings `.claude/settings.json` deny file-tool edits of the live data, backups and the per-user storage
   configuration, and reads of Google credential files. They do not stop shell commands; the rules in `AGENTS.md`

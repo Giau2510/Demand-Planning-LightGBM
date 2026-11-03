@@ -1,5 +1,5 @@
 <#
-.SYNOPSIS  90-day retention of the end-of-day forecast backup (1.2.6). ASCII only. See docs\LICH-SU-FORECAST.md section 14.
+.SYNOPSIS  90-day retention of the end-of-day forecast backup (1.2.6). ASCII only. See docs\02_kien_truc_du_lieu\LICH-SU-FORECAST.md section 14.
            Without -Apply: DRY RUN (read-only). Prints the plan: the snapshots, rows and business dates that would be
            deleted, the ones held back and why, and the plan_id. Nothing is written.
            With -Apply -Plan <plan_id>: deletes exactly that reviewed plan (refused when the plan changed), after a

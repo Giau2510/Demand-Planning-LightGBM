@@ -10,6 +10,6 @@ if "%RC%"=="0" (
 ) else if "%RC%"=="2" (
   echo Link da tao nhung chua xac minh duoc tu may nay - thu mo link sau 1-2 phut.
 ) else (
-  echo Co loi - doc thong bao o tren. Huong dan: REMOTE_ACCESS_GUIDE.md
+  echo Co loi - doc thong bao o tren. Huong dan: docs\03_van_hanh\link_tu_xa.md
 )
 pause

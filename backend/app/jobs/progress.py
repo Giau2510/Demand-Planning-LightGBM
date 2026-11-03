@@ -22,6 +22,10 @@ STAGES = {
     "FORECAST_REFRESH": ["QUEUED", "STARTED", "VALIDATING_DATA", "VERIFYING_MODEL", "PREPARING_DATA", "SYNCING",
                          "FORECASTING", "PUBLISHING", "DONE"],
     "ACCURACY_REPORT": ["QUEUED", "STARTED", "VALIDATING_DATA", "EVALUATING", "REPORTING", "DONE"],
+    # 1.4.0 SEL2 weekly candidate training (child process) and daily Excel stale / AVG_DEMAND re-export
+    # (ml/sel2/jobs.py)
+    "CANDIDATE_TRAIN": ["QUEUED", "STARTED", "TRAINING", "DONE"],
+    "FORECAST_EXPORT": ["QUEUED", "STARTED", "EXPORTING", "DONE"],
 }
 TERMINAL_STAGES = ("DONE", "FAILED", "SKIPPED", "INTERRUPTED")
 

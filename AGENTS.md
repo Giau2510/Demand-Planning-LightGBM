@@ -12,32 +12,41 @@ frontend, embedded Python in a portable ZIP (no Python/Node needed on the target
 `DEMO`, `MANUAL_IMPORT` (`.xlsx`, one independent batch per import) and `BIGQUERY` (intended primary source,
 read-only).
 
+Every document, the folder layout (`01_quy_tac` rules, `02_kien_truc_du_lieu` architecture and data, `03_van_hanh`
+operations, `04_mo_hinh_ket_qua` model and results, `05_nhat_ky_quyet_dinh.md` owner decisions, `_luu_tru` archive) and
+where report data lives: **[docs/README.md](docs/README.md)**. Most used:
+
 | Topic | Document |
 |---|---|
-| Architecture, modules | [docs/KIEN-TRUC.md](docs/KIEN-TRUC.md) |
-| Data model, lifecycle, invariants, timezone | [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md), [docs/data/DATA-DICTIONARY.md](docs/data/DATA-DICTIONARY.md) |
-| Storage locations, storage.json | [docs/LUU-TRU.md](docs/LUU-TRU.md) |
-| BigQuery, OAuth, SQL sources, D0 | [docs/BIGQUERY.md](docs/BIGQUERY.md) |
-| Operations, backup, upgrade, rollback | [docs/VAN-HANH.md](docs/VAN-HANH.md), [docs/TRIEN-KHAI-1.1.6.md](docs/TRIEN-KHAI-1.1.6.md) |
-| Scheduler | [docs/SCHEDULER.md](docs/SCHEDULER.md) |
-| Model and metrics | [docs/MO-HINH-VA-CHI-SO.md](docs/MO-HINH-VA-CHI-SO.md) |
-| Agents, model routing, budgets, checkpoints | [docs/agents/GOVERNANCE.md](docs/agents/GOVERNANCE.md) |
-| Resume state of the current batch | [docs/CHECKPOINT.md](docs/CHECKPOINT.md) |
-| Git / GitHub: what is versioned, commit, push, sync | [docs/GITHUB_WORKFLOW.md](docs/GITHUB_WORKFLOW.md) |
-| Development, QA, release, artifact and backup retention | [docs/PHAT-TRIEN-QA-PHAT-HANH.md](docs/PHAT-TRIEN-QA-PHAT-HANH.md) |
-| VPS deployment (Linux, prepared, not deployed) | [docs/TRIEN-KHAI-VPS.md](docs/TRIEN-KHAI-VPS.md) |
-| Web UI design system (tokens, icons, components) | [docs/UI-DESIGN-SYSTEM.md](docs/UI-DESIGN-SYSTEM.md) |
-| Forecast & actual history (D+1 storage, session choice, actual status, KPI) | [docs/LICH-SU-FORECAST.md](docs/LICH-SU-FORECAST.md) |
+| Data rule (per customer, per order line) | [docs/01_quy_tac/quy_tac_du_lieu.md](docs/01_quy_tac/quy_tac_du_lieu.md) |
+| Owner decisions | [docs/05_nhat_ky_quyet_dinh.md](docs/05_nhat_ky_quyet_dinh.md) |
+| Architecture, modules | [docs/02_kien_truc_du_lieu/KIEN-TRUC.md](docs/02_kien_truc_du_lieu/KIEN-TRUC.md) |
+| Data model, lifecycle, invariants, timezone | [docs/02_kien_truc_du_lieu/DATA-MODEL.md](docs/02_kien_truc_du_lieu/DATA-MODEL.md), [docs/02_kien_truc_du_lieu/DATA-DICTIONARY.md](docs/02_kien_truc_du_lieu/DATA-DICTIONARY.md) |
+| Storage locations, storage.json | [docs/02_kien_truc_du_lieu/LUU-TRU.md](docs/02_kien_truc_du_lieu/LUU-TRU.md) |
+| BigQuery, OAuth, SQL sources, D0 | [docs/02_kien_truc_du_lieu/BIGQUERY.md](docs/02_kien_truc_du_lieu/BIGQUERY.md) |
+| Operations, backup, upgrade, rollback | [docs/03_van_hanh/VAN-HANH.md](docs/03_van_hanh/VAN-HANH.md) |
+| Scheduler | [docs/03_van_hanh/SCHEDULER.md](docs/03_van_hanh/SCHEDULER.md) |
+| Model and metrics | [docs/04_mo_hinh_ket_qua/MO-HINH-VA-CHI-SO.md](docs/04_mo_hinh_ket_qua/MO-HINH-VA-CHI-SO.md) |
+| Agents, model routing, budgets, checkpoints | [docs/01_quy_tac/GOVERNANCE.md](docs/01_quy_tac/GOVERNANCE.md) |
+| Resume state of the current batch | [docs/03_van_hanh/CHECKPOINT.md](docs/03_van_hanh/CHECKPOINT.md) |
+| Git / GitHub: what is versioned, commit, push, sync | [docs/01_quy_tac/GITHUB_WORKFLOW.md](docs/01_quy_tac/GITHUB_WORKFLOW.md) |
+| Development, QA, release, artifact and backup retention | [docs/01_quy_tac/PHAT-TRIEN-QA-PHAT-HANH.md](docs/01_quy_tac/PHAT-TRIEN-QA-PHAT-HANH.md) |
+| VPS deployment (Linux, prepared, not deployed) | [docs/03_van_hanh/TRIEN-KHAI-VPS.md](docs/03_van_hanh/TRIEN-KHAI-VPS.md) |
+| Web UI design system (tokens, icons, components) | [docs/02_kien_truc_du_lieu/UI-DESIGN-SYSTEM.md](docs/02_kien_truc_du_lieu/UI-DESIGN-SYSTEM.md) |
+| Forecast & actual history (D+1 storage, session choice, actual status, KPI) | [docs/02_kien_truc_du_lieu/LICH-SU-FORECAST.md](docs/02_kien_truc_du_lieu/LICH-SU-FORECAST.md) |
 | Version history | [CHANGELOG.md](CHANGELOG.md) |
 
 ## 2. Inspect before changing
 
-1. Read the relevant code, tests, migrations and the latest report in `reports/` before editing. Verify any value
-   given in a prompt (paths, versions, hashes, table names) against the machine; prompts can be stale.
+1. Read the relevant code, tests, migrations and the latest report (`.md` in `docs/`, see `docs/README.md`) before
+   editing. Verify any value given in a prompt (paths, versions, hashes, table names) against the machine; prompts can
+   be stale.
 2. The source is a Git repository (private GitHub `Giau2510/Demand-Planning-LightGBM`, branch `main`; no CI). Commit and
-   push only as described in [docs/GITHUB_WORKFLOW.md](docs/GITHUB_WORKFLOW.md); runtime data, backups, checkpoints,
-   reports and packages stay outside Git. Before a large change, still save a checkpoint ZIP of the touched source under
-   `checkpoints/` and record it in `docs/CHECKPOINT.md`.
+   push only as described in [docs/01_quy_tac/GITHUB_WORKFLOW.md](docs/01_quy_tac/GITHUB_WORKFLOW.md); runtime data,
+   backups, checkpoints, report data (parquet, zip, csv, xlsx, json under `reports/`) and packages stay outside Git.
+   Report `.md` files live in `docs/` (merged by topic, old reports in `docs/_luu_tru/`), versioned with the source.
+   Before a large change, still save a checkpoint ZIP of the touched source under
+   `checkpoints/` and record it in `docs/03_van_hanh/CHECKPOINT.md`.
 3. Live state to check before any operational step: running process (`app.cli serve` command line) and
    `GET http://127.0.0.1:8765/api/health`; `%LOCALAPPDATA%\Programs\DemandForecast\current.txt`;
    `%LOCALAPPDATA%\DemandForecast\storage.json` (hash); active jobs (`/api/jobs`); next scheduler slot
@@ -129,7 +138,7 @@ an authorized deployment; stopping the running app outside a deployment/rollback
 
 ## 9. Agents, models and budgets
 
-Follow [docs/agents/GOVERNANCE.md](docs/agents/GOVERNANCE.md): one orchestrator, at most two specialists at a time,
+Follow [docs/01_quy_tac/GOVERNANCE.md](docs/01_quy_tac/GOVERNANCE.md): one orchestrator, at most two specialists at a time,
 read-only reconnaissance agents, module ownership for edits, tiered model routing with no silent escalation, bounded
 retries, written task contracts and checkpoints.
 

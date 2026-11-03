@@ -17,6 +17,30 @@ const fmt3 = (v: number | null | undefined) =>
 
 const list = (x: unknown): any[] => (Array.isArray(x) ? x : []);
 
+/** 1.4.0: a run published by the SEL2 pipeline (config_version "SEL2:..."); only its rows follow the forecast source. */
+export const isSel2Run = (run: any): boolean => typeof run?.config_version === "string" && run.config_version.startsWith("SEL2:");
+
+const SRC_PAGE = 1000;
+const SRC_MAX_PAGES = 50;
+/** The SKU x FC configured LIGHTGBM ("sku|fc"); null when they cannot all be read (too many): the per-row source is
+ *  then unknown and no row label is shown. A SKU x FC without a row is AVG_DEMAND (the default). */
+export async function loadLightgbmKeys(): Promise<Set<string> | null> {
+  const keys = new Set<string>();
+  for (let i = 0; i < SRC_MAX_PAGES; i++) {
+    const r = await get(`/api/sel2/source-config${qs({ source: "LIGHTGBM", limit: SRC_PAGE, offset: i * SRC_PAGE })}`);
+    list(r?.items).forEach((x: any) => keys.add(`${x.sku_code}|${x.fc_code}`));
+    if ((i + 1) * SRC_PAGE >= (r?.total ?? 0)) return keys;
+  }
+  return null;
+}
+
+/** Row label of the daily forecast: "LIGHTGBM" (configured LIGHTGBM: the number is in use), "OTHER" (keeps the trial
+ *  label) or null (not a SEL2 run, or the configuration is unknown: nothing is renamed). */
+export function rowSourceKind(run: any, lgbmKeys: Set<string> | null | undefined, sku: string, fc: string): "LIGHTGBM" | "OTHER" | null {
+  if (!isSel2Run(run) || !lgbmKeys) return null;
+  return lgbmKeys.has(`${sku}|${fc}`) ? "LIGHTGBM" : "OTHER";
+}
+
 /** 1.3.1 "Dự báo hằng ngày": the forecast refreshed every morning with the model in use (B5), its values (B3 / B8),
  *  the export, the weekly accuracy reports (B9) and the trial mode (B12). Nothing here changes the Results page or its
  *  exports. The trial mode is switched only here: off needs the typed text TAT-CHAY-THU-<today>, back on needs none;
@@ -39,6 +63,16 @@ export default function DailyForecast() {
   // a chosen run wins over the forecast date (the backend does the same)
   const values = useAsync(() => get(`/api/daily-forecast/values${qs({ run_id: runId, forecast_date: runId ? "" : date, horizon: h, group, q: qd, page })}`),
     [runId, date, h, group, qd, page]);
+  // 1.4.0 forecast source per SKU x FC (read only for a SEL2 run) and the daily Excel of the forecast day
+  const sel2 = isSel2Run(values.data?.run);
+  const lgbm = useAsync(() => (sel2 ? loadLightgbmKeys().catch(() => null) : Promise.resolve(null)), [sel2]);
+  const [expDay, setExpDay] = useState("");
+  const exportDay: string = expDay || values.data?.run?.forecast_date || status.data?.today || "";
+  const expRuns = useAsync(() => (exportDay ? get(`/api/sel2/export/${encodeURIComponent(exportDay)}/runs`) : Promise.resolve(null)), [exportDay]);
+  const [expOpen, setExpOpen] = useState(false);
+  const exp = useAction();
+  const [expJob, setExpJob] = useState<string | null>(null);     // the FORECAST_EXPORT job, followed like the refresh
+  const [expRunning, setExpRunning] = useState(false);
   const [dialog, setDialog] = useState<"OFF" | "ON" | null>(null);
   const [typed, setTyped] = useState("");
   const [refreshJob, setRefreshJob] = useState<string | null>(null);     // followed until it ends, then kept on screen
@@ -92,6 +126,29 @@ export default function DailyForecast() {
     const j = await act.run(() => post("/api/accuracy-reports/run"));
     if (j?.id) { act.setOk(`${t(j.already_active ? "sch.run_already_active" : "daily.job_started")}: ${j.id}`); setReportJob(j.id); setReportRunning(true); }
   };
+  const exportNow = async () => {
+    // 1.4.0 S5: the export is a background job (an export already queued / running is followed instead of a second one)
+    const j = await exp.run(() => post("/api/sel2/export", { date: exportDay, confirm: true }));
+    if (j?.id) {
+      setExpOpen(false);
+      exp.setOk(`${t(j.already_active ? "sch.run_already_active" : "daily.job_started")}: ${j.id}`);
+      setExpJob(j.id); setExpRunning(true);
+    }
+  };
+  const exportDone = (j: any) => {
+    setExpRunning(false); expRuns.reload();
+    const r = j?.result?.result;
+    if (j?.status === "SUCCEEDED" && r?.version != null) exp.setOk(t("dexp.done").replace("{v}", String(r.version)).replace("{n}", fmtNum(r.n_rows)));
+  };
+  const expList = list(expRuns.data?.items);
+  // the read-only remote link refuses the export routes (403): the card is not shown there
+  const expForbidden = (expRuns.error as { status?: number } | null | undefined)?.status === 403;
+  const trig = (x: string) => {
+    for (const k of [`job.trigger.${x}`, `dexp.trigger.${x}`]) if (t(k) !== k) return t(k);
+    return x;
+  };
+  const lgbmKeys = lgbm.data;
+  const showSource = isSel2Run(run) && !!lgbmKeys;
   const nFilters = [runId, date, h, group, q.trim()].filter(Boolean).length;
   const clear = () => { setRunId(""); setDate(""); setH(""); setGroup(""); setQ(""); setQd(""); };
 
@@ -212,24 +269,69 @@ export default function DailyForecast() {
             <table className="tbl" data-testid="daily-table">
               <thead><tr><th>{t("daily.made_on")}</th><th>{t("fc.date")}</th><th className="num">{t("daily.day_n")}</th><th>{t("fc.fc")}</th>
                 <th>{t("fc.sku")}</th><th>{t("fc.product_name")}</th><th>{t("daily.group")}</th><th className="num">{t("daily.lgb_raw")}</th>
-                <th className="num">{t("daily.final_qty")}</th><th>{t("fc.method")}</th><th>{t("daily.flags")}</th></tr></thead>
+                <th className="num">{t("daily.final_qty")}</th><th>{t("fc.method")}</th>{showSource && <th>{t("dexp.source_col")}</th>}
+                <th>{t("daily.flags")}</th></tr></thead>
               <tbody>
-                {list(v.rows).map((x: any) => (
+                {list(v.rows).map((x: any) => {
+                  const kind = rowSourceKind(run, lgbmKeys, x.sku_code, x.fc_code);
+                  return (
                   <tr key={`${x.fc_code}|${x.sku_code}|${x.horizon}`}>
                     <td className="nowrap">{fmtDate(x.forecast_date)}</td><td className="nowrap">{fmtDate(x.target_date)}</td>
                     <td className="num">{x.horizon}</td><td className="nowrap">{x.fc_code}</td><td className="sku">{x.sku_code}</td>
                     <td className="pname">{x.product_name ?? "—"}</td>
                     <td className="nowrap" title={x.group_code ? t(`daily.group.${x.group_code}`) : undefined}>{x.group_code ?? "—"}</td>
                     <td className="num" title={x.lgb_raw === null || x.lgb_raw === undefined ? undefined : String(x.lgb_raw)}>{fmt3(x.lgb_raw)}</td><td className="num"><b>{fmtNum(x.final_qty)}</b></td>
-                    <td><MethodLabel code={x.method} /></td><td className="small mono">{x.flags ?? ""}</td>
+                    <td><MethodLabel code={x.method} /></td>
+                    {showSource && <td className="nowrap" data-testid={`daily-src-${x.fc_code}-${x.sku_code}-${x.horizon}`}>
+                      {kind === "LIGHTGBM" ? <Pill status="OK" label={t("dexp.using_lgbm")} />
+                        : s.trial_label ? <Pill status="WARNING" label={pick(s.trial_label)} /> : <Pill status="INFO" label={t("fsrc.src.AVG_DEMAND")} />}</td>}
+                    <td className="small mono">{x.flags ?? ""}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
         <Pager page={page} total={v?.total ?? 0} size={v?.page_size ?? PAGE} unit={t("common.rows")} onPage={setPage} />
       </Card>
+
+      {!expForbidden && <Card icon="export" title={t("dexp.title")}
+        actions={<button className="prod" onClick={() => { exp.setError(null); exp.setOk(null); setExpOpen(true); }} disabled={exp.busy || expRunning || !exportDay}
+          data-testid="dexp-run" title={t("common.prod_action")}><Icon name="export" />{t("dexp.run")}</button>}>
+        <p className="small muted">{t("dexp.help")}</p>
+        <div className="row wrap">
+          <Field label={t("dexp.day")}>
+            <DateInput value={exportDay} onChange={(x) => setExpDay(x)} ariaLabel={t("dexp.day")} />
+          </Field>
+          {expList.length > 0 && (
+            <a className="btn" href={`/api/sel2/export/${encodeURIComponent(exportDay)}`} data-testid="dexp-download">
+              <Icon name="download" />{t("dexp.download").replace("{v}", String(expList[0].version))}</a>
+          )}
+        </div>
+        <ErrorBox error={expOpen ? null : exp.error} />
+        <OkBox text={exp.ok} />
+        {expJob && <JobProgress jobId={expJob} onDone={exportDone} />}
+        <ErrorBox error={expRuns.error} />
+        {expList.length > 0 ? (
+          <div className="scroll">
+            <table className="tbl small" data-testid="dexp-runs">
+              <thead><tr><th className="num">{t("dexp.version")}</th><th>{t("daily.created_at")}</th><th className="num">{t("common.rows")}</th>
+                <th>{t("dexp.state")}</th><th>{t("daily.flags")}</th><th>{t("job.trigger")}</th><th>{t("dexp.sha")}</th></tr></thead>
+              <tbody>
+                {expList.map((r: any) => (
+                  <tr key={r.id}>
+                    <td className="num">v{r.version}</td><td className="nowrap">{fmtTime(r.created_at)}</td><td className="num">{fmtNum(r.n_rows)}</td>
+                    <td>{r.is_stale ? <Pill status="STALE" label={t("dexp.stale")} /> : <Pill status="OK" label={t("dexp.fresh")} />}</td>
+                    <td className="small mono">{r.flags ?? ""}</td><td>{trig(r.trigger)}</td>
+                    <td className="small mono" title={r.sha256 ?? undefined}>{r.sha256 ? String(r.sha256).slice(0, 12) : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : !expRuns.loading && !expRuns.error && <p className="small muted" data-testid="dexp-none">{t("dexp.none")}</p>}
+      </Card>}
 
       <Card icon="report" title={t("daily.reports")}
         actions={<button className="prod" onClick={runReport} disabled={act.busy || !s.enabled || reportRunning} data-testid="daily-report-run"
@@ -289,6 +391,11 @@ export default function DailyForecast() {
           </>
         ) : <p>{t("daily.trial_on_body")}</p>}
         <ErrorBox error={act.error} />
+      </Confirm>
+      <Confirm open={expOpen} title={t("dexp.confirm_title")} onCancel={() => setExpOpen(false)} onConfirm={exportNow}
+        confirmLabel={t("dexp.run")} disabled={exp.busy || expRunning || !exportDay}>
+        <p data-testid="dexp-confirm-body">{t("dexp.confirm_body").replace("{d}", fmtDate(exportDay))}</p>
+        <ErrorBox error={exp.error} />
       </Confirm>
     </div>
   );

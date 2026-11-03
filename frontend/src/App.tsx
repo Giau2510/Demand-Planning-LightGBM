@@ -7,6 +7,7 @@ import { Icon, type IconName } from "./components/icons";
 import Dashboard from "./pages/Dashboard";
 import Results from "./pages/Results";
 import DailyForecast from "./pages/DailyForecast";
+import ForecastSource from "./pages/ForecastSource";
 import ForecastHistory from "./pages/ForecastHistory";
 import Performance from "./pages/Performance";
 import Config from "./pages/Config";
@@ -84,6 +85,7 @@ export function TrialBanner() {
 const NAV: { group: string; items: [string, string, IconName][] }[] = [
   { group: "nav.group.forecast", items: [["/", "nav.dashboard", "dashboard"], ["/results", "nav.results", "results"],
     ["/forecast-history", "nav.fhistory", "fhistory"], ["/performance", "nav.performance", "performance"], ["/daily-forecast", "nav.daily", "daily"],
+    ["/forecast-source", "nav.fsource", "model"],
     ["/snapshots", "nav.snapshots", "snapshots"], ["/methodology", "nav.methodology", "methodology"],
     ["/forecast-explainer", "nav.explainer", "explain"]] },
   { group: "nav.group.data", items: [["/import", "nav.import", "import"], ["/batches", "nav.batches", "batches"], ["/quality", "nav.quality", "quality"]] },
@@ -263,6 +265,7 @@ export default function App() {
           <Route path="/jobs" element={<Jobs />} />
           <Route path="/system" element={<System />} />
           <Route path="/daily-forecast" element={<DailyForecast />} />
+          <Route path="/forecast-source" element={<ForecastSource />} />
         </Routes>
       </Shell>
       </DailyContext.Provider>
