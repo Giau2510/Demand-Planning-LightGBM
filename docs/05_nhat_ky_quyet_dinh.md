@@ -129,3 +129,11 @@ mục này làm lịch sử batch; mục nào đã có quyết định mới hơ
   khôi phục vì job làm mới dự báo 08:12 ghi vào DB thật trong lúc sao lưu (số dòng lệch đúng phần job đó ghi).
 * **Từ giờ tới khi cài xong 1.4.0:** chủ dự án không chạy tay job nào trên production; thấy job chạy tay mới thì báo
   ngay.
+* **15:38 – Kết quả D3 (tái lập trên bản sao g1, code cuối 1.4.0):** ĐẠT cả 2 ngày theo ngưỡng gốc (LightGBM <= 1e-4,
+  mô hình khác <= 1e-9, model_used trùng). 15/07: 103.502 dòng, sai khác lớn nhất 0,0 / 0,0, model_used lệch 0, 6 ứng
+  viên sai khác 0,0. 15/10 (học mới 8 mốc 24/08–12/10): 104.307 dòng, sai khác 0,0 / 0,0, model_used lệch 0, 6 ứng viên
+  sai khác 0,0. Bộ nhớ: replay 15/07 đỉnh 1.562 MB (trước sửa > 9,8 GB, không xong); D3 15/10 đỉnh 2.961 MB (lúc học
+  V36). Mục 4 bảng O3 (khoá category) bỏ: tăng đỉnh bộ nhớ khi duyệt dòng. D3 15/10 dừng hẳn 1 lần lúc 11:56 (3 lần
+  commit < 1,5 GB vì ứng dụng khác chiếm khoảng 18 GB); chạy lại 12:46 theo lệnh chủ dự án.
+* **15:46 – sel2-day quy mô production** (bản sao, ngày 15/10, code 85625db): 441 s tổng, đỉnh bộ nhớ riêng 1.654 MB;
+  nạp 172 s, 6 ứng viên 97 s, chọn + công bố 136 s, xuất Excel 104.307 dòng 5,4 s. Đạt (đỉnh < 3 GB, Excel < 60 phút).
