@@ -2,7 +2,7 @@
 .SYNOPSIS  Build the Linux VPS release artifact on this PC: DemandForecast-<version>-<commit7>-linux-src.tar.gz (+ .sha256)
            Contents: backend\app (no caches), backend\requirements.lock.txt, the built UI (web\), scripts\vps\,
            docs\TRIEN-KHAI-VPS.md, README.md, CHANGELOG.md, VERSION, BUILD-INFO.json. No Python runtime, no data, no
-           credentials: the VPS creates a venv from the pinned lock (scripts/vps/deploy.sh). See docs\TRIEN-KHAI-VPS.md.
+           credentials: the VPS creates a venv from the pinned lock (scripts/vps/deploy.sh). See docs\03_van_hanh\TRIEN-KHAI-VPS.md.
 .PARAMETER OutDir        Where the artifact goes (default dist\).
 .PARAMETER SkipFrontend  Reuse the existing frontend\dist build.
 .PARAMETER AllowDirty    Test build from uncommitted changes (name ends with -dirty, replaced on every run).
@@ -51,7 +51,7 @@ try {
     Copy-Item -Recurse frontend\dist (Join-Path $out "web")
     New-Item -ItemType Directory -Force -Path (Join-Path $out "scripts\vps"), (Join-Path $out "docs") | Out-Null
     Get-ChildItem scripts\vps -File | Where-Object { $_.Extension -ne ".ps1" } | Copy-Item -Destination (Join-Path $out "scripts\vps")
-    Copy-Item docs\TRIEN-KHAI-VPS.md (Join-Path $out "docs")
+    Copy-Item docs\03_van_hanh\TRIEN-KHAI-VPS.md (Join-Path $out "docs")
     Copy-Item README.md, CHANGELOG.md $out
     Set-Content -Path (Join-Path $out "VERSION") -Value $version -Encoding ASCII -NoNewline
     $info = [ordered]@{ version = $version; commit = $commit; dirty = $dirty; target = "linux x86_64, CPython 3.14, venv from backend/requirements.lock.txt";

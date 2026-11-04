@@ -50,6 +50,8 @@ TABLE_ID_RE = re.compile(r"^([a-z][a-z0-9\-]{4,61}[a-z0-9])\.([A-Za-z_][A-Za-z0-
 # Essential: SKU, FC, quantity and the day of the line (order_date, or created_at when only a timestamp exists).
 D0_FIELDS = ["sku_id", "fc_id", "order_qty", "order_date", "created_at", "order_id", "source_updated_at"]
 D0_ESSENTIAL = ("sku_id", "fc_id", "order_qty")
+# 1.3.1 (B11): name of a model feature in the feature table (ml/features.py names)
+FEATURE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
 class GeneralSettings(BaseModel):
@@ -95,6 +97,28 @@ class QualitySettings(BaseModel):
     mape_min_actual: float = Field(1.0, gt=0)
     approved_by_business: bool = False
     below_threshold_policy: Literal["PUBLISH_WITH_WARNING", "BLOCK"] = "PUBLISH_WITH_WARNING"
+
+
+class FeatureRule(BaseModel):
+    """1.3.1 (B11): one row of the feature table. enabled=False drops the feature from the model input; contri != 1 is
+    passed to LightGBM as its feature_contri. The default row (on, 1.0) is the behaviour before 1.3.1."""
+    enabled: bool = True
+    contri: float = Field(1.0, gt=0, le=10)
+
+
+def _check_feature_table(table: dict[str, FeatureRule]) -> dict[str, FeatureRule]:
+    """1.3.1 (B11): rules of a feature table (section feature_table and the snapshot model.feature_table): sku_code is
+    switched by model.feature_sku_code (B1), never by the table; the horizon of the DIRECT model is never switched off."""
+    for name, rule in table.items():
+        if not FEATURE_NAME_RE.match(name):
+            raise ValueError(f"FEATURE_UNKNOWN: invalid feature name {name!r} (lowercase letters, digits and '_', "
+                             "starting with a letter, at most 64 characters)")
+        if name == "sku_code":
+            raise ValueError("FEATURE_NOT_IN_TABLE: sku_code is switched by model.feature_sku_code, not by the feature "
+                             "table")
+        if name == "horizon" and not rule.enabled:
+            raise ValueError("FEATURE_REQUIRED: horizon cannot be switched off")
+    return table
 
 
 class ModelSettings(BaseModel):
@@ -144,6 +168,20 @@ class ModelSettings(BaseModel):
     forecast_strategy: Literal["RECURSIVE", "DIRECT"] = "RECURSIVE"
     direct_origins: int = Field(12, ge=1, le=52)
     direct_origin_step_days: int = Field(7, ge=1, le=30)
+    # 1.3.1 (B1): DIRECT only - training rows whose horizon <= horizon_weight_cutoff get the sample weight
+    # horizon_weight_short, the other rows 1.0 (chosen configuration: 3.0 for horizon <= 7). Both None = no weight
+    # (every model before; left out of the config fingerprint so that it stays the same)
+    horizon_weight_short: float | None = Field(None, gt=0, le=100)
+    horizon_weight_cutoff: int | None = Field(None, ge=1)
+    # 1.3.1 (B1): sku_code as a model input. True = every model before 1.3.1 (left out of the fingerprint when True)
+    feature_sku_code: bool = True
+    # 1.3.1 (B2): fallback rules INACTIVE -> NEW_SERIES -> INTERMITTENT. False = every series is forecast by LightGBM
+    # (the explanation values are still computed). True = every model before 1.3.1
+    fallback_enabled: bool = True
+    # 1.3.1 (B11): the non-default rows of the feature table (section feature_table), copied by the training on the copy
+    # stored with its run; never a user setting - PUT /api/settings/model refuses a value (FEATURE_TABLE_SET_BY_TRAINING).
+    # None = every row at its default (every model before 1.3.1)
+    feature_table: dict[str, FeatureRule] | None = None
 
     @model_validator(mode="after")
     def _feature_groups(self):
@@ -152,6 +190,21 @@ class ModelSettings(BaseModel):
         if not (self.feature_lags or self.feature_rolling or self.feature_price):
             raise ValueError("FEATURE_GROUPS_EMPTY: turn on 'historical demand' or 'price'")
         return self
+
+    @model_validator(mode="after")
+    def _horizon_weight(self):
+        if (self.horizon_weight_short is None) != (self.horizon_weight_cutoff is None):
+            raise ValueError("HORIZON_WEIGHT_INCOMPLETE: set both horizon_weight_short and horizon_weight_cutoff, "
+                             "or neither")
+        # a RECURSIVE training ignores them, but they would still change the config fingerprint
+        if self.horizon_weight_short is not None and self.forecast_strategy != "DIRECT":
+            raise ValueError("HORIZON_WEIGHT_DIRECT_ONLY: horizon weights apply to forecast_strategy DIRECT only")
+        return self
+
+    @field_validator("feature_table")
+    @classmethod
+    def _feature_table(cls, v):
+        return v if v is None else _check_feature_table(v)
 
 
 class ImportSettings(BaseModel):
@@ -247,6 +300,17 @@ class ScheduleSettings(BaseModel):
     # Vietnam calendar dates, so Asia/Ho_Chi_Minh is the only accepted value
     eod_timezone: str = DAY_END_TIMEZONE
     close_timezone: str = DAY_END_TIMEZONE
+    # 1.3.1: daily forecast flows, OFF by default (a stored schedule without these keys reads OFF): the forecast refresh
+    # after the day's successful D-1 (retried every refresh_retry_minutes until refresh_deadline, Vietnam time; then one
+    # STALE_FORECAST) and the accuracy report (ISO weekday 1 = Monday ... 7 = Sunday, at report_time)
+    refresh_enabled: bool = False
+    refresh_enabled_at: str | None = None
+    refresh_deadline: str = "12:00"
+    refresh_retry_minutes: int = Field(10, ge=1, le=60)
+    report_enabled: bool = False
+    report_enabled_at: str | None = None
+    report_weekday: int = Field(1, ge=1, le=7)
+    report_time: str = "09:30"
 
     @field_validator("eod_timezone", "close_timezone")
     @classmethod
@@ -255,7 +319,8 @@ class ScheduleSettings(BaseModel):
             raise ValueError(f"timezone must be {DAY_END_TIMEZONE} (business dates are Vietnam calendar dates)")
         return v
 
-    @field_validator("d1_signal_poll_start", "d1_fallback_time", "train_time", "eod_time", "close_time")
+    @field_validator("d1_signal_poll_start", "d1_fallback_time", "train_time", "eod_time", "close_time",
+                     "refresh_deadline", "report_time")
     @classmethod
     def _hhmm(cls, v):
         if not HHMM.match(v):
@@ -560,6 +625,184 @@ class SqlSourcesSettings(BaseModel):
     d0: SqlSource = Field(default_factory=_d0_seed)
 
 
+class FeatureTableSettings(BaseModel):
+    """1.3.1 (B11): feature table, feature name -> {enabled, contri}; a missing name = the default row (on, 1.0).
+    Changed only through PUT /api/feature-table (confirmation, history + audit), never by the generic settings editor.
+    Takes effect at the next training, which copies the non-default rows into model.feature_table of its run."""
+    features: dict[str, FeatureRule] = Field(default_factory=dict)
+
+    @field_validator("features")
+    @classmethod
+    def _features(cls, v):
+        return _check_feature_table(v)
+
+
+class DailyForecastSettings(BaseModel):
+    """1.3.1 (B3-B12): daily forecast refresh with the model in use, its log, the open hours read, the SKU groups and the
+    accuracy / feature reports (docs/ke_hoach_lgbm_chot.md). OFF by default: nothing runs and nothing is written. The
+    trial mode ("Chạy thử – chưa dùng để mua hàng") changes only through its own confirmed endpoint."""
+    enabled: bool = False
+    trial_mode: bool = True
+    # B3: published quantity = 0 below the threshold, otherwise rounded up
+    rounding_threshold: float = Field(0.2, ge=0, le=1)
+    # B8: values and actuals older than this many days are deleted after a successful refresh (run records are kept)
+    log_retention_days: int = Field(120, ge=14, le=3650)
+    # B6: BigQuery open-hours table (read-only) and the seller filter of the read
+    openhours_table: str = "lakehouse-prod-394907.gold_buymed_vn2.openhours_by_sku"
+    seller_code: str = "MEDX"
+    # B9: accuracy reports: <reports_dir>\<report_subdir>\
+    report_subdir: str = "theo-doi"
+
+    @field_validator("openhours_table")
+    @classmethod
+    def _table(cls, v):
+        v = (v or "").strip()
+        if not TABLE_ID_RE.match(v):
+            raise ValueError("openhours_table must be project.dataset.table")
+        return v
+
+    @field_validator("seller_code", "report_subdir")
+    @classmethod
+    def _code(cls, v):
+        if not re.match(r"^[A-Za-z0-9_\-]{1,64}$", v or ""):
+            raise ValueError("only letters, digits, '-' and '_' are allowed (1-64 characters)")
+        return v
+
+
+# 1.4.0 (SEL2): the candidate forecasts of every SKU x FC, exact names used in the tables and files
+CANDIDATE_MODELS = ("MOC", "V33_L112", "V36_two_stage@0.6", "TSB", "DOW4", "AVG7")
+SELLER_RULE_RE = re.compile(r"^(PENDING|SUM|MAX|SELLER:[A-Za-z0-9_\-]{1,64})$")
+SUBDIR_PART_RE = re.compile(r"^[A-Za-z0-9_\-. ]{1,64}$")
+
+
+def _iso_date(v: str, name: str) -> str:
+    from datetime import date as _d
+    if not v or not DATE_RE.match(v):
+        raise ValueError(f"{name} must be YYYY-MM-DD")
+    try:
+        _d.fromisoformat(v)
+    except ValueError as e:
+        raise ValueError(f"{name} is not a valid date: {v}") from e
+    return v
+
+
+class Sel2PipelineSettings(BaseModel):
+    """1.4.0 (SEL2): daily pipeline of 6 candidate forecasts per SKU x FC (CANDIDATE_MODELS), the per-SKU selection
+    SEL2, the published integer quantity and the daily Excel export; it replaces the 1.3.1 daily training + refresh.
+    ON by default. enabled = False is the EMERGENCY switch: it restores the exact 1.3.1 behaviour (daily training and
+    forecast refresh of the model in use; nothing of this section runs or is written)."""
+    enabled: bool = True
+    # selection: probability cut-off of the two-stage candidate (fixed: it is part of the candidate name
+    # V36_two_stage@0.6 stored in the tables), selection window and minimum days of a series, candidate used when the
+    # selection cannot choose
+    p_threshold: Literal[0.6] = 0.6
+    window_days: int = Field(28, ge=1, le=365)
+    min_days: int = Field(14, ge=1, le=365)
+    fallback_model: str = "V33_L112"
+    # period of the selection: rolling (ROLLING_B7) or a fixed period (both dates required, Vietnam days)
+    group_mode: Literal["ROLLING_B7", "FIXED"] = "ROLLING_B7"
+    group_fixed_start: str | None = None
+    group_fixed_end: str | None = None
+    # days of candidate forecasts kept (at least the 28-day selection window + the 7 horizon days)
+    retention_days: int = Field(120, ge=35, le=3650)
+    # daily Excel: <data folder>\<export_subdir>\, deadlines in Vietnam time (prev_week_deadline before export_deadline)
+    export_subdir: str = "exports\\du_bao"
+    export_deadline: str = "06:30"
+    prev_week_deadline: str = "06:20"
+    # re-export of the day after the AVG_DEMAND table refresh (HH:MM, Vietnam time; None = off, pending owner approval):
+    # from that time, once per day, a new Excel version when the table changed after the read used by the latest export
+    avg_reexport_time: str | None = None
+    # weekly retraining of the LightGBM candidates (ISO weekday 1 = Monday ... 7 = Sunday)
+    retrain_weekday: int = Field(1, ge=1, le=7)
+    # time limit (seconds) of the CANDIDATE_TRAIN child process (instead of schedule.timeout_seconds): 3 trainings
+    train_timeout_seconds: int = Field(10800, ge=600, le=43200)
+    # lag of the BigQuery open hours in days (0 = off) and the first day read
+    open_hours_lag_days: int = Field(2, ge=0, le=2)
+    open_hours_history_start: str = "2026-01-01"
+    # TSB candidate (Teunter-Syntetos-Babai): smoothing of the demand probability and size, history start
+    tsb_alpha: float = Field(0.1, gt=0, le=1)
+    tsb_beta: float = Field(0.1, gt=0, le=1)
+    tsb_start: str = "2026-01-01"
+    # AVG_DEMAND source (read-only BigQuery): current and historical tables, rows per seller
+    avg_demand_table: str = "lakehouse-prod-394907.gold_buymed_vn2.fact_avg_demand_sku"
+    avg_demand_hist_table: str = "lakehouse-prod-394907.gold_buymed_vn2.fact_avg_demand_sku_historical"
+    # how the seller rows of a SKU x FC x day become one value: PENDING = not approved by the owner yet, SUM, MAX, or
+    # SELLER:<CODE> (one seller only)
+    avg_seller_rule: str = "PENDING"
+
+    @field_validator("fallback_model")
+    @classmethod
+    def _model(cls, v):
+        if v not in CANDIDATE_MODELS:
+            raise ValueError(f"fallback_model must be one of {', '.join(CANDIDATE_MODELS)}")
+        return v
+
+    @field_validator("group_fixed_start", "group_fixed_end")
+    @classmethod
+    def _group_date(cls, v, info):
+        return None if v is None else _iso_date(v, info.field_name)
+
+    @field_validator("open_hours_history_start", "tsb_start")
+    @classmethod
+    def _date(cls, v, info):
+        return _iso_date(v, info.field_name)
+
+    @field_validator("export_subdir")
+    @classmethod
+    def _subdir(cls, v):
+        # relative to the data folder: no drive, no root, no '..' (never written outside the data folder)
+        parts = (v or "").replace("/", "\\").split("\\")
+        if not v or any(not SUBDIR_PART_RE.match(p) or p.strip(" .") == "" for p in parts):
+            raise ValueError("export_subdir must be a relative folder (letters, digits, ' ', '.', '-', '_'; "
+                             "no drive, no leading '\\', no '..')")
+        return v
+
+    @field_validator("export_deadline", "prev_week_deadline")
+    @classmethod
+    def _hhmm(cls, v):
+        if not HHMM.match(v):
+            raise ValueError("time must be HH:MM (24h)")
+        return v
+
+    @field_validator("avg_reexport_time")
+    @classmethod
+    def _hhmm_opt(cls, v):
+        if v is not None and not HHMM.match(v):
+            raise ValueError("avg_reexport_time must be HH:MM (24h) or empty")
+        return v
+
+    @field_validator("avg_demand_table", "avg_demand_hist_table")
+    @classmethod
+    def _table(cls, v, info):
+        v = (v or "").strip()
+        if not TABLE_ID_RE.match(v):
+            raise ValueError(f"{info.field_name} must be project.dataset.table")
+        return v
+
+    @field_validator("avg_seller_rule")
+    @classmethod
+    def _seller_rule(cls, v):
+        if not SELLER_RULE_RE.match(v or ""):
+            raise ValueError("avg_seller_rule must be PENDING, SUM, MAX or SELLER:<CODE>")
+        return v
+
+    @model_validator(mode="after")
+    def _consistent(self):
+        if self.min_days > self.window_days:
+            raise ValueError(f"min_days ({self.min_days}) must not exceed window_days ({self.window_days})")
+        if self.group_mode == "FIXED":
+            if not (self.group_fixed_start and self.group_fixed_end):
+                raise ValueError("group_mode FIXED needs group_fixed_start and group_fixed_end")
+            if self.group_fixed_start > self.group_fixed_end:
+                raise ValueError("group_fixed_start must not be after group_fixed_end")
+        if self.prev_week_deadline >= self.export_deadline:
+            raise ValueError("prev_week_deadline must be before export_deadline")
+        if self.retention_days < self.window_days + 7:
+            raise ValueError(f"retention_days ({self.retention_days}) must be at least window_days + 7 "
+                             f"({self.window_days + 7}): the selection reads the forecasts of the last window + 7 days")
+        return self
+
+
 SECTIONS: dict[str, type[BaseModel]] = {
     "sql_sources": SqlSourcesSettings,
     "general": GeneralSettings,
@@ -570,6 +813,9 @@ SECTIONS: dict[str, type[BaseModel]] = {
     "data_policy": DataPolicySettings,
     "schedule": ScheduleSettings,
     "bigquery": BigQuerySettings,
+    "daily_forecast": DailyForecastSettings,        # 1.3.1
+    "feature_table": FeatureTableSettings,          # 1.3.1
+    "sel2_pipeline": Sel2PipelineSettings,          # 1.4.0
 }
 
 

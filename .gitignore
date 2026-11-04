@@ -47,3 +47,16 @@ client_secret*.json
 *.tgz
 # personal tool settings
 .claude/settings.local.json
+
+# kept outside Git (owner 04/11): the real-data test sample and the remote-access tooling
+/backend/tests/fixtures/sel2/
+*.parquet
+*.npz
+/scripts/remote/
+/Start-DemandForecast-Remote.bat
+/Stop-DemandForecast-Remote.bat
+/Setup-DemandForecast-Link.bat
+/REMOTE_ACCESS_GUIDE.md
+/backend/tests/test_v121_remote_proxy.py
+/backend/tests/test_remote_link.py
+/docs/03_van_hanh/link_tu_xa.md

@@ -21,7 +21,8 @@ from . import progress, resources
 log = logging.getLogger("df.jobs")
 OWNER = f"pid{os.getpid()}-{secrets.token_hex(3)}"
 # jobs that build the whole panel / train boosters: never two at the same time in this process (RAM of a desktop PC)
-HEAVY_TYPES = ("TRAIN_PUBLISH", "FORECAST_EXTEND")
+# 1.3.1: FORECAST_REFRESH (daily forecast refresh with the model in use) builds a whole panel too
+HEAVY_TYPES = ("TRAIN_PUBLISH", "FORECAST_EXTEND", "FORECAST_REFRESH", "CANDIDATE_TRAIN")
 # memory guard: a heavy job starts when the commit headroom is at least this factor x the largest private-memory growth
 # measured on the last runs of the same job type (no absolute threshold: the figure comes from this machine's own runs)
 MEMORY_MARGIN = 1.25
@@ -29,12 +30,28 @@ MEMORY_HISTORY_RUNS = 10
 _live: dict[str, tuple[str, bool, threading.Thread]] = {}     # job id -> (job type, heavy, thread) running in this process
 _live_lock = threading.Lock()
 
-JOB_TYPES = ("D1_SYNC", "D0_SYNC", "TRAIN_PUBLISH", "FORECAST_EXTEND", "EOD_FORECAST_SNAPSHOT", "ACTUAL_CLOSE")
+JOB_TYPES = ("D1_SYNC", "D0_SYNC", "TRAIN_PUBLISH", "FORECAST_EXTEND", "EOD_FORECAST_SNAPSHOT", "ACTUAL_CLOSE",
+             "FORECAST_REFRESH", "ACCURACY_REPORT", "CANDIDATE_TRAIN", "FORECAST_EXPORT")
 # each automatic flow has its own switch (1.1.8); FORECAST_EXTEND is manual only
+# 1.4.0 (sel2_pipeline.enabled): CANDIDATE_TRAIN = weekly training of the SEL2 candidates (switch of the training flow),
+# FORECAST_EXPORT = stale / AVG_DEMAND re-export of the daily Excel (switch of the refresh flow)
 FLOW_FLAG = {"D1_SYNC": "d1_enabled", "D0_SYNC": "d0_enabled", "TRAIN_PUBLISH": "train_enabled",
-             "EOD_FORECAST_SNAPSHOT": "eod_enabled", "ACTUAL_CLOSE": "close_enabled"}
+             "EOD_FORECAST_SNAPSHOT": "eod_enabled", "ACTUAL_CLOSE": "close_enabled",
+             "FORECAST_REFRESH": "refresh_enabled", "ACCURACY_REPORT": "report_enabled",
+             "CANDIDATE_TRAIN": "train_enabled", "FORECAST_EXPORT": "refresh_enabled"}
 FLOW_OFF_CODE = {"D1_SYNC": "D1_SCHEDULE_DISABLED", "D0_SYNC": "D0_SCHEDULE_DISABLED", "TRAIN_PUBLISH": "TRAIN_SCHEDULE_DISABLED",
-                 "EOD_FORECAST_SNAPSHOT": "EOD_SCHEDULE_DISABLED", "ACTUAL_CLOSE": "CLOSE_SCHEDULE_DISABLED"}
+                 "EOD_FORECAST_SNAPSHOT": "EOD_SCHEDULE_DISABLED", "ACTUAL_CLOSE": "CLOSE_SCHEDULE_DISABLED",
+                 "FORECAST_REFRESH": "REFRESH_SCHEDULE_DISABLED", "ACCURACY_REPORT": "REPORT_SCHEDULE_DISABLED",
+                 "CANDIDATE_TRAIN": "TRAIN_SCHEDULE_DISABLED", "FORECAST_EXPORT": "REFRESH_SCHEDULE_DISABLED"}
+SEL2_TYPES = ("CANDIDATE_TRAIN", "FORECAST_EXPORT")     # 1.4.0: run only while sel2_pipeline.enabled is True
+SEL2_TRAIN_MARGIN = 120         # seconds over sel2_pipeline.train_timeout_seconds before the runner's own TIMEOUT
+# 1.3.1: a forecast refresh attempt is one job row; its result gives the row status (NOT_READY / SKIPPED -> SKIPPED, never
+# retried by the runner: the schedule makes the next attempt every refresh_retry_minutes until refresh_deadline)
+REFRESH_STATUS = {"PUBLISHED": "SUCCEEDED", "FAILED": "FAILED"}
+# 1.3.1: the weekly accuracy report's result status -> job status (an unknown status is recorded as FAILED)
+REPORT_STATUS = {"DONE": "SUCCEEDED", "SKIPPED": "SKIPPED", "FAILED": "FAILED"}
+# jobs whose handler takes the cancel callable
+CANCELLABLE = ("TRAIN_PUBLISH", "FORECAST_EXTEND", "FORECAST_REFRESH", "CANDIDATE_TRAIN")
 _STATUS_STAGE = {"RUNNING": "STARTED", "SUCCEEDED": "DONE", "FAILED": "FAILED", "SKIPPED": "SKIPPED",
                  "RETRY_WAIT": "WAITING_RETRY"}
 # "Nothing to do until the user configures something" -> SKIPPED with a reason, never FAILED + ERROR alert.
@@ -72,8 +89,39 @@ def _handlers():
         from ..actual_close import run_job
         progress.set_stage(job_id, "CLOSING")
         return run_job(job_id, params)
+
+    def refresh(job_id, params, cancel=None):
+        from ..ml.sel2 import jobs as sel2_jobs
+        if sel2_jobs.enabled():     # 1.4.0: the SEL2 pipeline in a child process replaces the 1.3.1 refresh
+            return sel2_jobs.refresh(job_id, params, cancel=cancel, progress=progress.reporter(job_id),
+                                     trigger=_trigger_of(job_id))
+        from ..ml import daily_refresh
+        return daily_refresh.run(params.get("business_date"), job_id, cancel=cancel, progress=progress.reporter(job_id),
+                                 trigger=_trigger_of(job_id))
+
+    def candidate_train(job_id, params, cancel=None):
+        from ..ml.sel2 import jobs as sel2_jobs
+        return sel2_jobs.train(job_id, params, cancel=cancel, progress=progress.reporter(job_id))
+
+    def export(job_id, params):
+        from ..ml.sel2 import jobs as sel2_jobs
+        progress.set_stage(job_id, "EXPORTING")
+        return sel2_jobs.export_job(job_id, params)
+
+    def report(job_id, params):
+        from ..ml import accuracy_report
+        return accuracy_report.run(business_date=params.get("business_date"), job_id=job_id,
+                                   trigger=_trigger_of(job_id), progress=progress.reporter(job_id))
     return {"D0_SYNC": d0, "D1_SYNC": d1, "TRAIN_PUBLISH": train, "FORECAST_EXTEND": extend,
-            "EOD_FORECAST_SNAPSHOT": eod, "ACTUAL_CLOSE": close}
+            "EOD_FORECAST_SNAPSHOT": eod, "ACTUAL_CLOSE": close, "FORECAST_REFRESH": refresh, "ACCURACY_REPORT": report,
+            "CANDIDATE_TRAIN": candidate_train, "FORECAST_EXPORT": export}
+
+
+def _trigger_of(job_id: str) -> str:
+    """1.3.1: trigger of a job row (SCHEDULE / CATCH_UP / RETRY / MANUAL), recorded with the refresh / report run."""
+    with db.read() as c:
+        r = c.execute("SELECT trigger FROM job_runs WHERE id=?", (job_id,)).fetchone()
+    return (r[0] if r else None) or "SCHEDULE"
 
 
 # ---------------------------------------------------------------- locks
@@ -119,8 +167,15 @@ def _busy_reason(job_type: str, heavy: bool) -> str | None:
         if j["job_type"] == job_type:
             return f"{job_type} {j['job_id']} is still running"
         if heavy and j["heavy"]:
+            if job_type == "FORECAST_REFRESH" and j["job_type"] == "CANDIDATE_TRAIN" and _sel2_overlap():
+                continue    # 1.4.0: the day's SEL2 run after prev_week_deadline, next to the weekly training
             return f"heavy job {j['job_type']} {j['job_id']} is running"
     return None
+
+
+def _sel2_overlap() -> bool:
+    from ..ml.sel2 import jobs as sel2_jobs
+    return sel2_jobs.may_overlap_training()
 
 
 def memory_need_mb(job_type: str) -> float | None:
@@ -205,6 +260,62 @@ def record_skipped(job_type: str, key: str, trigger: str, scheduled_for: str | N
         return db.one(c, "SELECT * FROM job_runs WHERE id=?", (jid,))
 
 
+def refresh_key(business_date: str, suffix: str) -> str:
+    """1.3.1: idempotency key of one forecast refresh attempt of a business date (Vietnam)."""
+    return f"FORECAST_REFRESH:{business_date}:{suffix}"
+
+
+def record_stale(key: str, business_date: str, deadline: str) -> dict:
+    """1.3.1: no refreshed forecast PUBLISHED for business_date by refresh_deadline - ONE record (FAILED STALE_FORECAST)
+    and ONE ERROR alert per day (idempotency key). Nothing else changes: the last published refreshed numbers stay."""
+    with db.tx() as c:
+        r = db.one(c, "SELECT * FROM job_runs WHERE idempotency_key=?", (key,))
+        if r:
+            return r
+        jid = db.new_id("JOB")
+        c.execute("INSERT INTO job_runs(id, job_type, idempotency_key, trigger, scheduled_for, status, attempt, "
+                  "max_attempts, created_at, finished_at, reason_code, error, result_json) "
+                  "VALUES (?, 'FORECAST_REFRESH', ?, 'SCHEDULE', ?, 'FAILED', 0, 0, ?, ?, 'STALE_FORECAST', ?, ?)",
+                  (jid, key, deadline, now_iso(), now_iso(), f"no refreshed forecast published for {business_date} by "
+                   f"{deadline}", json.dumps({"params": {"business_date": business_date}})))
+        db.alert(c, "ERROR", "STALE_FORECAST", {"business_date": business_date, "deadline": deadline, "job_id": jid},
+                 "job", jid)
+        return db.one(c, "SELECT * FROM job_runs WHERE id=?", (jid,))
+
+
+def close_waiting(key: str, reason: str) -> dict | None:
+    """1.3.1: a job row still waiting (PENDING / RETRY_WAIT) that may no longer run (e.g. a forecast refresh after its
+    deadline) is closed SKIPPED with `reason`; a row that has started or ended meanwhile is left as it is."""
+    with db.tx() as c:
+        r = db.one(c, "SELECT id FROM job_runs WHERE idempotency_key=? AND status IN ('PENDING', 'RETRY_WAIT')", (key,))
+        if not r:
+            return None
+        c.execute("UPDATE job_runs SET status='SKIPPED', finished_at=?, reason_code=?, next_attempt_at=NULL "
+                  "WHERE id=? AND status IN ('PENDING', 'RETRY_WAIT')", (now_iso(), reason, r["id"]))
+    progress.set_stage(r["id"], "SKIPPED", reason)
+    log.info("waiting job closed", extra={"ctx": {"job_id": r["id"], "key": key, "reason": reason}})
+    return _row(r["id"])
+
+
+def run_refresh_now(business_date: str | None = None) -> dict:
+    """1.3.1: manual forecast refresh (trigger MANUAL, also with the schedule switch OFF; daily_forecast.enabled still
+    applies). Runs in the calling thread; an API runs it in a background thread. Default business date = today
+    (Vietnam)."""
+    from ..timeutil import today_vn
+    d = business_date or str(today_vn())
+    return execute("FORECAST_REFRESH", refresh_key(d, f"MANUAL-{secrets.token_hex(4)}"), "MANUAL", None,
+                   {"business_date": d})
+
+
+def run_report_now(business_date: str | None = None) -> dict:
+    """1.3.1: manual accuracy report (trigger MANUAL, also with the schedule switch OFF; daily_forecast.enabled still
+    applies). Runs in the calling thread. Default business date = today (Vietnam)."""
+    from ..timeutil import today_vn
+    d = business_date or str(today_vn())
+    return execute("ACCURACY_REPORT", f"ACCURACY_REPORT:{d}:MANUAL-{secrets.token_hex(4)}", "MANUAL", None,
+                   {"business_date": d})
+
+
 def _update(jid: str, **cols) -> None:
     sets = ", ".join(f"{k}=?" for k in cols)
     with db.tx() as c:
@@ -233,11 +344,17 @@ def execute(job_type: str, key: str, trigger: str = "MANUAL", scheduled_for: str
         _update(row["id"], status="SKIPPED", finished_at=now_iso(), reason_code=FLOW_OFF_CODE[job_type],
                 error=f"schedule.{flag}=false")
         return _row(row["id"])
+    sel2_skip = _sel2_skip(job_type, row["trigger"])
+    if sel2_skip:
+        _update(row["id"], status="SKIPPED", finished_at=now_iso(), reason_code=sel2_skip,
+                error=f"sel2_pipeline.enabled={'false' if sel2_skip == 'SEL2_DISABLED' else 'true'}")
+        return _row(row["id"])
     params = (json.loads(row["result_json"] or "{}").get("params") or params)
     heavy = is_heavy(job_type, params)
     busy = _busy_reason(job_type, heavy)
     lock = f"job:{job_type}"
-    if busy or not acquire_lock(lock, sched.timeout_seconds + 120):
+    limit = job_timeout(job_type, sched)
+    if busy or not acquire_lock(lock, limit + 120):
         if row["status"] == "PENDING":
             _update(row["id"], status="RETRY_WAIT", reason_code="LOCKED", error=busy,
                     next_attempt_at=(now_utc() + timedelta(seconds=60)).isoformat())
@@ -267,7 +384,7 @@ def execute(job_type: str, key: str, trigger: str = "MANUAL", scheduled_for: str
     def target():
         try:
             fn = _handlers()[job_type]
-            if job_type in ("TRAIN_PUBLISH", "FORECAST_EXTEND"):
+            if job_type in CANCELLABLE:
                 box["result"] = fn(row["id"], params, cancel=cancel_evt.is_set)
             else:
                 box["result"] = fn(row["id"], params)
@@ -284,7 +401,7 @@ def execute(job_type: str, key: str, trigger: str = "MANUAL", scheduled_for: str
     except Exception:  # noqa: BLE001 - the job runs without figures rather than not at all
         log.warning("job meter not started", exc_info=True, extra={"ctx": {"job_id": row["id"]}})
     th.start()
-    th.join(sched.timeout_seconds)
+    th.join(limit)
     alive = th.is_alive()
     try:
         res_info = {**meter.stop().result(), "attempt": attempt, "heavy": heavy,
@@ -304,12 +421,16 @@ def execute(job_type: str, key: str, trigger: str = "MANUAL", scheduled_for: str
     try:
         if alive:
             cancel_evt.set()
-            return _fail(row, attempt, sched, "TIMEOUT", f"exceeded {sched.timeout_seconds}s",
+            return _fail(row, attempt, sched, "TIMEOUT", f"exceeded {limit}s",
                          result_json=_result_json(params, None, res_info))
         err = box.get("error")
         if err is None:
             res = box.get("result") or {}
             status = "SKIPPED" if res.get("status") == "SKIPPED" else "SUCCEEDED"
+            if job_type == "FORECAST_REFRESH":
+                status = REFRESH_STATUS.get(res.get("status"), "SKIPPED")
+            elif job_type == "ACCURACY_REPORT":
+                status = REPORT_STATUS.get(res.get("status"), "FAILED")
             _update(row["id"], status=status, finished_at=now_iso(), reason_code=res.get("reason_code"),
                     result_json=_result_json(params, res, res_info), next_attempt_at=None)
             log.info("job finished", extra={"ctx": {"job_id": row["id"], "status": status,
@@ -335,17 +456,38 @@ def execute(job_type: str, key: str, trigger: str = "MANUAL", scheduled_for: str
             return _row(row["id"])
         if isinstance(err, AppError):
             return _fail(row, attempt, sched, err.code, err.detail or err.code,
-                         retry=err.code in ("BQ_ERROR", "BQ_AUTH_MISSING"),
+                         retry=err.code in ("BQ_ERROR", "BQ_AUTH_MISSING") or bool(getattr(err, "retryable", False)),
                          result_json=_result_json(params, None, res_info))
         log.error("job error", exc_info=err, extra={"ctx": {"job_id": row["id"]}})
         return _fail(row, attempt, sched, "JOB_ERROR", f"{type(err).__name__}: {err}",
                      result_json=_result_json(params, None, res_info))
     finally:
         if alive:   # the lock stays with the still running thread; released when it ends
-            threading.Thread(target=_reap, args=(th, lock, sched.timeout_seconds + 120, row["id"], job_type),
+            threading.Thread(target=_reap, args=(th, lock, limit + 120, row["id"], job_type),
                              name=f"reap-{row['id']}", daemon=True).start()
         else:
             release_lock(lock)
+
+
+def job_timeout(job_type: str, sched) -> int:
+    """Seconds a job thread may run before TIMEOUT: schedule.timeout_seconds; 1.4.0 CANDIDATE_TRAIN:
+    sel2_pipeline.train_timeout_seconds + SEL2_TRAIN_MARGIN (the training child's own timeout, the same setting, ends
+    and kills it first)."""
+    if job_type == "CANDIDATE_TRAIN":
+        return int(ss.get("sel2_pipeline").train_timeout_seconds) + SEL2_TRAIN_MARGIN
+    return sched.timeout_seconds
+
+
+def _sel2_skip(job_type: str, trigger: str) -> str | None:
+    """1.4.0 emergency switch: a SEL2 job type never runs with sel2_pipeline.enabled False (SEL2_DISABLED); a scheduled
+    1.3.1 TRAIN_PUBLISH (also its retries) does not run while it is True (SEL2_PIPELINE_ACTIVE; a manual one still does)."""
+    if job_type not in SEL2_TYPES and not (job_type == "TRAIN_PUBLISH" and trigger != "MANUAL"):
+        return None
+    from ..ml.sel2 import jobs as sel2_jobs
+    on = sel2_jobs.enabled()
+    if job_type in SEL2_TYPES:
+        return None if on else "SEL2_DISABLED"
+    return sel2_jobs.PIPELINE_ACTIVE if on else None
 
 
 def _result_json(params: dict, result: dict | None, res_info: dict) -> str:

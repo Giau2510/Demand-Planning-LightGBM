@@ -1,0 +1,313 @@
+# Vận hành: sao lưu, khôi phục, nâng cấp, rollback, khắc phục sự cố
+
+Các lệnh dưới đây chạy trong thư mục chương trình (gói cài: `%LOCALAPPDATA%\Programs\DemandForecast\<phiên bản>`),
+bằng PowerShell: `powershell -ExecutionPolicy Bypass -File scripts\<tên>.ps1`.
+
+## Khởi động / dừng
+
+| Việc | Lệnh |
+|---|---|
+| Khởi động (mở trình duyệt) | `Start.bat` hoặc `scripts\start.ps1` (`-NoBrowser` để không mở trình duyệt) |
+| Dừng an toàn | `Stop.bat` hoặc `scripts\stop.ps1` (gọi API tắt có token cục bộ, sau đó dừng tiến trình nếu cần) |
+| Kiểm tra môi trường | `Check-Environment.bat` hoặc `scripts\check-env.ps1` |
+| Tự chạy khi đăng nhập | `scripts\register-autostart.ps1` / gỡ `scripts\unregister-autostart.ps1` |
+
+Đổi cổng: tạo `%LOCALAPPDATA%\DemandForecast\app.env` (mẫu `config\app.env.example`) với `DF_PORT=8770`.
+
+### Link xem từ xa (chỉ đọc, 1.2.1)
+
+Có thể tạo link HTTPS để người khác xem dashboard bằng Chrome mà không cần VPS:
+- **Mở link:** bấm đúp `Start-DemandForecast-Remote.bat` (thư mục dự án). Launcher dùng Cloudflare Quick Tunnel tới một
+  proxy **chỉ đọc**; người xem không chạy, lưu hay nhập được gì.
+- **Dừng:** `Stop-DemandForecast-Remote.bat`. Lệnh này chỉ dừng tunnel và proxy, ứng dụng vẫn chạy.
+- **Lưu ý:**
+  - Link đổi mỗi lần khởi động lại.
+  - Máy phải bật và có Internet.
+  - Ai có link đều xem được.
+
+Hướng dẫn đầy đủ, giới hạn và xử lý lỗi: [link_tu_xa.md](link_tu_xa.md).
+
+1.2.5: proxy (phiên bản 1.2.5) cho phép thêm các API GET của màn hình **Lịch sử Forecast & Thực tế**
+(`/api/history/overview|summary|rows|export.xlsx`). Proxy chỉ đọc file `scripts\remote\readonly_proxy.py` khi khởi
+động, nên sau khi cập nhật phải khởi động lại proxy (cùng cổng 8766). Tunnel cloudflared không cần khởi động lại,
+nên link giữ nguyên.
+
+### Lịch sử Forecast & Thực tế (1.2.5)
+
+- Ghi nhận tự động khi forecast được publish. Kiểm tra / ghi bù:
+  - `python -m app.cli history-reconcile`: idempotent, không tạo forecast mới;
+  - `python -m app.cli data-check`: có 5 kiểm tra `forecast_history_*`.
+- Alert `FORECAST_HISTORY_CAPTURE_FAILED`: forecast vẫn đã publish. Lịch sử được ghi lại ở lần publish sau, khi khởi
+  động lại, hoặc bằng lệnh trên.
+- Schema 4: rollback về 1.2.4 cần khôi phục bản sao lưu trước nâng cấp. Xem
+  [LICH-SU-FORECAST.md](../02_kien_truc_du_lieu/LICH-SU-FORECAST.md) mục 9.
+
+### Snapshot forecast cuối ngày và chốt thực tế 23:59 (1.2.6)
+
+- Hai flow mới trên trang Lịch chạy dữ liệu, mặc định **TẮT** (cả khi nâng cấp từ 1.2.5: thiết lập cũ không có khóa
+  của chúng):
+  - `eod`: 23:55, snapshot 7 ngày forecast kế tiếp;
+  - `close`: 23:59, chốt thực tế và đối soát dữ liệu đến muộn.
+- Chỉ bật sau khi kiểm tra sau deploy đạt và chủ sở hữu cho phép (quyết định 18/10/2026). Bật trên trang Lịch chạy dữ
+  liệu; mốc trước thời điểm bật không chạy.
+- Cả hai chỉ sao chép dữ liệu cục bộ. Không đọc BigQuery, không huấn luyện, không forecast, không publish.
+- Tắt / bật / đổi giờ tại trang Lịch chạy dữ liệu. Giờ phải trong khoảng 20:00–23:59.
+- Theo dõi:
+  - lịch sử job ghi ngày nghiệp vụ, trạng thái snapshot / bản chốt, số dòng;
+  - alert WARNING `EOD_SNAPSHOT_INCOMPLETE`, `EOD_NO_VALID_FORECAST`, `ACTUAL_CLOSE_NO_DATA`;
+  - alert ERROR `EOD_SNAPSHOT_VERIFY_FAILED`: bản sao không khớp nguồn, không lưu gì, job *Thất bại* và **không tự thử
+    lại**. Kiểm tra (`data-check`, forecast nguồn) rồi bấm "Chạy ngay 1 lần" của flow `eod`;
+  - `data-check` có 6 kiểm tra `eod_*` / `actual_close_revisions`, gồm `eod_backup_protection_triggers` (FAIL khi
+    thiếu trigger bảo vệ).
+- Snapshot `INCOMPLETE` / `NO_SOURCE` có thể hoàn thành bằng nút "Chạy ngay 1 lần" của flow `eod`. Nút này chụp ngày
+  có mốc gần nhất đã qua.
+- Dung lượng khoảng 11,8 MB mỗi ngày với dữ liệu hiện tại. Lưu **90 ngày** (chủ sở hữu quyết định 18/10/2026). Dọn
+  bằng tay, không có lịch tự dọn:
+  1. `scripts\eod-retention.ps1`: dry run, chỉ đọc. Xem số snapshot / số dòng / khoảng ngày sẽ xóa, các snapshot được
+     giữ và `plan_id`.
+  2. `scripts\eod-retention.ps1 -Apply -Plan <plan_id>`: tự sao lưu (đã kiểm tra) rồi xóa đúng kế hoạch đó. Kế hoạch đã
+     đổi thì bị từ chối, chạy dry run lại.
+  3. `data-check` cảnh báo `eod_snapshot_retention_due` khi còn snapshot quá 90 ngày chờ dọn.
+  4. Mỗi lần `-Apply` có việc cần xóa tạo thêm một bản sao lưu (khoảng 76 MB); file DB không nhỏ đi vì SQLite dùng
+     lại các trang đã giải phóng.
+
+  Snapshot chưa đủ 90 ngày không thể bị xóa (database tự chặn). Chi tiết: [LICH-SU-FORECAST.md](../02_kien_truc_du_lieu/LICH-SU-FORECAST.md)
+  mục 14.
+- Schema 6: rollback về 1.2.5 cần khôi phục bản sao lưu trước nâng cấp **bằng `restore.ps1` của thư mục 1.2.5**
+  ([LICH-SU-FORECAST.md](../02_kien_truc_du_lieu/LICH-SU-FORECAST.md) mục 9).
+
+## Sao lưu
+
+- Giao diện: **Hệ thống & sao lưu → Sao lưu ngay**; hoặc `Backup.bat` / `scripts\backup.ps1`. An toàn khi ứng dụng đang chạy
+  (SQLite online backup). Kết quả: `%LOCALAPPDATA%\DemandForecast\backups\backup-<thời gian>-<lý do>.zip`
+  (gồm `db\app.db` + thư mục `models\`).
+- Tự động: trước mỗi migration làm thay đổi schema, trước mỗi lần khôi phục, và trước khi `install.ps1` nâng cấp.
+- Nên chép thư mục `backups\` sang ổ khác/định kỳ. Ứng dụng không tự xóa bản sao lưu cũ.
+
+## Khôi phục
+
+```powershell
+scripts\stop.ps1
+scripts\restore.ps1 -File "D:\Buymed\Lightgbm AI\backups\backup-20261014-070000-manual.zip"   # nên dùng đường dẫn đầy đủ
+scripts\start.ps1
+```
+
+**Dùng đường dẫn đầy đủ.** Nếu chỉ đưa tên file, `restore.ps1` tìm trong `<thư mục dữ liệu>\backups`. Máy này cấu hình
+thư mục backup riêng trong `storage.json` (`D:\Buymed\Lightgbm AI\backups`), khác `data\runtime\backups`. Khi đó script
+báo "not found" và **không thay đổi gì**. Hành vi này được xác nhận trong buổi diễn tập 1.2.0 ngày 17/10/2026; khôi
+phục bằng đường dẫn đầy đủ thì thành công.
+
+`restore` từ chối chạy khi ứng dụng đang chạy, kiểm tra `PRAGMA integrity_check`, tạo bản sao lưu an toàn
+`…-pre-restore.zip` của DB hiện tại trước khi thay, rồi chạy migration nếu cần.
+
+## Nâng cấp phiên bản
+
+1. Giải nén gói mới → chạy `Install.bat` của gói mới. Script sẽ: dừng ứng dụng → **sao lưu dữ liệu** → cài vào
+   `%LOCALAPPDATA%\Programs\DemandForecast\<phiên bản mới>` (phiên bản cũ **giữ nguyên** bên cạnh) → chạy migration →
+   cập nhật shortcut → kiểm tra môi trường → khởi động.
+2. Cấu hình, lô import, snapshot, lịch sử forecast nằm trong `%LOCALAPPDATA%\DemandForecast` nên **không bị ảnh hưởng**.
+   Không bước nào xóa database.
+3. Migration chạy trong transaction; lỗi → rollback, DB giữ ở phiên bản cũ và báo đường dẫn bản sao lưu.
+
+### Nâng cấp 1.1.0 → 1.1.1 (một quy trình duy nhất)
+
+1. Mở trang **Job & Scheduler**: chờ không còn job *Đang chạy* (huấn luyện/đồng bộ).
+2. Giải nén `DemandForecast-1.1.1-win64-portable.zip` vào một thư mục tạm → chạy `Install.bat` **của gói 1.1.1**.
+   Script dừng 1.1.0, sao lưu DB, cài vào `%LOCALAPPDATA%\Programs\DemandForecast\1.1.1` (thư mục 1.1.0 giữ nguyên),
+   giữ nguyên `storage.json` (DB thật vẫn là `D:\Buymed\Lightgbm AI\data\runtime\db\app.db`), khởi động 1.1.1.
+3. Lần khởi động đầu chạy migration `0003_job_stages_explainability` (schema 2 → 3): chỉ **thêm** cột
+   (`job_runs.stage…`, `forecast_runs.derived_from_run_id`) và bảng `forecast_series_meta`; không sửa/xóa dữ liệu cũ.
+   Trước migration ứng dụng tự tạo bản sao lưu `pre-migration` trong thư mục backups.
+4. Kiểm tra: trang **Hệ thống** hiển thị phiên bản 1.1.1, đúng đường dẫn DB trên ổ D, schema 3; trang **Kết quả dự báo**
+   vẫn thấy các forecast run cũ.
+5. Run cũ (tạo bởi 1.1.0) không có bảng lý do phương pháp; *Xem cách tính* sẽ tính lại từ cùng dữ liệu nếu dữ liệu
+   không đổi, ngược lại báo không xác định được.
+
+Quay lại 1.1.0: 1.1.0 **từ chối** DB schema 3, nên phải dừng ứng dụng → khôi phục bản sao lưu `pre-migration` (bằng
+`scripts\restore.ps1` của bản 1.1.0) → chạy `%LOCALAPPDATA%\Programs\DemandForecast\1.1.0\Start.bat`. Dữ liệu phát sinh
+sau khi nâng cấp (job, forecast mới) sẽ không có trong bản khôi phục.
+
+### Rollback
+
+- Migration lỗi: DB chưa đổi. Chạy lại phiên bản cũ: `%LOCALAPPDATA%\Programs\DemandForecast\<bản cũ>\Start.bat`.
+- Đã nâng cấp nhưng muốn quay về bản cũ: dừng ứng dụng → `scripts\restore.ps1 -File <bản sao lưu tạo lúc nâng cấp>`
+  **bằng script của phiên bản cũ** → chạy phiên bản cũ. (Phiên bản cũ từ chối mở DB có schema mới hơn — thông báo
+  `MigrationError … newer than this app supports` — nên phải khôi phục bản sao lưu trước.)
+
+### Nâng cấp / rollback có kiểm soát (từ 1.1.6)
+
+- `scripts\deploy-upgrade.ps1 -Package <zip> -ExpectedSha256 <sha> [-CheckOnly]`: kiểm tra trước, backup trực tuyến, xác nhận `UPGRADE-<phiên bản>`, cài, kiểm tra sau, log.
+  - Phải chạy bằng **đúng tài khoản Windows đang chạy app**, không dùng "Run as different user" hay tài khoản Administrator riêng.
+    - Bản cài, `current.txt` và `storage.json` nằm trong `%LOCALAPPDATA%` của từng tài khoản.
+    - Một tài khoản khác có thể có bản cài cũ riêng. Ví dụ 22/10/2026: CheckOnly chạy từ tài khoản Administrator đọc `current.txt` 1.1.0 của tài khoản đó, trong khi app trên cổng 8765 là 1.2.11.
+  - Bản script của 1.2.13 (trong repo, sau release) chặn khi app trên cổng không phải bản cài của tài khoản đang chạy (khác database hoặc `storage.json`) và in tên tài khoản.
+  - Script luôn chạy CLI của bản cài từ thư mục `backend` của chính bản đó, không phải từ thư mục hiện tại.
+  - Câu hỏi `UPGRADE-<phiên bản>` hiện ra **sau** backup trực tuyến (1–2 phút sau khi chạy). Chỉ gõ khi câu hỏi đã hiện: phím gõ trước đó, kể cả Enter, bị bỏ.
+    - Khoảng trắng ở hai đầu câu trả lời được bỏ qua.
+    - Trả lời sai: script in đúng câu trả lời đã nhận (có trong log `deploy-<thời điểm>.log`) và dừng, không dừng app, không cài gì.
+    - Không có `-ConfirmToken` và không có console để hỏi (chạy tự động): cũng dừng như vậy.
+    - Ví dụ 22/10/2026 23:10: lần đầu xác nhận bằng cách gõ (mọi lần trước dùng `-ConfirmToken`) dừng "not confirmed" khoảng 3 giây sau khi câu hỏi hiện, và không có log nào ghi lại câu trả lời đã nhận.
+  - **Thư mục giải nén gói (1.2.14, `scripts\_deploy_staging.ps1`).** Gói được giải nén vào một thư mục được quản lý:
+    `%TEMP%\DemandForecast-deploy\<yyyyMMdd-HHmmss>`, có tệp đánh dấu `.df-deploy-staging.json` (lần chạy, phiên bản,
+    SHA-256 của gói).
+    - Cuối lần nâng cấp, chỉ thư mục của **chính lần đó** được xóa, và chỉ khi:
+      - kiểm tra sau nâng cấp đạt;
+      - `current.txt` là phiên bản mới;
+      - bản đã cài có `python\python.exe`;
+      - bản rollback còn cài;
+      - không tiến trình nào chạy từ thư mục giải nén;
+      - không tệp nào trong đó đang mở. Script đổi tên thư mục trước; tệp đang mở làm việc đổi tên thất bại và thư mục
+        được giữ.
+    - Nâng cấp thất bại: thư mục được **giữ** để điều tra, log ghi `staging kept ... kept for the investigation`.
+    - Không xóa được (đang mở, lỗi quyền): log ghi `WARNING`. Mã thoát vẫn theo kết quả nâng cấp; thư mục có thể xóa tay
+      sau (đường dẫn có trong log).
+    - Không bao giờ đụng tới: thư mục `%TEMP%\DemandForecast-deploy-<thời điểm>` của các lần trước 1.2.14, thư mục
+      không có tệp đánh dấu của lần chạy, liên kết / junction, hay bất cứ thứ gì ngoài thư mục được quản lý.
+- `scripts\rollback-version.ps1 -To <phiên bản> [-CheckOnly]`: kiểm tra schema DB tương thích, xác nhận `ROLLBACK-<phiên bản>`, chuyển phiên bản, health check.
+
+Chi tiết: [TRIEN-KHAI-1.1.6.md](../_luu_tru/TRIEN-KHAI-1.1.6.md).
+
+`install.ps1` (1.1.6):
+- dừng nếu thư mục dữ liệu nằm trong thư mục chương trình sẽ bị thay;
+- tự khởi động lại phiên bản trước nếu dừng giữa chừng sau khi đã tắt ứng dụng;
+- chỉ cập nhật `current.txt` sau khi migration thành công.
+
+### Rollback từ 1.2.0
+
+- 1.2.0 không đổi schema (vẫn 3), nên `scripts\rollback-version.ps1 -To 1.1.9` (hoặc `1.1.8`) **không cần khôi phục DB**.
+- Một model DIRECT phát hành bằng 1.2.0 vẫn được bản cũ *hiển thị*, gồm forecast và chỉ số. Tuy vậy, bản cũ không *giải
+  thích* hay *kéo dài* được model đó: nó báo lỗi số feature, không trả số sai.
+- Muốn bỏ hẳn model DIRECT đã phát hành thì làm theo thứ tự:
+  1. dừng ứng dụng;
+  2. `scripts\restore.ps1 -File <đường dẫn đầy đủ của bản sao lưu tạo ngay trước khi phát hành>`;
+  3. chạy lại D-1 thủ công nếu dữ liệu đã được nạp thêm sau thời điểm sao lưu.
+
+## Gỡ cài đặt (giữ nguyên dữ liệu)
+
+1. `Stop.bat` (hoặc `scripts\stop.ps1`); nếu đã bật tự khởi động: `scripts\unregister-autostart.ps1`.
+2. Xóa thư mục phiên bản không dùng nữa trong `%LOCALAPPDATA%\Programs\DemandForecast\<phiên bản>`. Muốn gỡ hẳn thì xóa
+   cả thư mục `%LOCALAPPDATA%\Programs\DemandForecast`, rồi xóa các shortcut "Demand Forecasting" trên Desktop / Start
+   Menu.
+3. **Không xóa** thư mục dữ liệu, là nơi `%LOCALAPPDATA%\DemandForecast\storage.json` trỏ tới. Trên máy này đó là
+   `D:\Buymed\Lightgbm AI\data\runtime`, gồm DB, model và cấu hình, cùng với thư mục `backups\`. Cài lại bất kỳ phiên bản
+   nào cũng dùng lại đúng dữ liệu đó.
+4. Nếu đường dẫn dữ liệu đã cấu hình không còn (ví dụ ổ D bị rút), ứng dụng **từ chối khởi động** với `STORAGE_NOT_FOUND`.
+   Nó không tạo DB trống thay thế. Cắm lại ổ, hoặc khôi phục bản sao lưu bằng `scripts\restore.ps1`.
+
+## Chuyển sang máy Windows khác
+
+1. Máy mới: giải nén gói → `Install.bat`.
+2. Muốn mang dữ liệu: máy cũ tạo bản sao lưu → chép file `.zip` → máy mới `scripts\stop.ps1`, `scripts\restore.ps1 -File …`.
+3. **Phụ thuộc từng máy**: đăng nhập Google (nhập lại file JSON OAuth client rồi *Đăng nhập Google*), quyền BigQuery của
+   tài khoản, VC++ Redistributable, tác vụ tự khởi động, file `app.env`.
+
+### Xác thực Google trên máy mới
+
+Credentials không bao giờ nằm trong gói. Mỗi tài khoản Windows dùng ứng dụng tự xác thực, theo một trong hai cách:
+- **Đăng nhập Google trong ứng dụng (khuyến nghị, không cần cài thêm công cụ):** chọn file JSON OAuth client (Desktop app) do quản trị cấp, rồi bấm *Đăng nhập Google*. Refresh token được lưu trong Windows Credential Manager của tài khoản đó; kiểm tra bằng nút *Kiểm tra quyền BigQuery* hoặc `python -m app.cli bq-check`.
+- **ADC (tùy chọn):** chạy `gcloud auth application-default login` **trong chính tài khoản Windows chạy ứng dụng**.
+
+ADC của tài khoản Windows khác (ví dụ Administrator) không dùng được. Xem [BIGQUERY.md](../02_kien_truc_du_lieu/BIGQUERY.md) mục 2.
+
+## Chẩn đoán & vị trí lưu trữ
+
+- Báo cáo chẩn đoán (không chứa secret): **Hệ thống & sao lưu → Tải / Lưu báo cáo chẩn đoán**, hoặc
+  `Diagnose.bat` / `scripts\diagnose.ps1 [-OutDir <thư mục>]` (mặc định: thư mục báo cáo đã cấu hình).
+- Kiểm tra toàn vẹn database (chỉ đọc): **Kiểm tra toàn vẹn database** hoặc `GET /api/system/health-check?full=true`.
+- Đổi/di chuyển thư mục dữ liệu, rollback: [LUU-TRU.md](../02_kien_truc_du_lieu/LUU-TRU.md).
+
+## Log
+
+`<thư mục log>\app.log` (xem vị trí ở trang Hệ thống; JSON mỗi dòng, xoay vòng 10 MB × 5 ≈ tối đa 60 MB). Lỗi API có `request_id` (cũng hiển thị trên giao diện) để đối chiếu. Mỗi dòng có `ctx` với `job_id`,
+`batch_id`, `snapshot_id`, `training_run_id`, `forecast_run_id` khi phù hợp. Không ghi secret (có lọc từ khóa
+`token/password/private_key…`) và không ghi toàn bộ dữ liệu đơn hàng. Lỗi khởi động: `logs\server.err.log`.
+1.4.0: mỗi lệnh SEL2 chạy trong tiến trình con (`sel2-day`, `sel2-train`, `sel2-replay`, …) ghi log riêng `<thư mục log>\<lệnh>.log` (ví dụ `sel2-day.log`; cùng định dạng JSON, xoay vòng 10 MB × 5): mỗi dòng "sel2 … step" có tên bước, số giây, bộ nhớ riêng hiện tại và đỉnh (MB). Lỗi của tiến trình con cũng nằm trong kết quả job; trang chẩn đoán hiện chỉ đọc `app.log`.
+
+## Tài nguyên máy: RAM, ổ đĩa (1.2.13)
+
+Số đo và kế hoạch chi tiết của ngày 22/10/2026: `reports\resource-audit-20261022\`.
+
+**Số liệu từng job.** Mỗi job ghi `resources`: bộ nhớ đỉnh / trung bình, CPU, I/O, RAM trống thấp nhất. Xem qua
+`GET /api/jobs/{id}` hoặc dòng log `job resources`. Quy tắc job nặng và kiểm tra bộ nhớ trước khi chạy:
+[SCHEDULER.md](SCHEDULER.md) mục *Tài nguyên của job*.
+
+**Bộ nhớ của server.**
+- Mọi job chạy trong tiến trình server.
+- Sau một tác vụ nặng (huấn luyện, báo cáo chất lượng, nạp toàn bộ dữ liệu), tiến trình vẫn giữ một phần bộ nhớ đã dùng:
+  bộ cấp phát của Python không trả hết cho Windows. Windows tự đẩy phần không dùng ra page file.
+- Muốn lấy lại ngay: khởi động lại ứng dụng ngoài khung lịch chạy, khi không có job nào đang chạy.
+
+**Ổ C:.** Chương trình đã cài (mỗi phiên bản khoảng 0,3 GB trong `%LOCALAPPDATA%\Programs\DemandForecast`), page file và
+thư mục tạm đều ở ổ C:. Dữ liệu, sao lưu và gói phát hành ở ổ D:.
+
+**Phiên bản đã cài.** Chỉ cần giữ:
+- phiên bản đang chạy;
+- phiên bản để rollback cùng schema;
+- phiên bản có Python mà link xem từ xa đang dùng (proxy hiện tại chạy bằng Python của 1.2.6).
+
+Phiên bản có schema cũ hơn database không chạy được nữa (`rollback-version` từ chối). Chúng chỉ được xóa khi chủ hệ
+thống duyệt; gói cài vẫn còn trong `dist\`.
+
+**Database.** Phần tăng nhanh nhất là snapshot forecast cuối ngày, khoảng 12 MB/ngày. Dọn theo quy tắc 90 ngày, xem mục
+*Snapshot forecast cuối ngày* ở trên. Từ 1.2.13, nhật ký thay đổi lịch sử thêm khoảng một dòng cho mỗi khóa mới mỗi ngày.
+
+### Dọn dung lượng định kỳ (1.4.0)
+
+`scripts\ops\don_dep_dinh_ky.ps1` (quy tắc chủ sở hữu 03/11/2026). Mặc định chỉ chạy thử (dry run): liệt kê ứng viên,
+không xóa gì. `-Apply` mới xóa. Chạy từ thư mục mã nguồn; bản trong gói đã cài phải có `-ProjectRoot <thư mục mã nguồn>`
+(ProjectRoot nằm trong `%LOCALAPPDATA%\Programs\DemandForecast` hoặc `%LOCALAPPDATA%\DemandForecast`, kể cả viết dạng
+tên ngắn 8.3 như `GIAUVO~1`, hoặc là thư mục phiên bản đã cài, có `VERSION` và `current.txt` ở thư mục cha, đều bị từ
+chối, mã 2). `-TmpRoot` là gốc ổ đĩa, hoặc là thư mục dự án / dữ liệu / `%LOCALAPPDATA%` hay thư mục cha của chúng, cũng
+bị từ chối (mã 2).
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ops\don_dep_dinh_ky.ps1            # chạy thử
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ops\don_dep_dinh_ky.ps1 -Apply     # xóa
+... -Apply -IncludeDist -DistKeep 1.3.1     # thêm dist\ (scripts\prune-artifacts.ps1), giữ gói rollback 1.3.1
+```
+
+| Nhóm | Ứng viên xóa (mọi thứ khác giữ nguyên) |
+|---|---|
+| backups | Zip ngoài quy tắc giữ (+ file `.sha256` / `config-*` đi kèm). Giữ: 7 bản `*-manual.zip` mới nhất, 7 bản `*-cli.zip` mới nhất, bản `*-pre-*` dưới 30 ngày, bản mới nhất trước mỗi lần cài, các bản trong 20 phút trước khi cài, cặp manual + cli của deploy. Giờ cài lấy từ thư mục phiên bản và được nhớ trong `<project>\logs\don_dep\install-history.json` (có thể thêm tay `{"version": ..., "created": "yyyy-MM-ddTHH:mm:ss"}`) |
+| exports | Thư mục `<data>\exports\du_bao\YYYYMMDD\` quá 90 ngày (theo tên thư mục) |
+| logs | File log quá 30 ngày (thư mục log của dữ liệu và `<project>\logs`): nén vào `logs-archive-YYYYMM.zip` cạnh file, kiểm tra rồi mới xóa; file đang mở không động tới |
+| tmp | Mục trong `-TmpRoot` (mặc định `D:\Buymed\tmp`) quá 1 ngày (thời điểm tạo / sửa mới nhất của mục và mọi thứ bên trong) mà không tiến trình nào đang dùng |
+| reports | File dữ liệu (`.parquet`, `.csv`, `.zip`, `order_lines*`) ngoài thư mục `package*` của thí nghiệm đã đóng gói; thư mục có tên trong `scripts\ops\don_dep_giu.txt` được giữ nguyên |
+| dist | Kế hoạch của `scripts\prune-artifacts.ps1`; chỉ xóa với `-Apply -IncludeDist -DistKeep <bản rollback>` (`-IncludeDist` thiếu `-DistKeep` bị từ chối). Còn junction / symlink hay mục không đọc được ở bất kỳ đâu trong `dist\` / `release\` thì `prune-artifacts.ps1` không chạy (cả chạy thử lẫn `-Apply`), nhóm bị bỏ qua |
+
+- Không bao giờ đi qua junction / symlink: thư mục gốc của nhóm, ứng viên hay bất kỳ thư mục cha nào là reparse point
+  thì bị bỏ qua và ghi vào báo cáo (file `logs-archive-*.zip` là reparse point: không nén, không xóa). Không động tới DB, models, `%LOCALAPPDATA%\DemandForecast`, các phiên bản đã cài,
+  `checkpoints\`.
+- Báo cáo: `<project>\logs\don_dep\don_dep-YYYYMMDD-HHMMSS.json` (+ `.txt`). Mã thoát 0 ổn, 1 có lỗi, 2 bị từ chối.
+- Lịch hàng tuần: `scripts\ops\register-don-dep-task.ps1` đăng ký tác vụ `DemandForecastCleanup` (Chủ nhật 22:00,
+  user hiện tại, mặc định chạy thử; `-Apply`, `-IncludeDist -DistKeep <bản>` truyền tiếp). `-Plan` chỉ in định nghĩa,
+  `-Unregister` gỡ tác vụ.
+- Sau lần `-Apply` đầu tiên xóa thư mục export cũ, `data-check` sẽ cảnh báo `export_files_exist` ("missing") cho các
+  dòng `export_runs` của những ngày đó: đây là cảnh báo dự kiến (dòng lịch sử vẫn giữ, file đã dọn theo quy tắc 90
+  ngày), không phải lỗi dữ liệu.
+
+## Khắc phục sự cố
+
+| Triệu chứng | Nguyên nhân / cách xử lý |
+|---|---|
+| Job nặng có lý do `INSUFFICIENT_MEMORY` (1.2.13) | Dung lượng commit còn lại (RAM + page file) nhỏ hơn mức job đó đã cần ở các lần trước. Job chưa chạy và tự thử lại có giới hạn. Đóng bớt chương trình (trình duyệt nhiều tab, ...) rồi chờ lần thử lại hoặc chạy tay |
+| Kích thước / giờ sửa của `app.log` trong Explorer không đổi khi app đang chạy | Windows cập nhật thông tin thư mục chậm cho file đang mở. Mở file để xem dòng mới nhất |
+| `start.ps1` báo *failed to start* | Xem `logs\server.err.log`. Chạy `check-env.ps1`. |
+| `check-env` báo thiếu `vcomp140.dll` / LightGBM lỗi | `winget install Microsoft.VCRedist.2015+.x64` |
+| Cổng 8765 bị chiếm | Đặt `DF_PORT` trong `app.env` |
+| “Running scripts is disabled on this system” | Dùng các file `.bat` hoặc `powershell -ExecutionPolicy Bypass -File …` |
+| Trình duyệt báo không kết nối | Ứng dụng chưa chạy (máy vừa khởi động?) → `Start.bat` |
+| Giao diện báo “Cannot reach the backend” | Backend dừng giữa chừng → `Start.bat`, xem log |
+| Không thấy job chạy theo giờ | Ứng dụng phải đang chạy lúc đó; mở *Lịch chạy dữ liệu*: luồng đó đã **bật** chưa, có *Sẵn sàng* không, trạng thái có phải *Đang bật — scheduler đã nạp*; bật tự khởi động |
+| `DATA_NOT_TRAINABLE` | Lịch sử < 56 ngày hoặc không có dữ liệu |
+| `QUALITY_GATE_FAILED` | Xem *Chất lượng mô hình*; dữ liệu nhiễu/ngắn; ngưỡng ví dụ có thể quá chặt |
+| BigQuery `BQ_AUTH_MISSING` | Thẻ *Xác thực Google*: nhập file JSON OAuth client rồi *Đăng nhập Google* (hoặc ADC của chính tài khoản Windows này) |
+| `PROMOTION_REVIEW_REQUIRED` | Model mới chờ duyệt: trang *Hiệu năng model* → xem so sánh → *Dùng model này* nếu đồng ý |
+| BigQuery `BQ_QUERY_TOO_EXPENSIVE` | Thêm cột partition, giảm số ngày tải lần đầu, hoặc tăng giới hạn bytes (cân nhắc chi phí) |
+| Import báo `MACRO_NOT_ALLOWED` | Lưu lại file dưới dạng *Excel Workbook (.xlsx)* |
+| `STORAGE_NOT_FOUND` khi khởi động | Ổ/thư mục dữ liệu đã cấu hình không có mặt. Cắm lại ổ, hoặc `scripts\rollback-storage.ps1`. Ứng dụng cố ý không tạo database trống. |
+| `STORAGE_CONFIG_MISSING` khi khởi động/cài đặt | `storage.json` (ở `%LOCALAPPDATA%\DemandForecast`) bị mất sau khi đã di chuyển dữ liệu. Chạy `scripts\repair-storage.ps1`, rồi `-Apply` — chỉ khôi phục khi mọi bằng chứng khớp. Xem [LUU-TRU.md](../02_kien_truc_du_lieu/LUU-TRU.md). |
+| `DATABASE_CONSTRAINT` / `DATA_CONSISTENCY` | Thao tác bị từ chối và đã rollback; không mất dữ liệu. Tạo báo cáo chẩn đoán. Không xóa database. |
+| Lỡ tay xóa/thay lô | Khôi phục bản sao lưu gần nhất (forecast đã publish vẫn còn dù lô bị xóa) |
+
+Không cần (và không nên) sửa SQLite bằng tay.

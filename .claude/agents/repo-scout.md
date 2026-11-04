@@ -2,7 +2,7 @@
 name: repo-scout
 description: Read-only reconnaissance of the Demand Forecasting repository. Use for broad searches across many files (where is X implemented, which modules touch Y, list every place that writes table Z) when only the conclusion with file:line evidence is needed. Not for reviews, edits or running commands.
 tools: Read, Grep, Glob
-model: haiku
+model: opus
 maxTurns: 15
 ---
 

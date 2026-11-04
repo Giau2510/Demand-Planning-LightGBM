@@ -2,7 +2,7 @@
 .SYNOPSIS  Install / upgrade the portable package for the current Windows user (no admin rights needed).
            Program: %LOCALAPPDATA%\Programs\DemandForecast\<version>   (old versions are kept side by side)
            Data:    wherever the storage configuration points (default %LOCALAPPDATA%\DemandForecast;
-                    see docs\LUU-TRU.md). Install NEVER deletes or resets the database or the user's configuration.
+                    see docs\02_kien_truc_du_lieu\LUU-TRU.md). Install NEVER deletes or resets the database or the user's configuration.
 .PARAMETER DataDir   Fresh installs only: keep the database/models in this folder (e.g. D:\DemandForecast\runtime).
                      If data already exists elsewhere it is NOT moved here - use scripts\migrate-storage.ps1.
 .PARAMETER LogsDir / BackupsDir / ReportsDir  Optional, with -DataDir.
@@ -120,7 +120,7 @@ if ($src.TrimEnd('\') -ne $dest.TrimEnd('\')) {
 # schema migrations (a verified backup is taken automatically before any schema change)
 & (Join-Path $dest "python\python.exe") -m app.cli migrate | Out-Host
 if ($LASTEXITCODE -ne 0) {
-    Stop-Install 1 "Migration that bai / failed. Du lieu chua bi xoa; phien ban truoc van la phien ban hien hanh. Xem docs\VAN-HANH.md muc Rollback."
+    Stop-Install 1 "Migration that bai / failed. Du lieu chua bi xoa; phien ban truoc van la phien ban hien hanh. Xem docs\03_van_hanh\VAN-HANH.md muc Rollback."
 }
 # only now does the new version become the current one
 Set-Content -Path (Join-Path $base "current.txt") -Value $version -Encoding ASCII

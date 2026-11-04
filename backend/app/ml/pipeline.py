@@ -22,10 +22,60 @@ from ..data.quality import build_report
 from ..messages import AppError
 from ..timeutil import now_iso, now_vn, today_vn
 from . import feature_registry as registry
-from . import model
+from . import feature_report, model
 from .features import OPEN_HOURS, build_panel, feature_names, is_direct
 
 log = logging.getLogger("df.pipeline")
+
+
+# 1.3.1: ModelSettings keys added after 1.2.14 and the value that means "as before" (left out of the fingerprint)
+_NEW_MODEL_KEY_DEFAULTS = {"horizon_weight_short": None, "horizon_weight_cutoff": None, "feature_sku_code": True,
+                           "fallback_enabled": True}
+
+
+def _rule_is_default(rule) -> bool:
+    """A feature-table rule (FeatureRule or the plain dict of a stored configuration) equal to the default row."""
+    d = rule if isinstance(rule, dict) else {"enabled": getattr(rule, "enabled", True),
+                                             "contri": getattr(rule, "contri", 1.0)}
+    return bool(d.get("enabled", True)) is True and float(d.get("contri", 1.0)) == 1.0
+
+
+def config_fingerprint(fcfg: dict) -> str:
+    """Identity of a model configuration (model_dump of the run's ModelSettings): sha256 of its sorted JSON, first 16
+    hex digits. 1.3.1: the keys added after 1.2.14 are left out while at their default (feature_table also when empty
+    or made of default rows only), so every configuration of 1.2.14 keeps its fingerprint."""
+    d = {k: v for k, v in fcfg.items() if not (k in _NEW_MODEL_KEY_DEFAULTS and v == _NEW_MODEL_KEY_DEFAULTS[k]
+                                               and type(v) is type(_NEW_MODEL_KEY_DEFAULTS[k]))}
+    if "feature_table" in d and (not d["feature_table"] or all(_rule_is_default(r) for r in d["feature_table"].values())):
+        del d["feature_table"]
+    return hashlib.sha256(json.dumps(d, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def feature_table_snapshot(table) -> dict | None:
+    """1.3.1 (B11): the rows of the feature table (section feature_table) away from the default row, copied into
+    model.feature_table of a training run; None when there is none (the training as before)."""
+    rows = {n: ss.FeatureRule(enabled=bool(r.enabled), contri=float(r.contri))
+            for n, r in ((getattr(table, "features", None) or {}).items()) if not _rule_is_default(r)}
+    return rows or None
+
+
+def _feature_report(run_id: str, version: str | None, info: dict) -> None:
+    """1.3.1 (B10): feature importance of a run that has a model file - stored and written as .xlsx while
+    daily_forecast is enabled (nothing otherwise). Never changes the training: an error is logged + one WARNING alert."""
+    try:
+        dcfg = ss.get("daily_forecast")
+        if not dcfg.enabled or not info.get("feature_importance_full"):
+            return
+        path = feature_report.publish(run_id, version, info["feature_importance_full"], dcfg)
+        log.info("feature report written", extra={"ctx": {"training_run_id": run_id, "file": path.name}})
+    except Exception as e:  # noqa: BLE001
+        log.warning("feature report not written", exc_info=True, extra={"ctx": {"training_run_id": run_id}})
+        try:
+            with db.tx() as c:
+                db.alert(c, "WARNING", "FEATURE_REPORT_NOT_WRITTEN",
+                         {"training_run_id": run_id, "error": type(e).__name__}, "training_run", run_id)
+        except Exception:  # noqa: BLE001
+            log.warning("feature report alert not recorded", exc_info=True, extra={"ctx": {"training_run_id": run_id}})
 
 
 def _gate_checks(m: dict, mb: dict | None, reliable: bool, n_folds: int, q) -> list[dict]:
@@ -338,6 +388,7 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
             if blockers:
                 raise AppError(blockers[0]["code"], 409, detail=blockers[0]["detail"])
         mcfg_settings = ss.get("model", c)
+        ftable = ss.get("feature_table", c)
         qcfg = ss.get("quality", c)
         hcfg = ss.get("horizons", c)
         fp = fingerprint(scope["scope_key"], c)
@@ -372,6 +423,9 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
     # 1.2.9: decided per run and stored with it (never user switches): open hours = the BIGQUERY source (checked above),
     # dow encoded 1 Monday ... 7 Sunday
     mcfg = mcfg.model_copy(update={"feature_open_hours": oh_chk is not None, "weekday_encoding": "ISO"})
+    # 1.3.1 (B11): the non-default rows of the feature table as they are NOW, stored with the run: its training,
+    # backtest, comparison with the incumbent and every later rebuild use exactly this table
+    mcfg = mcfg.model_copy(update={"feature_table": feature_table_snapshot(ftable)})
     decisions["open_hours"] = {"mandatory": oh_chk is not None, "used": oh_chk is not None,
                                "reason": "MANDATORY_DATA_OK" if oh_chk is not None else "NOT_IN_SOURCE",
                                "window_check": oh_chk, "features": list(OPEN_HOURS),
@@ -406,15 +460,16 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
                                    "customer": {"switch_on": bool(mcfg_settings.feature_customer),
                                                 "used": bool(decisions.get("customer", {}).get("used"))}},
                                "forecast_strategy": mcfg.forecast_strategy,
-                               "config_fingerprint": hashlib.sha256(json.dumps(fcfg, sort_keys=True).encode()).hexdigest()[:16],
+                               "config_fingerprint": config_fingerprint(fcfg),
                                "feature_set_version": registry.feature_set_version(names),
                                "registry_version": registry.REGISTRY_VERSION,
                                "settings_switches": {k: getattr(mcfg_settings, k) for k in (
                                    "feature_lags", "feature_rolling", "feature_calendar", "feature_price",
-                                   "feature_discount", "feature_promotion", "feature_weekday", "feature_customer")},
+                                   "feature_discount", "feature_promotion", "feature_weekday", "feature_customer",
+                                   "feature_sku_code", "fallback_enabled")},
                                "feature_decisions": decisions, "lineage": lineage, "data_window": window},
                               default=str),
-                   json.dumps(model.lgb_params(mcfg)), job_id))
+                   json.dumps(model.lgb_params(mcfg, names=names)), job_id))
         if oh_ovr and oh_ovr["applied"]:
             db.audit(c, "OPEN_HOURS_OVERRIDE_APPLIED", "training_run", run_id, open_hours_override.audit_details(oh_ovr))
 
@@ -509,6 +564,8 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
                 version, mpath, sha = _save_model(booster, names, panel, common["train_end"], scope, run_id, mcfg)
                 common.update(model_version=version, model_path=mpath.name, model_sha256=sha)
             finish("REJECTED", "QUALITY_GATE_FAILED", **common)
+            if booster is not None:
+                _feature_report(run_id, common.get("model_version"), info)
             return {"status": "REJECTED", "reason_code": "QUALITY_GATE_FAILED", "training_run_id": run_id,
                     "quality_gate": gate}
         warn = usage["status"] == "USABLE_WITH_WARNING"
@@ -557,6 +614,8 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
                           "candidate": chosen, "usage": usage["status"]})
             log.info("candidate kept for review", extra={"ctx": {"training_run_id": run_id,
                                                                  "verdict": promotion.get("verdict")}})
+            if booster is not None:
+                _feature_report(run_id, version, info)
             return {"status": "CANDIDATE", "reason_code": PENDING_REVIEW, "training_run_id": run_id,
                     "model_version": version, "verdict": promotion.get("verdict"), "candidate": chosen,
                     "usage": usage["status"], "incumbent_training_run_id": inc["training_run"]["id"],
@@ -579,6 +638,8 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
             if warn:
                 _warn_published(c, fr_id, run_id, gate["assessment"])
         forecast_history.capture_after_publish(fr_id)   # 1.2.5: D+1 history, after the commit (never undoes it)
+        if booster is not None:
+            _feature_report(run_id, version, info)
         log.info("forecast published", extra={"ctx": {"forecast_run_id": fr_id, "training_run_id": run_id,
                                                       "model_version": pub_version, "rows": n, "candidate": chosen,
                                                       "usage": usage["status"]}})
@@ -741,7 +802,7 @@ def promote_candidate(training_run_id: str, cancel=None) -> dict:
                           "(SELECT rowid FROM training_runs WHERE id=?)", (tr["scope_key"], training_run_id))
         if newer:
             raise AppError("PROMOTION_NOT_ALLOWED", 409, detail=f"superseded by {newer['id']}")
-        busy = db.one(c, "SELECT id FROM job_runs WHERE job_type IN ('TRAIN_PUBLISH','FORECAST_EXTEND') AND "
+        busy = db.one(c, "SELECT id FROM job_runs WHERE job_type IN ('TRAIN_PUBLISH','FORECAST_EXTEND','FORECAST_REFRESH') AND "
                          "status IN ('PENDING','RUNNING')")
         if busy:
             raise AppError("LOCKED", 409, detail=busy["id"])
@@ -861,7 +922,7 @@ def release_with_gate_exception(training_run_id: str, approval: dict, cancel=Non
                           "(SELECT rowid FROM training_runs WHERE id=?)", (tr["scope_key"], training_run_id))
         if newer:
             raise AppError("PROMOTION_NOT_ALLOWED", 409, detail=f"superseded by {newer['id']}")
-        busy = db.one(c, "SELECT id FROM job_runs WHERE job_type IN ('TRAIN_PUBLISH','FORECAST_EXTEND') AND "
+        busy = db.one(c, "SELECT id FROM job_runs WHERE job_type IN ('TRAIN_PUBLISH','FORECAST_EXTEND','FORECAST_REFRESH') AND "
                          "status IN ('PENDING','RUNNING')")
         if busy:
             raise AppError("LOCKED", 409, detail=busy["id"])

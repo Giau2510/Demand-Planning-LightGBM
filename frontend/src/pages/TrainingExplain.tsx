@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { get, qs } from "../api";
 import { useI18n } from "../i18n";
-import { Code, ErrorBox, Loading, MethodLabel, fmtDate, fmtNum, fmtPctX, fmtTime, fmtX, useAsync } from "../components/ui";
+import { Code, ErrorBox, Loading, MethodLabel, fmtDate, fmtNum, fmtPct, fmtPctX, fmtTime, fmtX, useAsync } from "../components/ui";
 
 /** Source badge: every figure on this page says where it comes from. */
 function Src({ children }: { children: ReactNode }) {
@@ -13,6 +13,59 @@ function Sec({ id, title, children, open = false }: { id?: string; title: string
     <details className="exblock" id={id} open={open}>
       <summary><h4>{title}</h4></summary>
       <div className="exbody">{children}</div>
+    </details>
+  );
+}
+
+/** 1.3.1 (B10) feature importance of one training run: gain and split count of every feature, their shares and the
+ *  group summary, with the .xlsx. LEGACY_GAIN (a run before 1.3.1): the stored largest gains only, no split count
+ *  ("—", never 0) and no file. */
+export function FeatureImportance({ runId }: { runId: string }) {
+  const { lang } = useI18n();
+  const L = (a: string, b: string) => (lang === "vi" ? a : b);
+  const fi = useAsync(() => get(`/api/training-runs/${encodeURIComponent(runId)}/feature-importance`), [runId]);
+  if (fi.loading && !fi.data) return <Loading />;
+  if (fi.error) return <ErrorBox error={fi.error} />;
+  const d = fi.data;
+  if (!Array.isArray(d?.rows) || d.rows.length === 0) return <p className="small muted">{L("Không có dữ liệu để xác minh.", "No data to verify.")}</p>;
+  const legacy = d.source === "LEGACY_GAIN";
+  const share = (v: number | null | undefined) => (v === null || v === undefined ? "—" : fmtPct(v, 2));
+  const head = (first: ReactNode) => (
+    <thead><tr>{first}<th className="num">Gain</th><th className="num">% gain</th><th className="num">{L("Số lần chia nhánh", "Splits")}</th><th className="num">{L("% chia nhánh", "% splits")}</th></tr></thead>
+  );
+  return (
+    <div className="stack tight" data-testid="feature-importance">
+      <p className="small">
+        {legacy
+          ? <span className="warn-t" data-testid="fi-legacy">{L("Lần huấn luyện trước 1.3.1: chỉ có gain của các biến lớn nhất đã lưu; không có số lần chia nhánh và không có file Excel.", "Training run before 1.3.1: only the stored largest gains; no split counts and no Excel file.")}</span>
+          : <a href={`/api/training-runs/${encodeURIComponent(runId)}/feature-importance.xlsx`} data-testid="fi-download">{L("Tải tỷ trọng biến (Excel)", "Download feature importance (Excel)")}</a>}
+        {" "}<Src>{L("Nguồn", "Source")}: {legacy ? "training_runs.feature_importance_json" : "training_feature_importance"}</Src>
+      </p>
+      <table className="tbl small" data-testid="fi-groups">
+        {head(<><th>{L("Nhóm biến", "Feature group")}</th><th className="num">{L("Số biến", "Features")}</th></>)}
+        <tbody>{(Array.isArray(d.groups) ? d.groups : []).map((g: any) => (
+          <tr key={g.feature_group}><td>{g.feature_group}</td><td className="num">{fmtNum(g.n_features)}</td><td className="num">{fmtNum(g.gain, 2)}</td>
+            <td className="num">{share(g.gain_share)}</td><td className="num">{fmtNum(g.split)}</td><td className="num">{share(g.split_share)}</td></tr>
+        ))}</tbody>
+      </table>
+      <table className="tbl small" data-testid="fi-table">
+        {head(<><th className="num">{L("Hạng", "Rank")}</th><th>{L("Biến", "Feature")}</th><th>{L("Nhóm biến", "Feature group")}</th></>)}
+        <tbody>{d.rows.map((r: any) => (
+          <tr key={r.feature}><td className="num">{r.rank}</td><td className="mono">{r.feature}</td><td>{r.feature_group}</td><td className="num">{fmtNum(r.gain, 2)}</td>
+            <td className="num">{share(r.gain_share)}</td><td className="num">{fmtNum(r.split)}</td><td className="num">{share(r.split_share)}</td></tr>
+        ))}</tbody>
+      </table>
+    </div>
+  );
+}
+
+/** A section read only when it is opened (the closed sections of the page ask the backend nothing). */
+function LazySec({ title, testid, children }: { title: string; testid?: string; children: () => ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details className="exblock" data-testid={testid} onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
+      <summary><h4>{title}</h4></summary>
+      <div className="exbody">{open ? children() : null}</div>
     </details>
   );
 }
@@ -147,6 +200,10 @@ export function TrainingExplain() {
               </>
             )}
           </Sec>
+
+          <LazySec key={tr.id} testid="fi-section" title={L("6. Tỷ trọng biến (feature importance)", "6. Feature importance")}>
+            {() => <FeatureImportance runId={tr.id} />}
+          </LazySec>
         </>
       )}
     </div>

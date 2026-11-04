@@ -6,6 +6,8 @@ import { ErrorBox, SourceBadge, useAction } from "./components/ui";
 import { Icon, type IconName } from "./components/icons";
 import Dashboard from "./pages/Dashboard";
 import Results from "./pages/Results";
+import DailyForecast from "./pages/DailyForecast";
+import ForecastSource from "./pages/ForecastSource";
 import ForecastHistory from "./pages/ForecastHistory";
 import Performance from "./pages/Performance";
 import Config from "./pages/Config";
@@ -50,10 +52,40 @@ function useSystemStatus(): StatusCtx {
   return { ...st, reload, refresh };
 }
 
+/** 1.3.1 trial label of the daily forecast ("Chạy thử – chưa dùng để mua hàng"), read lightly: once on load and again
+ *  when the daily forecast page reports a change. Nothing is shown while the endpoint fails or answers no label (the
+ *  daily forecast off: every 1.2.14 page looks the same); a failed later reload keeps the label already known. */
+type TrialLabel = { vi: string; en: string } | null;
+type DailyCtx = { trialLabel: TrialLabel; reload: () => void };
+const DailyContext = createContext<DailyCtx>({ trialLabel: null, reload: () => {} });
+export const useDailyStatus = () => useContext(DailyContext);
+
+function useDailyTrial(): DailyCtx {
+  const [trialLabel, setTrialLabel] = useState<TrialLabel>(null);
+  const seq = useRef(0);
+  const reload = useCallback(() => {
+    const my = ++seq.current;
+    get("/api/daily-forecast/status").then(
+      (s: any) => { if (my === seq.current) setTrialLabel(s?.trial_label?.vi || s?.trial_label?.en ? s.trial_label : null); },
+      () => { /* no endpoint / no answer: keep what is shown */ },
+    );
+  }, []);
+  useEffect(() => reload(), [reload]);
+  return { trialLabel, reload };
+}
+
+export function TrialBanner() {
+  const { pick } = useI18n();
+  const { trialLabel } = useDailyStatus();
+  if (!trialLabel) return null;
+  return <div className="banner warn" role="status" data-testid="trial-banner"><b>{pick(trialLabel)}</b></div>;
+}
+
 /** Sidebar: [route, label key, icon]. The page header of each route uses the same icon. */
 const NAV: { group: string; items: [string, string, IconName][] }[] = [
   { group: "nav.group.forecast", items: [["/", "nav.dashboard", "dashboard"], ["/results", "nav.results", "results"],
-    ["/forecast-history", "nav.fhistory", "fhistory"], ["/performance", "nav.performance", "performance"],
+    ["/forecast-history", "nav.fhistory", "fhistory"], ["/performance", "nav.performance", "performance"], ["/daily-forecast", "nav.daily", "daily"],
+    ["/forecast-source", "nav.fsource", "model"],
     ["/snapshots", "nav.snapshots", "snapshots"], ["/methodology", "nav.methodology", "methodology"],
     ["/forecast-explainer", "nav.explainer", "explain"]] },
   { group: "nav.group.data", items: [["/import", "nav.import", "import"], ["/batches", "nav.batches", "batches"], ["/quality", "nav.quality", "quality"]] },
@@ -198,6 +230,7 @@ function Shell({ children }: { children: ReactNode }) {
           </div>
         </div>
         <SourceBanner />
+        <TrialBanner />
         <div className="content" id="main" tabIndex={-1}>{children}</div>
       </main>
     </div>
@@ -206,8 +239,10 @@ function Shell({ children }: { children: ReactNode }) {
 
 export default function App() {
   const st = useSystemStatus();
+  const daily = useDailyTrial();
   return (
     <SystemContext.Provider value={st}>
+      <DailyContext.Provider value={daily}>
       <Shell>
         {st.error ? <ErrorBox error={st.error} /> : null}
         <Routes>
@@ -229,8 +264,11 @@ export default function App() {
           <Route path="/schedules" element={<Schedules />} />
           <Route path="/jobs" element={<Jobs />} />
           <Route path="/system" element={<System />} />
+          <Route path="/daily-forecast" element={<DailyForecast />} />
+          <Route path="/forecast-source" element={<ForecastSource />} />
         </Routes>
       </Shell>
+      </DailyContext.Provider>
     </SystemContext.Provider>
   );
 }

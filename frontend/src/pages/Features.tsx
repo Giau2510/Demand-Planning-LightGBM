@@ -1,10 +1,118 @@
-import { useState } from "react";
-import { get } from "../api";
+import { useEffect, useState } from "react";
+import { get, put } from "../api";
 import { useI18n } from "../i18n";
-import { Card, ErrorBox, FilterBar, Loading, PageHeader, Pill, SourceBadge, YesNo, fmtNum, fmtPct, useAsync } from "../components/ui";
+import { Card, Confirm, ErrorBox, Field, FilterBar, Loading, OkBox, PageHeader, Pill, SourceBadge, YesNo, fmtNum, fmtPct, fmtTime, useAction,
+  useAsync } from "../components/ui";
+import { Icon } from "../components/icons";
 
 const STATUS_PILL: Record<string, string> = { ACTIVE: "OK", DISABLED: "PENDING", PLANNED: "NEEDS_CONFIG", UNAVAILABLE: "FAILED" };
 const ORDER = ["ACTIVE", "DISABLED", "UNAVAILABLE", "PLANNED"];
+
+/** Read-only rows of the feature table: sku_code is switched by the model configuration (B1, never stored in the
+ *  table), horizon is required (the DIRECT model's day number). */
+const LOCKED: Record<string, string> = { sku_code: "ftab.sku_code_note", horizon: "ftab.horizon_note" };
+type Rule = { enabled: boolean; contri: string };
+const contriOk = (s: string) => s.trim() !== "" && Number.isFinite(Number(s)) && Number(s) > 0 && Number(s) <= 10;
+const asForm = (rows: any[]): Record<string, Rule> =>
+  Object.fromEntries(rows.map((r) => [r.feature, { enabled: !!r.enabled, contri: String(r.contri) }]));
+
+/** 1.3.1 (B11) feature table: a switch and a priority coefficient (LightGBM feature_contri) per feature. Saved only
+ *  after a confirmation showing the fingerprint note; it takes effect at the next training. The whole table is sent
+ *  (the backend stores only the rows away from the default, and nothing when nothing changed). */
+function FeatureTable() {
+  const { t, pick } = useI18n();
+  const tab = useAsync(() => get("/api/feature-table"), []);
+  const act = useAction();
+  const [form, setForm] = useState<Record<string, Rule>>({});
+  const [ask, setAsk] = useState(false);
+  const [note, setNote] = useState("");
+  const d: any = tab.data;
+  useEffect(() => { if (Array.isArray(d?.rows)) setForm(asForm(d.rows)); }, [d]);
+  if (tab.loading && !d) return <Card icon="features" title={t("ftab.title")}><Loading /></Card>;
+  if (!Array.isArray(d?.rows)) return <Card icon="features" title={t("ftab.title")}><ErrorBox error={tab.error} /></Card>;
+  const rows: any[] = d.rows;
+  const base = asForm(rows);
+  const cur = (n: string) => form[n] ?? base[n];
+  const set = (n: string, p: Partial<Rule>) => setForm((f) => ({ ...f, [n]: { ...(f[n] ?? base[n]), ...p } }));
+  const dirty = rows.some((r) => JSON.stringify(cur(r.feature)) !== JSON.stringify(base[r.feature]));
+  const invalid = rows.some((r) => !LOCKED[r.feature] && !contriOk(cur(r.feature).contri));
+  const away = rows.filter((r) => r.feature !== "sku_code" && (!cur(r.feature).enabled || Number(cur(r.feature).contri) !== 1)).length;
+  const save = async () => {
+    const features = Object.fromEntries(rows.filter((r) => r.feature !== "sku_code")
+      .map((r) => [r.feature, { enabled: cur(r.feature).enabled, contri: Number(cur(r.feature).contri) }]));
+    const r = await act.run(() => put("/api/feature-table", { features, confirm: true, note: note.trim() || null }));
+    if (r) {
+      setAsk(false);
+      setNote("");
+      tab.setData(r);
+      act.setOk(r.saved ? t("ftab.saved") : t("ftab.not_saved"));
+    }
+  };
+  const history: any[] = Array.isArray(d.history) ? d.history : [];
+  return (
+    <Card icon="features" title={t("ftab.title")}>
+      <div className="stack tight" data-testid="ftab">
+        <p className="small muted">{t("ftab.help")}</p>
+        <div className="alert info small" data-testid="ftab-fp-note">{pick(d.fingerprint_note)}</div>
+        <p className="small">{t("ftab.effective")} · {t("ftab.updated")}: {d.updated_at ? fmtTime(d.updated_at) : "—"}</p>
+        {!ask && <ErrorBox error={act.error} />}
+        <OkBox text={act.ok} />
+        <div className="scroll">
+          <table className="tbl small" data-testid="ftab-table">
+            <thead><tr><th>{t("ftab.feature")}</th><th>{t("ftab.group")}</th><th>{t("ftab.enabled")}</th><th className="num">{t("ftab.contri")}</th><th></th></tr></thead>
+            <tbody>
+              {rows.map((r) => {
+                const c = cur(r.feature);
+                const locked = LOCKED[r.feature];
+                const ok = !!locked || contriOk(c.contri);
+                return (
+                  <tr key={r.feature} data-testid={`ftab-row-${r.feature}`}>
+                    <td className="mono">{r.feature}</td>
+                    <td>{r.feature_group}</td>
+                    <td><input type="checkbox" checked={c.enabled} disabled={!!locked || act.busy} data-testid={`ftab-on-${r.feature}`}
+                      aria-label={`${t("ftab.enabled")} ${r.feature}`} onChange={(e) => set(r.feature, { enabled: e.target.checked })} /></td>
+                    <td className="num">
+                      <input type="number" min={0.01} max={10} step={0.1} value={c.contri} disabled={!!locked || act.busy} data-testid={`ftab-contri-${r.feature}`}
+                        aria-label={`${t("ftab.contri")} ${r.feature}`} aria-invalid={!ok} onChange={(e) => set(r.feature, { contri: e.target.value })} />
+                      {!ok && <div className="small bad-t">{t("ftab.contri_invalid")}</div>}
+                    </td>
+                    <td>{locked ? <span className="small muted">{t(locked)}</span>
+                      : c.enabled && Number(c.contri) === 1 ? <span className="pill muted">{t("ftab.default")}</span>
+                        : <span className="pill warn">{t("ftab.changed")}</span>}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div className="row wrap">
+          <button className="primary prod" data-testid="ftab-save" disabled={act.busy || !dirty || invalid} title={t("common.prod_action")}
+            onClick={() => { act.setError(null); act.setOk(null); setAsk(true); }}><Icon name="save" />{t("ftab.save")}</button>
+          <button data-testid="ftab-discard" disabled={act.busy || !dirty} onClick={() => setForm(base)}><Icon name="reset" />{t("ftab.discard")}</button>
+          {dirty && <span className="small warn-t">{t("ftab.unsaved")}</span>}
+        </div>
+        <details className="small" data-testid="ftab-history">
+          <summary>{t("ftab.history")} ({history.length})</summary>
+          {history.length === 0 ? <p className="small muted">{t("ftab.no_history")}</p> : (
+            <table className="tbl small">
+              <thead><tr><th>{t("ftab.changed_at")}</th><th>{t("ftab.note_col")}</th></tr></thead>
+              <tbody>{history.map((x, i) => <tr key={`${x.changed_at}-${i}`}><td className="nowrap">{fmtTime(x.changed_at)}</td><td>{x.note ?? "—"}</td></tr>)}</tbody>
+            </table>
+          )}
+        </details>
+      </div>
+      <Confirm open={ask} title={t("ftab.confirm_title")} onCancel={() => setAsk(false)} onConfirm={save} confirmLabel={t("ftab.save")}
+        disabled={act.busy}>
+        <p data-testid="ftab-confirm-note">{pick(d.fingerprint_note)}</p>
+        <p className="small">{t("ftab.n_changed")}: <b data-testid="ftab-away">{away}</b></p>
+        <Field label={t("ftab.note")}>
+          <input value={note} maxLength={300} onChange={(e) => setNote(e.target.value)} data-testid="ftab-note" />
+        </Field>
+        <ErrorBox error={act.error} />
+      </Confirm>
+    </Card>
+  );
+}
 
 export default function Features() {
   const { t, pick, lang } = useI18n();
@@ -95,6 +203,7 @@ export default function Features() {
         </div>
         <p className="small muted">Registry {d.registry_version} · code {d.feature_code_version}</p>
       </Card>
+      <FeatureTable />
     </div>
   );
 }

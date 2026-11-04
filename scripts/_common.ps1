@@ -29,7 +29,7 @@ function Get-PathInfo([switch]$Check) {
     try { $info = $r.text | ConvertFrom-Json } catch { throw "Cannot read storage paths: $($r.text)" }
     if ($r.code -ne 0 -or -not $info.ok) {
         Write-Host "LOI LUU TRU / STORAGE ERROR: $($info.code) - $($info.detail)" -ForegroundColor Red
-        Write-Host "Ung dung KHONG tao database trong o noi khac. Xem docs\LUU-TRU.md (rollback: scripts\rollback-storage.ps1)." -ForegroundColor Yellow
+        Write-Host "Ung dung KHONG tao database trong o noi khac. Xem docs\02_kien_truc_du_lieu\LUU-TRU.md (rollback: scripts\rollback-storage.ps1)." -ForegroundColor Yellow
         throw "storage error $($info.code)"
     }
     $Script:PathInfo = $info

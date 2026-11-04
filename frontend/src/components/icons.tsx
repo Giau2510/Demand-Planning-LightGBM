@@ -1,8 +1,8 @@
 import {
-  ArrowRightLeft, ArrowUpDown, BadgeCheck, Bell, BellOff, BookOpen, Brain, Calendar, CalendarClock, CalendarRange, Camera,
-  ChartColumnBig, ChartLine, ChartNoAxesCombined,
+  ArrowRightLeft, ArrowUpDown, BadgeCheck, Bell, BellOff, BookOpen, Brain, Calendar, CalendarClock, CalendarRange, CalendarSync,
+  Camera, ChartColumnBig, ChartLine, ChartNoAxesCombined,
   ChevronLeft, ChevronRight, CircleAlert, CircleCheck, CircleDashed, CircleX, Clock, Code, Database, DatabaseBackup, Download,
-  ExternalLink, FileSpreadsheet, FileText, FileUp, FlaskConical, FolderClock, Funnel, FunnelX, Gauge, GitCompareArrows, HardDrive,
+  ExternalLink, FileCheck, FileSpreadsheet, FileText, FileUp, FlaskConical, FolderClock, Funnel, FunnelX, Gauge, GitCompareArrows, HardDrive,
   History, Inbox, Info, KeyRound, Languages, Layers, LayoutDashboard, ListChecks, LoaderCircle, LogIn, LogOut, Menu, Package,
   PanelLeftClose, PanelLeftOpen, Percent, Play, Power, RefreshCw, Save, Search, Server, ShieldAlert, ShieldCheck, SlidersHorizontal,
   Trash2, TrendingUp, TriangleAlert, Undo2, Upload, Warehouse, X, type LucideIcon,
@@ -16,11 +16,11 @@ export const ICON = {
   dashboard: LayoutDashboard, results: TrendingUp, history: History, performance: Gauge, snapshots: Camera,
   methodology: BookOpen, import: FileUp, batches: FolderClock, quality: ShieldCheck, config: SlidersHorizontal,
   bigquery: Database, mapping: ArrowRightLeft, sql: Code, features: Layers, schedules: CalendarClock, jobs: ListChecks,
-  system: Server, fhistory: GitCompareArrows,
+  system: Server, fhistory: GitCompareArrows, daily: CalendarSync,
   // business objects
   sku: Package, fc: Warehouse, model: Brain, chart: ChartLine, explain: ChartNoAxesCombined, calendar: Calendar,
   clock: Clock, demo: FlaskConical, file: FileText, backup: DatabaseBackup, disk: HardDrive, alerts: Bell,
-  actual: ChartColumnBig, deviation: ArrowUpDown, percent: Percent, dateRange: CalendarRange,
+  actual: ChartColumnBig, deviation: ArrowUpDown, percent: Percent, dateRange: CalendarRange, report: FileCheck,
   // actions
   export: FileSpreadsheet, download: Download, upload: Upload, search: Search, filter: Funnel, clearFilter: FunnelX,
   refresh: RefreshCw, run: Play, save: Save, delete: Trash2, reset: Undo2, power: Power, promote: BadgeCheck, ack: BellOff,

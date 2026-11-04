@@ -2,7 +2,7 @@
 .SYNOPSIS  Build the portable Windows package: dist\DemandForecast-<version>-win64-portable.zip (+ .sha256 + manifest)
            Contains an embedded CPython (python.org embeddable zip, PSF licence), all pinned wheels,
            the backend, the built UI, scripts, docs and Excel templates. Target machines need no Python/Node.
-           Normally called by scripts\release.ps1 (QA first). See docs\PHAT-TRIEN-QA-PHAT-HANH.md.
+           Normally called by scripts\release.ps1 (QA first). See docs\01_quy_tac\PHAT-TRIEN-QA-PHAT-HANH.md.
 .PARAMETER SkipFrontend  Reuse the existing frontend\dist build.
 .PARAMETER NoZip         Only build the folder dist\DemandForecast-<version>\ (kept), no zip.
 .PARAMETER KeepFolder    Keep the staging folder dist\DemandForecast-<version>\ after zipping (default: removed,
@@ -29,7 +29,8 @@ $manifestPath = Join-Path $dist "$name-win64-portable.manifest.json"
 $packagedScripts = @("_common.ps1", "start.ps1", "stop.ps1", "check-env.ps1", "backup.ps1", "restore.ps1", "install.ps1",
                      "register-autostart.ps1", "unregister-autostart.ps1", "smoke_test.py",
                      "migrate-storage.ps1", "rollback-storage.ps1", "diagnose.ps1", "repair-storage.ps1",
-                     "deploy-upgrade.ps1", "_deploy_staging.ps1", "rollback-version.ps1", "eod-retention.ps1")
+                     "deploy-upgrade.ps1", "_deploy_staging.ps1", "rollback-version.ps1", "eod-retention.ps1",
+                     "ops\don_dep_dinh_ky.ps1", "ops\register-don-dep-task.ps1", "ops\don_dep_giu.txt")
 
 function Get-GitState {
     $ErrorActionPreference = "Continue"
@@ -137,7 +138,10 @@ Copy-Item backend\requirements*.txt (Join-Path $out "backend")
 Copy-Item -Recurse frontend\dist (Join-Path $out "web")
 New-Item -ItemType Directory -Force -Path (Join-Path $out "scripts") | Out-Null
 foreach ($s in $packagedScripts) {
-    Copy-Item (Join-Path "scripts" $s) (Join-Path $out "scripts")
+    $sub = Split-Path $s -Parent                                   # ops\x.ps1 -> scripts\ops\ in the package
+    $dst = if ($sub) { Join-Path $out "scripts\$sub" } else { Join-Path $out "scripts" }
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    Copy-Item (Join-Path "scripts" $s) $dst
 }
 Copy-Item -Recurse docs (Join-Path $out "docs")
 Copy-Item README.md $out

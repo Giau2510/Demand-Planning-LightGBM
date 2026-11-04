@@ -48,7 +48,19 @@ def put_settings(section: str, body: dict):
         # run: both are decided by the training, never saved as user settings (a switch-off is refused, not ignored)
         if body.get("feature_open_hours") is not None:
             raise AppError("OPEN_HOURS_MANDATORY", 422, detail=f"feature_open_hours={body.get('feature_open_hours')!r}")
+        # 1.3.1 (B11): the feature-table snapshot is set only by a training run (on the copy stored with the run)
+        if body.get("feature_table") is not None:
+            raise AppError("FEATURE_TABLE_SET_BY_TRAINING", 409)
         body = {**body, "feature_open_hours": None, "weekday_encoding": None}
+    if section == "feature_table":
+        # 1.3.1 (B11): only through PUT /api/feature-table (confirmation, history + audit)
+        raise AppError("FEATURE_TABLE_VIA_OWN_API", 409)
+    if section == "daily_forecast":
+        # 1.3.1 (B12): the trial mode changes only through its own confirmed endpoint, never with the other settings
+        cur = ss.get("daily_forecast")
+        if "trial_mode" in body and body["trial_mode"] != cur.trial_mode:
+            raise AppError("TRIAL_MODE_CONFIRM_REQUIRED", 409, detail=f"{cur.trial_mode} -> {body['trial_mode']}")
+        body = {**body, "trial_mode": cur.trial_mode}
     if section == "schedule":
         # flow switches (and their switch-on time) change only through /api/schedules, where readiness is checked
         cur = ss.get("schedule").model_dump()
@@ -60,7 +72,8 @@ def put_settings(section: str, body: dict):
 
 
 SCHEDULE_SWITCHES = ("d1_enabled", "d0_enabled", "train_enabled", "d1_enabled_at", "d0_enabled_at", "train_enabled_at",
-                     "eod_enabled", "close_enabled", "eod_enabled_at", "close_enabled_at")
+                     "eod_enabled", "close_enabled", "eod_enabled_at", "close_enabled_at",
+                     "refresh_enabled", "refresh_enabled_at", "report_enabled", "report_enabled_at")     # 1.3.1
 
 
 @router.post("/settings/{section}/reset")
@@ -71,6 +84,12 @@ def reset_settings(section: str):
         cur = ss.get("schedule").model_dump()
         keep = {k: cur[k] for k in SCHEDULE_SWITCHES}
         return ss.save("schedule", {**ss.ScheduleSettings().model_dump(), **keep}, note="reset (switches kept)").model_dump()
+    if section == "feature_table":      # 1.3.1: only through PUT /api/feature-table
+        raise AppError("FEATURE_TABLE_VIA_OWN_API", 409)
+    if section == "daily_forecast":     # 1.3.1: a reset never switches the trial mode
+        trial = ss.get("daily_forecast").trial_mode
+        return ss.save("daily_forecast", {**ss.DailyForecastSettings().model_dump(), "trial_mode": trial},
+                       note="reset (trial mode kept)").model_dump()
     return ss.reset(section).model_dump()
 
 

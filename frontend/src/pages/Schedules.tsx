@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { get, post, put } from "../api";
 import { useI18n } from "../i18n";
-import { Card, Code, ErrorBox, Field, JobProgress, Loading, OkBox, PageHeader, Pill, fmtDate, fmtTime, jobOutcome, useAction, useAsync } from "../components/ui";
+import { Card, Code, ErrorBox, Field, JobProgress, Loading, OkBox, PageHeader, Pill, fmtDate, fmtTime, jobOutcome, useAction, useAsync, weekdayLabel } from "../components/ui";
 import { Icon, type IconName } from "../components/icons";
 
 /** Pill tone for the effective state reported by the backend (never computed from the form). */
@@ -9,7 +9,7 @@ const STATE_PILL: Record<string, string> = { OFF: "SKIPPED", ON: "OK", ON_NOT_RE
   ON_SCHEDULER_STOPPED: "FAILED" };
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-type FlowKey = "d1" | "d0" | "train" | "eod" | "close";
+type FlowKey = "d1" | "d0" | "train" | "eod" | "close" | "refresh" | "report";
 
 function Readiness({ r }: { r: any }) {
   const { t, pick } = useI18n();
@@ -49,7 +49,9 @@ function LastRun({ v }: { v: any }) {
   );
 }
 
-const FLOW_ICON: Record<FlowKey, IconName> = { d1: "calendar", d0: "clock", train: "model", eod: "fhistory", close: "actual" };
+const FLOW_ICON: Record<FlowKey, IconName> = { d1: "calendar", d0: "clock", train: "model", eod: "fhistory", close: "actual",
+  refresh: "daily", report: "report" };
+const WEEKDAYS = [1, 2, 3, 4, 5, 6, 7];     // ISO weekday of the 1.3.1 accuracy report (1 = Monday)
 
 /** 1.2.6 day-end flows: the scheduler runtime state reported by the backend (never derived from the form). */
 const RUNTIME_PILL: Record<string, string> = { REGISTERED: "OK", NOT_REGISTERED: "SKIPPED", PENDING: "PENDING",
@@ -95,8 +97,10 @@ function FlowCard({ flow, v, title, intro, children, onSaved, confirmOn, conflic
   const set = (p: any) => setForm((f: any) => ({ ...f, ...p }));
   const dirty = JSON.stringify(form) !== JSON.stringify(v.config);
   const conflict = dayEnd && !!conflictTime && form.time === conflictTime;   // the two day-end flows never share a minute
-  const invalid = Object.entries(form).some(([k, x]) => (k === "time" || k === "fallback_time") && !HHMM.test(String(x)))
-    || (form.times && (!Array.isArray(form.times) || form.times.some((x: string) => !HHMM.test(x)))) || conflict;
+  const invalid = Object.entries(form).some(([k, x]) => (k === "time" || k === "fallback_time" || k === "deadline") && !HHMM.test(String(x)))
+    || (form.times && (!Array.isArray(form.times) || form.times.some((x: string) => !HHMM.test(x)))) || conflict
+    // 1.3.1 refresh flow: retry every 1..60 minutes (the backend's range)
+    || ("retry_minutes" in form && !(Number.isInteger(form.retry_minutes) && form.retry_minutes >= 1 && form.retry_minutes <= 60));
   const save = async (body: any, ok: string) => {
     setWarn(null);
     const r = await act.run(() => put(`/api/schedules/${flow}`, body), ok);
@@ -207,7 +211,7 @@ function TimezoneField({ flow, form, set, v }: { flow: FlowKey; form: any; set: 
 
 /** One page for the automatic data flows: D-1 (closed days), D-0 (today), daily training - each with its own switch. */
 export default function Schedules() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const data = useAsync(() => get("/api/schedules"), []);
   const header = <PageHeader icon="schedules" title={t("nav.schedules")} desc={t("sch.intro")}
     actions={<button onClick={data.reload} disabled={data.loading}><Icon name="refresh" />{t("common.refresh")}</button>} />;
@@ -276,6 +280,31 @@ export default function Schedules() {
           {(form, set) => (<>
             <Field label={t("sch.close.time")}><Time testid="close-time" value={form.time} onChange={(x) => set({ time: x })} /></Field>
             <TimezoneField flow="close" form={form} set={set} v={f.close} />
+          </>)}
+        </FlowCard>
+      )}
+
+      {f.refresh && (
+        <FlowCard flow="refresh" v={f.refresh} title={t("sch.refresh.title")} intro={t("sch.refresh.intro")} onSaved={data.reload}
+          confirmOn={t("sch.refresh.confirm_on")}>
+          {(form, set) => (<>
+            <Field label={t("sch.refresh.deadline")} help={t("sch.refresh.deadline_help")}><Time testid="refresh-deadline" value={form.deadline} onChange={(x) => set({ deadline: x })} /></Field>
+            <Field label={t("sch.refresh.retry")}><input data-testid="refresh-retry" type="number" min={1} max={60} value={form.retry_minutes}
+              onChange={(e) => set({ retry_minutes: Number(e.target.value) })} /></Field>
+          </>)}
+        </FlowCard>
+      )}
+
+      {f.report && (
+        <FlowCard flow="report" v={f.report} title={t("sch.report.title")} intro={t("sch.report.intro")} onSaved={data.reload}
+          confirmOn={t("sch.report.confirm_on")}>
+          {(form, set) => (<>
+            <Field label={t("sch.report.weekday")}>
+              <select data-testid="report-weekday" value={form.weekday} onChange={(e) => set({ weekday: Number(e.target.value) })}>
+                {WEEKDAYS.map((d) => <option key={d} value={d}>{weekdayLabel(d, lang)}</option>)}
+              </select>
+            </Field>
+            <Field label={t("sch.report.time")}><Time testid="report-time" value={form.time} onChange={(x) => set({ time: x })} /></Field>
           </>)}
         </FlowCard>
       )}
