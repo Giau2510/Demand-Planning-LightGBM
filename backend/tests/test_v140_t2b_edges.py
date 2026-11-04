@@ -27,6 +27,8 @@ def sha(booster) -> str:
 
 @pytest.fixture(scope="module")
 def fx():
+    if not FIX.is_dir():   # real-data sample, kept outside Git (owner 04/11): a clone without it skips
+        pytest.skip("tests/fixtures/sel2 is not in this checkout")
     frame = pd.read_parquet(FIX / "lgbm_frame.parquet")
     with np.load(FIX / "lgbm_expected.npz", allow_pickle=False) as z:
         exp = json.loads(str(z["expected_json"]))
