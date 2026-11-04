@@ -81,8 +81,8 @@ AVG_DEMAND của ngày D).
 | `lightgbm_forecast` | số nguyên đã công bố của SEL2 (0 khi dưới 0,2, còn lại làm tròn lên) |
 | `avg_demand` | giá trị AVG_DEMAND của ngày D (trống khi không có) |
 | `forecast_source` | nguồn đã cấu hình của SKU × FC |
-| `forecast_used` | **số dùng**: LightGBM khi cấu hình LIGHTGBM và lần chạy có số của ngày đó; còn lại AVG_DEMAND (trống khi không có, không bao giờ ghi 0) |
-| `fallback_reason` | chỉ với LIGHTGBM khi phải dùng AVG_DEMAND: `NGOAI_PHAM_VI` (SKU × FC ngoài phạm vi lần chạy), `STALE` (lần chạy cũ không có số của ngày đó), `KHONG_CO_SO` (không có số vì lý do khác) |
+| `forecast_used` | **số dùng**: LightGBM khi cấu hình LIGHTGBM và lần chạy có số của ngày đó (kể cả 0). LIGHTGBM nhưng SKU × FC **ngoài phạm vi lần chạy** (quyết định chủ dự án 04/11/2026): mã tiền tố `MEDX` -> **0**; mã khác (`MEDX_E`, `BML_INT`, `TAYAU_E`, `BML_E`…) -> AVG_DEMAND (tạm thời). Còn lại AVG_DEMAND (trống khi không có, không bao giờ ghi 0) |
+| `fallback_reason` | chỉ với LIGHTGBM khi không có số LightGBM: `NGOAI_PHAM_VI_GAN_0` (ngoài phạm vi, mã MEDX, ghi 0), `KHONG_CO_DU_LIEU_DEMAND` (ngoài phạm vi, mã không phải MEDX, dùng AVG_DEMAND), `STALE` (lần chạy cũ không có số của ngày đó), `KHONG_CO_SO` (trong phạm vi nhưng không có số, hoặc chưa có lần chạy SEL2 nào: dùng AVG_DEMAND, không ghi 0). `NGOAI_PHAM_VI` chỉ còn trong file xuất trước 04/11/2026 |
 | `model_used`, `raw_value` | mô hình SEL2 đã dùng (vd `MOC+DOW4`, `FALLBACK:V33_L112`) và giá trị thô |
 | `model_version`, `data_cutoff_date` | ba lần huấn luyện dùng; ngày dữ liệu cuối (D-1) |
 | `is_stale`, `flags` | 1 = file dùng số cũ (mục 6); cờ (`MODEL_PREV_WEEK`, `OPEN_HOURS_LAG`, ...) |

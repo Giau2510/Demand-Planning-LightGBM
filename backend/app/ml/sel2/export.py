@@ -16,8 +16,11 @@ is flagged AVG_NO_READ (file level: TOM_TAT and export_runs.flags).
   DU_BAO   one row per SKU x FC x target day (D .. D+6): the union of the SKU x FC of the SEL2 run used and of the
            SKU x FC with an AVG_DEMAND row of day D. forecast_used = the LightGBM number when the SKU x FC is configured
            LIGHTGBM and the run has a number for that day, otherwise the AVG_DEMAND value of day D (empty when there is
-           none: a missing value is never written as 0). fallback_reason (LIGHTGBM only): NGOAI_PHAM_VI (not in the
-           run), STALE (stale run without a number for that day), KHONG_CO_SO (no number for another reason).
+           none: a missing value is never written as 0). fallback_reason (LIGHTGBM only): STALE (stale run without a
+           number for that day), KHONG_CO_SO (no number for another reason). Owner decision 04/11/2026: a LIGHTGBM
+           SKU x FC that is not in the run used (outside the forecast scope) gets 0 when its sku_code prefix is MEDX
+           (NGOAI_PHAM_VI_GAN_0), else the AVG_DEMAND value (KHONG_CO_DU_LIEU_DEMAND, temporary: only MEDX is sold
+           in the demand source); without any run the AVG_DEMAND rule above stays.
   TOM_TAT  counts of the file (scope, fallback reasons, flags, model used, AVG_DEMAND read used).
   CONFIG   the SKU x FC configured LIGHTGBM at export time.
 
@@ -59,7 +62,9 @@ COLUMNS = ("sku_code", "ten_san_pham", "fc_code", "nhom", "forecast_date", "targ
 CONFIG_COLUMNS = ("sku_code", "fc_code", "ten_san_pham", "ghi_chu", "updated_by", "updated_at")
 SUMMARY_COLUMNS = ("muc", "gia_tri")
 LIGHTGBM = "LIGHTGBM"
-REASON_OUT, REASON_STALE, REASON_NONE = "NGOAI_PHAM_VI", "STALE", "KHONG_CO_SO"
+REASON_STALE, REASON_NONE = "STALE", "KHONG_CO_SO"
+REASON_OUT_ZERO, REASON_NO_DEMAND = "NGOAI_PHAM_VI_GAN_0", "KHONG_CO_DU_LIEU_DEMAND"   # owner decision 04/11/2026
+DEMAND_PREFIX = "MEDX"                    # sku_code prefix (before the first ".") of the SKU in the demand source
 STALE_NO_RUN_FOR_DAY, STALE_NO_RUN, STALE_NO_SCOPE = "NO_RUN_FOR_DAY", "NO_SEL2_RUN", "SCOPE_UNRESOLVED"
 FLAG_AVG_NO_READ = "AVG_NO_READ"                    # file level: day D has no completed AVG_DEMAND read
 FLAG_LATEST_LOCKED, FLAG_LATEST_FAILED = "LATEST_COPY_LOCKED", "LATEST_COPY_FAILED"
@@ -297,11 +302,13 @@ def _rows(d: date, keys: list, run: dict | None, run_keys: dict, vals: dict, avg
             reason = None
             if src == LIGHTGBM and qty is not None:
                 used = qty
+            elif src == LIGHTGBM and run is not None and info is None:
+                # outside the forecast scope of the run: MEDX near 0 -> 0, other prefixes AVG_DEMAND (temporary)
+                used, reason = (0, REASON_OUT_ZERO) if sku.split(".", 1)[0] == DEMAND_PREFIX else (av, REASON_NO_DEMAND)
             else:
                 used = av
                 if src == LIGHTGBM:
-                    reason = (REASON_NONE if run is None else REASON_OUT if info is None else
-                              REASON_STALE if stale else REASON_NONE)
+                    reason = REASON_STALE if run is not None and stale else REASON_NONE
             fl = [x for x in (v[3] or "").split(",") if x] if v else []
             if a_reason:
                 fl.append(f"AVG_{a_reason}")

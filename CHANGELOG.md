@@ -5,6 +5,14 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.4.1 (04/11/2026) (daily Excel: owner rule for LIGHTGBM SKU x FC outside the scope of the run)
+
+* **Daily Excel, forecast_used of a LIGHTGBM SKU x FC outside the scope of the run** (owner decision 04/11/2026,
+  [docs/05_nhat_ky_quyet_dinh.md](docs/05_nhat_ky_quyet_dinh.md)): sku_code prefix `MEDX` -> 0 with fallback_reason
+  `NGOAI_PHAM_VI_GAN_0`; any other prefix -> AVG_DEMAND with `KHONG_CO_DU_LIEU_DEMAND` (temporary). Replaces
+  `NGOAI_PHAM_VI`. Unchanged: a LightGBM number (0 included) is used; in the scope without a number for the day, or no
+  SEL2 run at all -> AVG_DEMAND with `KHONG_CO_SO` / `STALE`, never 0 (`backend/app/ml/sel2/export.py`).
+
 ## 1.4.0 (03/11/2026) (SEL2: per-SKU model selection among 6 candidates, forecast source per SKU x FC, daily Excel)
 
 User guide: [docs/03_van_hanh/HUONG-DAN-NGUON-DU-BAO.md](docs/03_van_hanh/HUONG-DAN-NGUON-DU-BAO.md); upload template

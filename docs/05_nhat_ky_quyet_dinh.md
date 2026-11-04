@@ -200,3 +200,23 @@ mục này làm lịch sử batch; mục nào đã có quyết định mới hơ
   feature/san-xuat-chon-mo-hinh-20261101 = 1 commit d63ee22 trên main, tag v1.4.0; mẫu dữ liệu thật
   tests/fixtures/sel2 và bộ truy cập từ xa giữ ngoài Git. **Từ nay mọi thay đổi làm trên branch github/1.4.0**
   (worktree D:\Buymed\ban-1.4); bản 1.4.1 tách từ branch này. Merge vào main: chủ dự án quyết sau.
+* **~12:50 – Chủ dự án: CHỐT NGUỒN SỐ DÙNG ĐỂ MUA = LIGHTGBM cho TOÀN BỘ SKU × kho.**
+  (1) forecast_source = LIGHTGBM cho 58.591 SKU × kho của file 04/11, áp dụng 12:59 bằng chức năng tải lên hàng loạt có
+  sẵn (/api/sel2/source-config/upload -> apply; batch SCU-20261104055942-4E9A1A, kênh UPLOAD, 58.591 dòng lịch sử,
+  changed_by = Giau Vo). Sao lưu trước/sau + data-check (WARN, không ERROR): reports\chot-nguon-lightgbm-20261104\. Cặp
+  SKU × kho mới xuất hiện sau ngày này vẫn mặc định AVG_DEMAND cho đến khi được cấu hình.
+  (2) Quy tắc forecast_used: có lightgbm_forecast (kể cả 0) -> dùng lightgbm_forecast; trống + mã MEDX -> 0,
+  fallback_reason NGOAI_PHAM_VI_GAN_0; trống + mã không phải MEDX (MEDX_E, BML_INT, TAYAU_E, BML_E…) -> avg_demand,
+  fallback_reason KHONG_CO_DU_LIEU_DEMAND (tạm thời, chờ quyết định sau). Không có cấu hình cho quy tắc này -> bản vá
+  nhỏ backend/app/ml/sel2/export.py (_rows) + test.
+  (3) Xuất lại Excel hôm nay (không chạy lại dự báo) SAU khi bản vá được cài; báo trước khi cài.
+* **~13:25 – Chủ dự án: "ok cài", bản vá = 1.4.1** (branch github/1.4.1 tách từ github/1.4.0). Xác nhận cách hiểu: chỉ
+  gán 0 cho MEDX NGOÀI phạm vi lần chạy SEL2; chưa có lần chạy SEL2 hoặc thiếu số trong phạm vi -> giữ avg_demand
+  (KHONG_CO_SO / STALE). Trên file 04/11 mọi ô LightGBM trống đều là SKU × kho ngoài phạm vi. Mọi mục ghi "1.4.1" ở trên
+  (đồng bộ hằng tuần, RAM mục 1/3/4/6, ghi chú "lịch sử chưa đủ 28 ngày", câu DAILY_FORECAST_PUBLISHED, mỗi ngày 1 file
+  Excel, FALLBACK a + b, dọn dung lượng sau 1.4.1) chuyển sang **1.4.2**. Làm từ 19:00 (ngoài giờ làm việc): commit ->
+  reviewer -> toàn bộ test (khi đủ RAM) -> đóng gói 1.4.1 -> sao lưu + thử khôi phục -> deploy-upgrade.ps1 (tránh
+  23:45–00:15 và 00:45–03:00) -> kiểm tra sau cài (health, data-check, lịch chạy trùng tuyệt đối) -> xuất lại Excel 04/11
+  (không chạy lại dự báo), kiểm tra 0 dòng sai quy tắc, báo đường dẫn file qua chat + điện thoại.
+  **Danh sách 1.4.2 (thêm):** mỗi tuần báo danh sách SKU × kho đã có lightgbm_forecast nhưng cấu hình vẫn AVG_DEMAND, để
+  chủ dự án chuyển.
