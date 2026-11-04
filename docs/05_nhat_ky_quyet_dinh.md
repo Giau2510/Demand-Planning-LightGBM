@@ -184,3 +184,19 @@ mục này làm lịch sử batch; mục nào đã có quyết định mới hơ
   DAILY_FORECAST_PUBLISHED (backend/app/messages.py:407) hiện ở trang Lịch chạy / Job -> bản vá nhỏ ở 1.4.1.
   **Danh sách 1.4.1:** mỗi ngày chỉ giữ 1 file Excel cuối cùng (bản trước đổi tên _bo hoặc xoá), để không nhầm với file
   chưa đọc xong Avg Demand như _v1.
+* **09:00 – Đồng bộ lịch sử ÁP DỤNG XONG** (job JOB-20261104004153-919540, lần đồng bộ D1L-20261104011004-7EF84D,
+  FOLLOW_SOURCE 01/01–28/10, nguồn 2026-11-03T18:10:23Z không đổi; job tự sao lưu backup-20261104-074646-pre-backfill.zip):
+  đối soát 0 khoá lệch, 602 / 602 ô ngày × kho khớp nguồn, tổng 42.470.559 đơn vị (bỏ 58.009); history_source_drift
+  300 -> 1 ngày.
+* **~11:50 – Chủ dự án: ĐÓNG ĐỒNG BỘ.** Ngày còn lệch nằm ngoài khoảng đã duyệt: **29/10/2026**, DB 2.993 SKU × kho /
+  74.759 đơn vị, nguồn 2.996 / 74.806 (nguồn nhiều hơn 3 dòng, +47 đơn vị), ghi nhận ở lần kiểm tra của D-1 lúc
+  2026-11-03T18:42:55Z. Để nguyên; **job đồng bộ hằng tuần của 1.4.1 xử lý.**
+* **~11:50 – FALLBACK (file 04/11: 36,8 % SKU × kho; D3 15/10 41,3 %; backtest tháng 10 43,7 % cùng cách đếm, 16,6 %
+  khi chỉ đếm ô có thực bán):** nguyên nhân chính là ngày không mở bán (5.336 / 5.428 SKU × kho FALLBACK có < 14 ngày mở
+  bán trong 28 ngày, 3.427 có 0 ngày). **Danh sách 1.4.1: làm a + b, KHÔNG làm c.** (a) TOM_TAT ghi tỷ lệ FALLBACK theo 2
+  mẫu số (tất cả SKU × kho / SKU × kho có mở bán); (b) SKU × kho 0 ngày mở bán trong 28 ngày có lý do riêng, tách khỏi
+  FALLBACK thiếu ngày. (c) đổi luật số ngày tối thiểu: không làm.
+* **~11:50 – Git:** code 1.4.0 đã lên GitHub (chủ dự án cho phép push lần này): branch
+  feature/san-xuat-chon-mo-hinh-20261101 = 1 commit d63ee22 trên main, tag v1.4.0; mẫu dữ liệu thật
+  tests/fixtures/sel2 và bộ truy cập từ xa giữ ngoài Git. **Từ nay mọi thay đổi làm trên branch github/1.4.0**
+  (worktree D:\Buymed\ban-1.4); bản 1.4.1 tách từ branch này. Merge vào main: chủ dự án quyết sau.
