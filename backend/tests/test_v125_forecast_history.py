@@ -507,8 +507,10 @@ def test_migration_0004_on_a_v3_database_keeps_every_row_and_records_old_runs(tm
 def test_remote_proxy_allows_the_history_reads_only():
     import importlib.util
     from pathlib import Path
-    spec = importlib.util.spec_from_file_location(
-        "rp125", Path(__file__).resolve().parents[2] / "scripts" / "remote" / "readonly_proxy.py")
+    rp_path = Path(__file__).resolve().parents[2] / "scripts" / "remote" / "readonly_proxy.py"
+    if not rp_path.exists():   # scripts/remote is kept outside Git (owner 04/11)
+        pytest.skip("scripts/remote is not in this checkout")
+    spec = importlib.util.spec_from_file_location("rp125", rp_path)
     rp = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(rp)
     for p in ("/api/history/overview", "/api/history/summary?run_from=2026-10-01", "/api/history/rows?limit=10",

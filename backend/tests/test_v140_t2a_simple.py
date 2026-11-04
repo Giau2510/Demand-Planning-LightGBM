@@ -24,6 +24,8 @@ TOL = 1e-9
 
 @pytest.fixture(scope="module")
 def sf():
+    if not FIX.is_dir():   # real-data sample, kept outside Git (owner 04/11): a clone without it skips
+        pytest.skip("tests/fixtures/sel2 is not in this checkout")
     with np.load(FIX / "simple.npz", allow_pickle=False) as z:
         d = {k: z[k] for k in z.files}
     d["day0"] = date.fromisoformat(str(d["day0"]))
@@ -36,6 +38,8 @@ def sf():
 
 @pytest.fixture(scope="module")
 def xf():
+    if not FIX.is_dir():   # real-data sample, kept outside Git (owner 04/11): a clone without it skips
+        pytest.skip("tests/fixtures/sel2 is not in this checkout")
     with np.load(FIX / "extras.npz", allow_pickle=False) as z:
         d = {k: z[k] for k in z.files}
     d["dates"] = pd.date_range(str(d["day0"]), periods=d["Y"].shape[1], freq="D")

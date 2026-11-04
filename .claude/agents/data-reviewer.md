@@ -2,7 +2,7 @@
 name: data-reviewer
 description: Independent read-only review of a proposed schema migration, data transformation or data-handling code change in Demand Forecasting, against docs/02_kien_truc_du_lieu/DATA-MODEL.md, the migrations and the invariants of app/data_checks.py. Use before applying any migration or change that touches import batches, demand_daily, forecasts, models or settings storage.
 tools: Read, Grep, Glob
-model: sonnet
+model: opus
 maxTurns: 25
 ---
 

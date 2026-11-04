@@ -137,3 +137,50 @@ mục này làm lịch sử batch; mục nào đã có quyết định mới hơ
   commit < 1,5 GB vì ứng dụng khác chiếm khoảng 18 GB); chạy lại 12:46 theo lệnh chủ dự án.
 * **15:46 – sel2-day quy mô production** (bản sao, ngày 15/10, code 85625db): 441 s tổng, đỉnh bộ nhớ riêng 1.654 MB;
   nạp 172 s, 6 ứng viên 97 s, chọn + công bố 136 s, xuất Excel 104.307 dòng 5,4 s. Đạt (đỉnh < 3 GB, Excel < 60 phút).
+* **~17:00–18:00 – Cài 1.4.0 (chủ dự án trả lời "CÀI"):** sao lưu backup-20261103-170118-pre-140.zip (không ghi trong lúc
+  sao lưu) + thử khôi phục đạt; deploy-upgrade.ps1 UPGRADE OK 1.3.1 -> 1.4.0 (migration 0012); health 1.4.0, lịch chạy
+  trùng tuyệt đối (sha d419d8c947ba63c9), storage.json không đổi. E2 bị chậm 2,5 giờ vì phiên điều phối không đặt lệnh
+  chờ cho CANDIDATE_TRAIN (xong 18:21).
+* **~21:00 – Chế độ vận hành mới (áp dụng cho mọi việc sau này; ghi cả trong CLAUDE.md):** tự chạy liên tục mọi bước đã
+  duyệt, chỉ dừng hỏi khi chốt an toàn không đạt / phải xoá-ghi đè ngoài danh sách đã duyệt / thay đổi ảnh hưởng mua hàng;
+  STATUS.md mỗi 10 phút, chat sau mỗi bước và >= mỗi 30 phút, thông báo Windows; chống kẹt (15 phút không tiến độ hoặc
+  tiến trình chết -> báo; lỗi tạm thử lại 1 lần).
+* **~21:00 – Đêm 03/11:** tạm tắt làm mới dự báo + xuất Excel tự động sau D-1 (D-1 01:10 vẫn chạy); E2 (giờ mở bán từ
+  01/01 -> _TAM -> 4 mốc -> 28 ngày, nghỉ trong 23:45–00:15 và 00:45–03:00); E3 (SEL2 + Excel chính thức + bật lại lịch,
+  lịch trùng tuyệt đối trước khi tắt, trước 06:30); 05:30 E2 chưa xong -> bật lại lịch, xuất bằng lịch sử đã có, báo.
+  Sau đó: đăng ký lịch dọn định kỳ (thử -Apply trên thư mục mẫu trước), đồng bộ lịch sử khi production rảnh.
+* **~21:15 – Bộ chạy độc lập:** scripts\ops\runner\ (Scheduled Task, plan.json, điểm dừng, watchdog mỗi 5 phút, STATUS.md +
+  status.json mỗi 5 phút, ntfy.sh + thông báo Windows); test trên plan mẫu trước; chỉ giao E3 cho runner sau khi test
+  đạt, nếu chưa sẵn sàng khi E2 xong thì phiên chat tự chạy E3.
+* **~21:20 – Nhánh 05:30:** KHÔNG làm bản vá. Nếu kích hoạt: giữ file gốc, chép thêm 1 bản du_bao_YYYYMMDD_LICH_SU_THIEU.xlsx
+  và tạo du_bao_YYYYMMDD_GHI_CHU.txt cùng thư mục (lịch sử có bao nhiêu ngày / 28; số SKU × kho dùng mô hình dự phòng
+  V33_L112); báo qua chat + thông báo Windows + ntfy. **Danh sách 1.4.1:** dòng ghi chú "lịch sử chưa đủ 28 ngày" trong
+  TOM_TAT.
+* **22:07 – E3 giao cho runner** (scripts\ops\runner, test 34/34, review chấp thuận sau 3 vòng sửa): task
+  DemandForecastRunner (plan reports\e3-20261104\plan.json, 6 bước: chờ E2 hoặc nhánh 05:30 -> chờ D-1 hôm nay ->
+  sel2-day + Excel chính thức (03:00–06:25) -> nhánh 05:30 -> bật lại làm mới/xuất tự động, lịch trùng tuyệt đối ->
+  data-check) + DemandForecastRunnerWatchdog (mỗi 5 phút; bỏ qua sel2-bootstrap / sel2-openhours-backfill của E2).
+  Báo qua thông báo Windows + ntfy (chủ dự án xác nhận nhận được tin trên điện thoại 21:36). Phiên chat từ giờ chỉ đọc
+  STATUS.md và báo lại E3. File tạm du_bao_20261103_TAM.xlsx (410.137 dòng) có lúc 21:55.
+
+### 04/11/2026
+
+* **03:45 – E3 xong (runner):** SEL2 04/11 + Excel chính thức du_bao_20261104.xlsx (v2, 410.137 dòng) lúc 03:23; bật lại
+  làm mới/xuất tự động, lịch trùng tuyệt đối (sha d419d8c9…); data-check không có ERROR. Nhánh 05:30 không cần.
+* **06:33 – Đồng bộ lịch sử DỪNG ở chốt chặn:** 1.091 khoá thay đổi ngoài 1.273 khoá đã báo 02/11 (1.039 dòng BI xoá thêm
+  sau 02/11 + 52 khoá giảm số lượng, khoảng 22.578 đơn vị); không ghi gì vào production. Danh sách:
+  reports\dong-bo-lich-su-20261102\khoa_moi_ngoai_1273_20261104.csv.
+* **~07:35 – Chủ dự án: ÁP DỤNG ĐỒNG BỘ 2.364 KHOÁ** (gồm 1.091 khoá mới – đơn huỷ / trả BI xoá thêm sau 02/11), chạy ngay,
+  được phép trùng lượt D0. Dùng bản xem trước BFP-20261103232209-00CECF nếu nguồn chưa đổi; nguồn đổi thì xem trước lại,
+  chốt chặn giữ nguyên trừ chốt "chỉ trong 1.273 khoá", thay bằng: mọi thay đổi là xoá hoặc giảm số lượng, KHÔNG có khoá
+  mới phía nguồn, tổng bỏ <= 0,2 %. Áp dụng -> đối soát theo ngày × kho -> data-check (hết history_source_drift).
+  **Danh sách 1.4.1:** job đồng bộ hằng tuần dùng chốt theo TỶ LỆ (tổng bỏ <= 0,5 %, ngày bỏ > 5 % thì liệt kê, không có
+  khoá mới phía nguồn), KHÔNG dùng danh sách khoá cố định.
+* **07:55 – Chủ dự án: TẮT NHÃN "Chạy thử – chưa dùng để mua hàng".** Tắt bằng API có sẵn POST
+  /api/daily-forecast/trial-mode (cụm xác nhận TAT-CHAY-THU-2026-11-04); lịch sử cấu hình id 65 "OWNER_CONFIRMED
+  trial_mode=false", nhật ký TRIAL_MODE_CHANGED. Sao lưu cấu hình trước/sau: reports\tat-chay-thu-20261104\. Chỉ
+  daily_forecast.trial_mode đổi (true -> false); 11 nhóm cấu hình còn lại (lịch chạy, nguồn dự báo…) không đổi. Từ giờ
+  số dự báo làm mới được coi là số dùng để mua hàng. Chữ còn nằm cứng trong code (không tắt bằng cấu hình): câu kết quả
+  DAILY_FORECAST_PUBLISHED (backend/app/messages.py:407) hiện ở trang Lịch chạy / Job -> bản vá nhỏ ở 1.4.1.
+  **Danh sách 1.4.1:** mỗi ngày chỉ giữ 1 file Excel cuối cùng (bản trước đổi tên _bo hoặc xoá), để không nhầm với file
+  chưa đọc xong Avg Demand như _v1.

@@ -248,7 +248,10 @@ def test_a_stored_125_schedule_reads_the_central_day_end_defaults_and_keeps_the_
 
 
 def test_the_read_only_proxy_still_refuses_every_schedule_write_and_the_dry_run():
-    spec = importlib.util.spec_from_file_location("readonly_proxy", ROOT / "scripts" / "remote" / "readonly_proxy.py")
+    rp_path = ROOT / "scripts" / "remote" / "readonly_proxy.py"
+    if not rp_path.exists():   # scripts/remote is kept outside Git (owner 04/11)
+        pytest.skip("scripts/remote is not in this checkout")
+    spec = importlib.util.spec_from_file_location("readonly_proxy", rp_path)
     rp = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(rp)
     for method, path in (("PUT", "/api/schedules/eod"), ("PUT", "/api/schedules/close"),

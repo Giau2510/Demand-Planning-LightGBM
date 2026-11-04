@@ -32,6 +32,8 @@ def _hist_from(d: date) -> date:
 
 @pytest.fixture(scope="module")
 def fx():
+    if not FIX.is_dir():   # real-data sample, kept outside Git (owner 04/11): a clone without it skips
+        pytest.skip("tests/fixtures/sel2 is not in this checkout")
     keys = pd.read_parquet(FIX / "select_keys.parquet")
 
     def dec(df):
