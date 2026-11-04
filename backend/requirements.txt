@@ -8,6 +8,7 @@ numpy==2.5.4
 pandas==3.0.6
 lightgbm==4.7.0
 openpyxl==3.1.5
+pyarrow==26.0.0
 tzdata==2026.5
 google-cloud-bigquery==3.46.1
 google-auth==2.62.0

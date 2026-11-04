@@ -228,3 +228,25 @@ mục này làm lịch sử batch; mục nào đã có quyết định mới hơ
   (đồng bộ hằng tuần, RAM, FALLBACK a + b, 1 file Excel/ngày, dọn forecast_refresh_values / actual_daily, pyarrow…) để
   bản sau. Chuỗi: 1.4.1 cài xong -> sel2-openhours-backfill 7 ngày -> toàn bộ test 1.4.2 -> đóng gói -> sao lưu + thử khôi
   phục -> cài (tránh 23:45–00:15) qua runner -> đóng gói lại ZIP bàn giao từ 1.4.2.
+* **~21:20 – Chủ dự án: BỎ cài 1.4.1 riêng, cài thẳng 1.4.2** (1.4.2 chứa quy tắc của 1.4.1). Lần cài 1.4.1 lúc 17:25
+  dừng ở bước sao lưu trực tuyến (deploy-upgrade.ps1 chỉ chờ 600 giây; DB 9,4 GiB cần ~24 phút) – production không đổi;
+  1.4.2 nâng thời gian chờ lên 3.600 giây. Đọc bù giờ mở bán 28/10–03/11 xong 22:59 (354.942 dòng, data-check WARN).
+* **~23:15 – Chủ dự án (trả lời báo cáo 23:08):**
+  (1) Số Avg cũ: thay 42,2 % bằng **36,5 %** (tái lập trên đúng 1.596.978 ô backtest 01/06–22/10, cùng cách chấm; MOC
+  64,63 % / SEL2 69,79 % tái lập đúng). 42,2 % là số tính trước đây trên dữ liệu chưa sửa và tập ô khác, không dùng nữa.
+  Chấm ngày 03/11 (9.110 ô trong phạm vi, có mở bán, có số LightGBM): SEL2 72,9 % vs Avg 36,2 %.
+  (2) pyarrow vào requirements ngay trong 1.4.2 (chưa đóng gói).
+  (3) ZIP bàn giao đóng SAU khi cài 1.4.2 và kiểm tra sau cài đạt (sáng 05/11), từ gói cài 1.4.2 thật; không chạy việc
+  nặng trong 00:45–03:45.
+  (4) Sau khi cài + kiểm tra đạt: xoá thư mục tạm DemandForecast-deploy\20261104-215907; push branch github/1.4.2 + tag
+  v1.4.2 lên GitHub (loại file như v1.4.0), không merge main.
+  (5) Sau khi cài 1.4.2: (a) sửa phần đọc dữ liệu của giao diện, KHÔNG đổi bố cục: bảng trang menu -> nguồn dữ liệu ->
+  cách hiển thị -> ngày mới nhất; "Kết quả dự báo", "Dự báo hằng ngày" hiển thị lần SEL2 mới nhất (lightgbm_forecast,
+  avg_demand, forecast_source, forecast_used, model_used); "Lịch sử Forecast & Thực tế" từ 04/11 dùng số SEL2 đã công bố
+  so với thực bán (trước 04/11 giữ nguyên, có nhãn nguồn); mọi trang dự báo có dòng "Nguồn – làm mới lúc – dữ liệu
+  đến"; số trên trang khớp 100 % file Excel cùng ngày; ảnh trước–sau để chủ dự án duyệt rồi mới cài. Quy tắc: KHÔNG đổi
+  cấu trúc giao diện khi chưa có ảnh trước–sau và chủ dự án duyệt. (b) Kiểm chứng học lại mỗi ngày trên bản sao g1: SEL2
+  ngày dự báo 01/10–22/10, (A) học theo tuần vs (B) học lại mỗi ngày, chấm cùng cách (Đúng, Đúng S2, thiếu, dư, lệch –
+  ngày 1 và 7 ngày, theo nhóm); bật B nếu Đúng(B) >= Đúng(A) và thiếu(B) không cao hơn A quá 1 điểm; chạy ngoài giờ.
+  (6) **1.4.3 (ưu tiên cao):** dọn dữ liệu cũ forecast_refresh_values / actual_daily theo thời hạn lưu (DB ~10 GB);
+  FALLBACK a + b; các mục còn lại của danh sách cải tiến.

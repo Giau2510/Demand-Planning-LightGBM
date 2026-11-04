@@ -21,6 +21,8 @@ Owner decision 04/11/2026.
   (`backend/app/backup.py`).
 * **Deploy**: `scripts/deploy-upgrade.ps1` waits up to 3600 s (was 600 s) for the official online backup; the 1.4.1
   deploy of 04/11/2026 stopped there with "The operation has timed out" (9.4 GB database, low free memory).
+* **pyarrow 26.0.0** in `backend/requirements.txt` and `requirements.lock.txt` (portable package included): the tests
+  and `sel2-replay` (parquet) need it; it was missing from the 1.4.0 / 1.4.1 requirements (owner 04/11/2026).
 
 ## 1.4.1 (04/11/2026) (daily Excel: owner rule for LIGHTGBM SKU x FC outside the scope of the run)
 
