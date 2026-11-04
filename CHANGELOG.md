@@ -19,6 +19,8 @@ Owner decision 04/11/2026.
   (`models/sel2/<scope hash>/<origin>/*`, not `.tmp` nor `train.lock`) at their relative path; a restore writes them
   back at the same path, never outside the models folder; backups made before 1.4.2 restore as before
   (`backend/app/backup.py`).
+* **Deploy**: `scripts/deploy-upgrade.ps1` waits up to 3600 s (was 600 s) for the official online backup; the 1.4.1
+  deploy of 04/11/2026 stopped there with "The operation has timed out" (9.4 GB database, low free memory).
 
 ## 1.4.1 (04/11/2026) (daily Excel: owner rule for LIGHTGBM SKU x FC outside the scope of the run)
 
