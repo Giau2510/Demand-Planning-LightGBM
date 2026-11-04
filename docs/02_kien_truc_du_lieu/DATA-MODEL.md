@@ -229,6 +229,9 @@ stays the primary key of the ordering.
   A job captures the SQL snapshot (version id + SHA-256) at start and records it in its result / D0 `source_batch_id`.
 * Backups (`backup.py`) contain `db/app.db` (SQLite online-backup copy, integrity-checked) and `models/*`; no settings
   outside the DB, no Credential Manager content (`test_v116.py::test_backup_zip_never_contains_oauth_secrets`).
+  1.4.2: also the nested SEL2 model files `models/sel2/<scope hash>/<origin>/*` at their relative path (not the `.tmp`
+  file of a model being written nor `train.lock`); a restore writes them back at the same path, never outside the
+  models folder (a backup made before 1.4.2 has the top-level files only).
 
 ## 7. Files outside the database
 
@@ -356,7 +359,8 @@ report_subdir) and `feature_table` (per-feature rules); new `model` keys `featur
   read only rows < D (rows on and after D, their order and new keys change nothing); a training of origin O reads only
   rows < O (same model files when rows >= O change); the days of one week share the trainings of their origin, each
   with its own cut-off D-1. Open hours of D-2 .. D-1 may be filled by the lag rule (`OPEN_HOURS_LAG`, at most 2 days);
-  a filled value is never stored as source data.
+  a filled value is never stored as source data. 1.4.2: the SEL2 `FORECAST_REFRESH` of a BIGQUERY scope reads the open
+  hours into `open_hours_daily` up to D-1 before `sel2-day` (the 1.3.1 incremental read, never blocking).
 * AVG_DEMAND rows are stored raw per seller; a missing or NULL value is never read as 0. The seller rule
   (`avg_seller_rule`) awaits the owner's approval (PENDING = no value when several sellers).
 * Forecast source: a missing config row = AVG_DEMAND; every change writes the config row and a history row in one

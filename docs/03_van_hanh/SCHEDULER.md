@@ -227,7 +227,7 @@ Khi `sel2_pipeline.enabled` = True (mặc định). `False` = công tắc khẩn
 | Job | Khi nào | Ghi chú |
 |---|---|---|
 | `TRAIN_PUBLISH` | không chạy | khe giờ ghi SKIPPED `SEL2_PIPELINE_ACTIVE` |
-| `FORECAST_REFRESH` (nặng) | sau D-1 của hôm nay, thử lại tới `refresh_deadline` | đọc AVG_DEMAND, rồi `sel2-day` trong tiến trình con; xuất Excel sau khi công bố |
+| `FORECAST_REFRESH` (nặng) | sau D-1 của hôm nay, thử lại tới `refresh_deadline` | nguồn BIGQUERY: đọc giờ mở bán tới D-1 (1.4.2, như 1.3.1: tăng dần từ lần đọc xong gần nhất, bỏ qua khi bảng không đổi; lỗi = cờ `OPEN_HOURS_READ_FAILED` + một cảnh báo WARNING mỗi ngày, không chặn), đọc AVG_DEMAND, rồi `sel2-day` trong tiến trình con; xuất Excel sau khi công bố |
 | `CANDIDATE_TRAIN` (nặng, hủy được) | thứ `retrain_weekday` (1 = thứ 2) sau khi D-1 thành công | 3 mô hình tuần tự trong tiến trình con, giới hạn `train_timeout_seconds` (10 800 s); cần bộ nhớ commit trống >= 3 GB trước mỗi mô hình (`SEL2_LOW_MEMORY`) |
 | `CANDIDATE_TRAIN:<origin>:CATCHUP` | ngày khác trong tuần, một lần, khi mô hình của mốc tuần này chưa có | sau khi file Excel hôm nay đã có hoặc từ `export_deadline`; cùng mốc, cùng dữ liệu trước mốc |
 | `FORECAST_REFRESH:<ngày>:RERUN` | một lần, khi huấn luyện tuần (hoặc bù) SUCCEEDED mà lần chạy hôm nay có cờ `MODEL_PREV_WEEK` | tới `refresh_deadline`; lần chạy mới + phiên bản Excel mới |

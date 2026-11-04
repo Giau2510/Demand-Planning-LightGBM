@@ -220,3 +220,11 @@ mục này làm lịch sử batch; mục nào đã có quyết định mới hơ
   (không chạy lại dự báo), kiểm tra 0 dòng sai quy tắc, báo đường dẫn file qua chat + điện thoại.
   **Danh sách 1.4.2 (thêm):** mỗi tuần báo danh sách SKU × kho đã có lightgbm_forecast nhưng cấu hình vẫn AVG_DEMAND, để
   chủ dự án chuyển.
+* **~16:42 – Chủ dự án: LÀM 1.4.2 TRONG HÔM NAY** (cho phép chạy việc nặng trong giờ làm việc, mỗi lúc 1 việc nặng, test
+  toàn bộ khi RAM trống >= 3 GB). Phạm vi 1.4.2 lần này chỉ gồm 2 mục: (1) lần làm mới SEL2 hằng ngày tự đọc giờ mở bán
+  (BigQuery, tăng dần, chỉ cho ngày hôm nay, không chặn dự báo; lỗi -> cờ OPEN_HOURS_READ_FAILED) trước khi chạy dự báo –
+  trước đó ở chế độ SEL2 không job nào đọc giờ mở bán (dữ liệu dừng ở 02/11, SEL2 ngày 06/11 sẽ OPEN_HOURS_INVALID);
+  (2) file sao lưu chứa models\sel2 (khôi phục đúng thư mục con, chặn đường dẫn lạ). Các mục khác của "danh sách 1.4.2"
+  (đồng bộ hằng tuần, RAM, FALLBACK a + b, 1 file Excel/ngày, dọn forecast_refresh_values / actual_daily, pyarrow…) để
+  bản sau. Chuỗi: 1.4.1 cài xong -> sel2-openhours-backfill 7 ngày -> toàn bộ test 1.4.2 -> đóng gói -> sao lưu + thử khôi
+  phục -> cài (tránh 23:45–00:15) qua runner -> đóng gói lại ZIP bàn giao từ 1.4.2.

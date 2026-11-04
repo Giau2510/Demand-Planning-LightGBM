@@ -5,6 +5,21 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.4.2 (04/11/2026) (SEL2: daily open-hours read; SEL2 models in backups)
+
+Owner decision 04/11/2026.
+
+* **Open hours in SEL2 mode**: with `sel2_pipeline.enabled` the daily `FORECAST_REFRESH` of a BIGQUERY scope reads the
+  open hours up to D-1 in stage SYNCING, before the `sel2-day` child (the 1.3.1 read `daily_refresh.sync_open_hours`:
+  incremental from the last completed read, skipped when the table did not change). Before, no scheduled job wrote
+  `open_hours_daily` in SEL2 mode and `sel2-day` stopped with `OPEN_HOURS_INVALID` once the stored hours ended more
+  than `open_hours_lag_days` before D-1. Never blocking: an error is the flag `OPEN_HOURS_READ_FAILED` + one WARNING
+  alert per day; the result holds `open_hours` (`backend/app/ml/sel2/jobs.py`).
+* **Backups include the SEL2 models**: the backup zip also holds the nested files under the models folder
+  (`models/sel2/<scope hash>/<origin>/*`, not `.tmp` nor `train.lock`) at their relative path; a restore writes them
+  back at the same path, never outside the models folder; backups made before 1.4.2 restore as before
+  (`backend/app/backup.py`).
+
 ## 1.4.1 (04/11/2026) (daily Excel: owner rule for LIGHTGBM SKU x FC outside the scope of the run)
 
 * **Daily Excel, forecast_used of a LIGHTGBM SKU x FC outside the scope of the run** (owner decision 04/11/2026,

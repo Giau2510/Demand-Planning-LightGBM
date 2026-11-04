@@ -1,7 +1,9 @@
 """1.4.0 SEL2 jobs: the runner handlers (jobs/runner.py) and the scheduler helpers (jobs/scheduler.py) used while
 sel2_pipeline.enabled is True; with False nothing here is called (exact 1.3.1 behaviour).
 
-  FORECAST_REFRESH  (SEL2 mode) AVG_DEMAND current read of D in this process (light; a failure is a flag, never blocks)
+  FORECAST_REFRESH  (SEL2 mode) BigQuery scope: the open-hours read up to D-1 (1.4.2, daily_refresh.sync_open_hours:
+                    incremental, skipped when the table did not change) and the AVG_DEMAND current read of D in this
+                    process (light; a failure is a flag, never blocks)
                     -> `python -m app.cli sel2-day --date D --yes` in a CHILD process (candidates + SEL2 + publication +
                     the pipeline's export hook): the heavy memory is given back when the child ends
   CANDIDATE_TRAIN   `python -m app.cli sel2-train --origin <retraining weekday> --yes` in a child process (timeout
@@ -41,6 +43,7 @@ AVG_UNCHANGED = "SEL2_AVG_UNCHANGED"
 AVG_DAY_PASSED = "SEL2_AVG_REEXPORT_DAY_PASSED"
 STALE_NOT_NEEDED = "SEL2_STALE_EXPORT_NOT_NEEDED"
 FLAG_AVG_READ_FAILED = "AVG_READ_FAILED"
+FLAG_OPEN_HOURS_READ_FAILED = "OPEN_HOURS_READ_FAILED"   # = daily_refresh.OPEN_HOURS_ALERT
 # 1.3.1 NOT_READY codes: the attempt is a SKIPPED row with its reason, the schedule makes the next attempt
 NOT_READY_CODES = ("OPEN_HOURS_INVALID", "REFRESH_WAITS_FOR_D1", "NOT_APPLICABLE_FOR_SOURCE")
 # free commit (MB) needed to start the day's run next to a running CANDIDATE_TRAIN (= pipeline.MIN_COMMIT_MB, not
@@ -243,6 +246,23 @@ def avg_read(d: date) -> dict:
         return {"status": "FAILED", "code": code, "error": f"{type(e).__name__}: {e}"[:300]}
 
 
+# ------------------------------------------------------------------ open-hours read (light, in process)
+def open_hours_read(d: date, scope: dict) -> dict:
+    """1.4.2: the open hours of the BigQuery scope up to D-1, read before the day's run (sel2-day only checks them:
+    OPEN_HOURS_INVALID stays the gate). The 1.3.1 read (daily_refresh.sync_open_hours: incremental from the last
+    completed read, skipped when the table did not change, ONE WARNING alert per day on failure). Never raises."""
+    from ...data.demand import data_window
+    from .. import daily_refresh
+    try:
+        with db.read() as c:
+            floor = data_window(c, today=d, scope=scope)["start"]
+        return daily_refresh.sync_open_hours(d, floor, ss.get("daily_forecast"))
+    except Exception as e:  # noqa: BLE001 - the day's forecast goes on with the stored open hours
+        err = (f"{e.code}: {e.detail or ''}" if isinstance(e, AppError) else f"{type(e).__name__}: {e}")[:500]
+        log.warning("sel2 open hours read failed", extra={"ctx": {"business_date": str(d), "error": err}})
+        return {"error": err}
+
+
 # ------------------------------------------------------------------ handlers
 def _day(v) -> date:
     return date.fromisoformat(str(v)[:10]) if v else today_vn()
@@ -256,27 +276,32 @@ def refresh(job_id, params: dict, cancel=None, progress=None, trigger: str = "SC
     force = bool(params.get("force")) or trigger == "MANUAL"     # as 1.3.1: a manual run publishes a new run
     base = {"business_date": str(d), "pipeline": "SEL2", "force": force}
     stage("VALIDATING_DATA")
-    if d == today_vn():
-        from ...data.demand import resolve_scope
-        from ...jobs import flows
-        with db.read() as c:
-            try:
-                source = resolve_scope(c)["data_source"]
-            except Exception:  # noqa: BLE001 - no active scope: the child reports its own error
-                source = None
+    from ...data.demand import resolve_scope
+    with db.read() as c:
+        try:
+            scope = resolve_scope(c)
+        except Exception:  # noqa: BLE001 - no active scope: the child reports its own error
+            scope = None
+        source = scope["data_source"] if scope else None
+        if d == today_vn():
+            from ...jobs import flows
             if source is not None and source != "BIGQUERY":
                 return {**base, "status": "NOT_READY", "reason_code": "NOT_APPLICABLE_FOR_SOURCE"}
             if source == "BIGQUERY" and not flows.d1_success_today(c, vn_slot(d, "23:59")):
                 return {**base, "status": "NOT_READY", "reason_code": "REFRESH_WAITS_FOR_D1"}
     flags = []
-    stage("SYNCING")                                    # AVG_DEMAND read
+    stage("SYNCING")                                    # open hours (BigQuery scope) + AVG_DEMAND read
+    # today's run only: a rerun of a past day never moves the last completed read back (the next read stays incremental)
+    oh = open_hours_read(d, scope) if source == "BIGQUERY" and d == today_vn() else None
+    if oh and oh.get("error"):
+        flags.append(FLAG_OPEN_HOURS_READ_FAILED)
     avg = avg_read(d)
     if avg["status"] == "FAILED":
         flags.append(FLAG_AVG_READ_FAILED)
     stage("FORECASTING")                                # candidates + SEL2 + publication + export (child)
     res = call_cli(["sel2-day", "--date", str(d), "--yes", *(["--force"] if force else []),
                     *_job_args(job_id, trigger)], cancel)
-    base.update(avg_read=avg, flags=flags, exit_code=res.get("exit_code"))
+    base.update(open_hours=oh, avg_read=avg, flags=flags, exit_code=res.get("exit_code"))
     if res.get("ok"):
         r = res.get("result") or {}
         st = r.get("status")
