@@ -116,7 +116,9 @@ $code = 1
 try {
     Write-Host "== backup (official, online) =="
     if (-not $running) { throw "the app must be running for the online backup (start it, then run again)" }
-    $b = Invoke-RestMethod -Method Post "$baseUrl/api/system/backups" -Headers @{ "X-DF-Client" = "web" } -TimeoutSec 600 -ErrorAction Stop
+    # 1.4.2: 3600 s (was 600): the online backup of a 9.4 GB database takes about 20 min, longer under memory pressure
+    # (04/11/2026: the 1.4.1 deploy stopped here with "The operation has timed out")
+    $b = Invoke-RestMethod -Method Post "$baseUrl/api/system/backups" -Headers @{ "X-DF-Client" = "web" } -TimeoutSec 3600 -ErrorAction Stop
     $bz = Join-Path $b.dir $b.file
     $z2 = [System.IO.Compression.ZipFile]::OpenRead($bz)
     try { if (-not ($z2.Entries | Where-Object { $_.FullName -eq "db/app.db" })) { throw "backup has no db/app.db" } } finally { $z2.Dispose() }
