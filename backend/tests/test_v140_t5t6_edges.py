@@ -504,7 +504,7 @@ def test_export_with_nothing_at_all_writes_an_empty_valid_file(sel2_on):
     assert res["n_rows"] == 0 and res["is_stale"] is True
     wb = load_workbook(paths.data_dir() / res["path"])
     assert [list(r) for r in wb["DU_BAO"].iter_rows(values_only=True)][1:] == []
-    assert wb["DU_BAO"].auto_filter.ref == "A1:R1"
+    assert wb["DU_BAO"].auto_filter.ref == "A1:T1"
 
 
 # ------------------------------------------------------------------ API export download

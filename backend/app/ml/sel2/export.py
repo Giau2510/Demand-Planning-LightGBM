@@ -43,6 +43,10 @@ is flagged AVG_NO_READ (file level: TOM_TAT and export_runs.flags).
            less: on a failed day D+6 never has a previous-run number -> AVG + STALE (in the scope) or 0 by R2.
   TOM_TAT  counts of the file (scope, fallback reasons, flags, model used, AVG_DEMAND read used).
   CONFIG   the SKU x FC configured LIGHTGBM at export time.
+  seller_code / product_code (DU_BAO and CONFIG, right after ten_san_pham; owner decision 05/11/2026): sku_code split
+           at its FIRST dot (MEDX.ABC-ABC-010 -> MEDX / ABC-ABC-010, A.B.C -> A / B.C). No dot: seller_code empty,
+           product_code = sku_code; an empty part before the dot (".X") gives seller_code empty, an empty part after
+           it ("X.") product_code empty (split_sku).
 
 Stale mode: without a SEL2 run published for D the file is marked is_stale = 1 and its numbers come only from R3'
 (runs of D-3 .. D-1, horizon recomputed from D). The latest SEL2 run of an earlier day (whatever its age) stays the
@@ -84,10 +88,11 @@ from .xlsx_stream import Sheet, write_xlsx
 log = logging.getLogger("df.sel2.export")
 HORIZON = 7
 SHEET_MAIN, SHEET_SUMMARY, SHEET_CONFIG = "DU_BAO", "TOM_TAT", "CONFIG"
-COLUMNS = ("sku_code", "ten_san_pham", "fc_code", "nhom", "forecast_date", "target_date", "horizon",
-           "lightgbm_forecast", "avg_demand", "forecast_source", "forecast_used", "fallback_reason", "model_used",
-           "raw_value", "model_version", "data_cutoff_date", "is_stale", "flags")
-CONFIG_COLUMNS = ("sku_code", "fc_code", "ten_san_pham", "ghi_chu", "updated_by", "updated_at")
+COLUMNS = ("sku_code", "ten_san_pham", "seller_code", "product_code", "fc_code", "nhom", "forecast_date", "target_date",
+           "horizon", "lightgbm_forecast", "avg_demand", "forecast_source", "forecast_used", "fallback_reason",
+           "model_used", "raw_value", "model_version", "data_cutoff_date", "is_stale", "flags")
+CONFIG_COLUMNS = ("sku_code", "fc_code", "ten_san_pham", "seller_code", "product_code", "ghi_chu", "updated_by",
+                  "updated_at")
 SUMMARY_COLUMNS = ("muc", "gia_tri")
 LIGHTGBM = "LIGHTGBM"
 REASON_STALE, REASON_NONE = "STALE", "KHONG_CO_SO"
@@ -363,6 +368,23 @@ def _config_rows(conn) -> list[dict]:
                          "WHERE forecast_source=? ORDER BY sku_code, fc_code", (LIGHTGBM,))
 
 
+def split_sku(sku: str | None) -> tuple[str | None, str | None]:
+    """(seller_code, product_code) of a sku_code, split at the FIRST dot (owner decision 05/11/2026). No dot ->
+    (None, sku); an empty part on either side of the dot -> None for that part; None / '' -> (None, None)."""
+    if not sku:
+        return None, None
+    seller, dot, product = sku.partition(".")
+    if not dot:
+        return None, sku
+    return seller or None, product or None
+
+
+def _config_book_rows(cfg_rows: list[dict], names: dict) -> list[list]:
+    """Rows of CONFIG in CONFIG_COLUMNS order."""
+    return [[r["sku_code"], r["fc_code"], names.get(r["sku_code"]), *split_sku(r["sku_code"]), r["ghi_chu"],
+             r["updated_by"], r["updated_at"]] for r in cfg_rows]
+
+
 # ------------------------------------------------------------------ rows
 def _rows(d: date, keys: list, run: dict | None, run_keys: dict, vals: dict, avg: dict, conf: dict, names: dict,
           stale: bool, stats: dict, prev: dict | None = None, scoped: bool | None = None):
@@ -390,6 +412,7 @@ def _rows(d: date, keys: list, run: dict | None, run_keys: dict, vals: dict, avg
         # R3': in the scope of the reference run only (outside it R2 applies, never a previous number)
         pseries = prev.get(k) if prev and scoped and info is not None else None
         name = names.get(sku)
+        seller, product = split_sku(sku)                    # once per SKU x FC (7 rows share the strings)
         for i, td in enumerate(days):
             v = series[i] if series else None
             from_prev = v is None and pseries is not None and pseries[i] is not None
@@ -425,7 +448,7 @@ def _rows(d: date, keys: list, run: dict | None, run_keys: dict, vals: dict, avg
             by_reason[reason or ""] = by_reason.get(reason or "", 0) + 1
             for x in fl:
                 flag_rows[x] = flag_rows.get(x, 0) + 1
-            yield [sku, name, fc, grp, d, td, i + 1, qty, av, src, used, reason, v[2] if v else None,
+            yield [sku, name, seller, product, fc, grp, d, td, i + 1, qty, av, src, used, reason, v[2] if v else None,
                    v[1] if v else None, v[5] if from_prev else mv, v[6] if from_prev else cutoff, st, flags]
 
 
@@ -547,8 +570,7 @@ def write_daily_export(forecast_date, trigger: str = "SCHEDULE", job_id=None, sc
                                "no_value_by_reason": no_value}}
             rows = _rows(d, keys, run, run_keys, vals, avg, conf, names, is_stale, stats, prev, scoped)
             tmp = _tmp_name(folder, vpath.stem)
-            config_rows = [[r["sku_code"], r["fc_code"], names.get(r["sku_code"]), r["ghi_chu"], r["updated_by"],
-                            r["updated_at"]] for r in cfg_rows]
+            config_rows = _config_book_rows(cfg_rows, names)
             try:
                 # TOM_TAT is written after DU_BAO: its counts are complete once the rows generator is consumed
                 with os.fdopen(_excl(tmp), "wb") as f:
@@ -700,8 +722,7 @@ def write_temp_export(forecast_date, groups: dict | None = None, job_id=None, sc
                        "source_modified": av["source_modified"], "completed_at": av["completed_at"], "rule": av["rule"],
                        "sku_fc_with_value": sum(1 for k in keys if not avg[k]["reason"]), "no_value_by_reason": no_value}}
     rows = _rows(d, keys, run, run_keys, vals, avg, conf, names, False, stats)
-    config_rows = [[r["sku_code"], r["fc_code"], names.get(r["sku_code"]), r["ghi_chu"], r["updated_by"],
-                    r["updated_at"]] for r in cfg_rows]
+    config_rows = _config_book_rows(cfg_rows, names)
     with _lock:
         try:
             folder.mkdir(parents=True, exist_ok=True)

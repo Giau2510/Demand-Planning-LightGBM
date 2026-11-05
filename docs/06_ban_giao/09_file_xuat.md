@@ -53,24 +53,26 @@ Thứ tự cột đúng như `COLUMNS` (`export.py:59-61`), giá trị dựng �
 |---:|---|---|---|---|
 | 1 | `sku_code` | chuỗi | Mã SKU | `SKU-DEMO-001` |
 | 2 | `ten_san_pham` | chuỗi / trống | Tên sản phẩm: `product_name` của AVG_DEMAND ngày D, ghi đè bởi danh mục tên sản phẩm của app nếu có (`export.py:265-273`) | `Sản phẩm demo 001` |
-| 3 | `fc_code` | chuỗi | Mã kho | `FC-A` |
-| 4 | `nhom` | chuỗi / trống | Nhóm A / B / C của lần chạy SEL2 (B7, 90 ngày); trống khi SKU × FC không có trong lần chạy | `B` |
-| 5 | `forecast_date` | ngày | Ngày dự báo D (cả khi file dùng lần chạy cũ) | `2026-11-10` |
-| 6 | `target_date` | ngày | Ngày đích D + h − 1 | `2026-11-12` |
-| 7 | `horizon` | số nguyên 1..7 | Vị trí ngày đích tính **từ D** (1 = D) | `3` |
-| 8 | `lightgbm_forecast` | số nguyên / trống | Số công bố SEL2 (`final_qty`: làm tròn 6 số; < 0,2 → 0; còn lại làm tròn lên) của lần chạy hôm nay; khi dòng dùng số của lần chạy trước (`DUNG_SO_LAN_CHAY_TRUOC`) là số của lần chạy đó (ngày ở cờ `LAN_CHAY_TRUOC:<ngày>`); trống khi không lần chạy nào có số | `3` |
-| 9 | `avg_demand` | số thực / trống | Giá trị AVG_DEMAND của **ngày D** (cùng một số cho cả 7 dòng), không làm tròn; trống khi không có (lý do ở `flags`) | `4.3` |
-| 10 | `forecast_source` | chuỗi | Nguồn cấu hình: `LIGHTGBM` hoặc `AVG_DEMAND` (không có dòng cấu hình = `AVG_DEMAND`) | `LIGHTGBM` |
-| 11 | `forecast_used` | **số nguyên ≥ 0, KHÔNG BAO GIỜ trống** | **Số dùng** theo quy tắc cố định 05/11/2026 (1.4.3): số LightGBM của hôm nay (kể cả 0) khi nguồn `LIGHTGBM`; ngoài phạm vi lần chạy → `0` (mọi tiền tố mã); thiếu số / hôm nay lỗi → số của lần chạy thành công gần nhất trong 3 ngày; không có → `avg_demand`; nguồn `AVG_DEMAND` → `avg_demand`, không có Avg → số LightGBM; **luôn làm tròn** (< 0,2 → 0, còn lại làm tròn lên); không có số nào → `0` (`export.py:367-430`, mục 3.1) | `3` |
-| 12 | `fallback_reason` | chuỗi / trống | Trống = dùng đúng nguồn đã cấu hình; ý nghĩa từng giá trị ở mục 3.1 | `NGOAI_PHAM_VI_GAN_0` |
-| 13 | `model_used` | chuỗi / trống | Mô hình SEL2 của dòng: `<A>+<B>` hoặc `FALLBACK:V33_L112` (file tạm: `V33_L112`) | `V33_L112+DOW4` |
-| 14 | `raw_value` | số thực / trống | Giá trị SEL2 thô trước làm tròn (`lgb_raw`) | `2.925` |
-| 15 | `model_version` | chuỗi / trống | `SEL2 MOC=<id> V33_L112=<id> V36_two_stage=<id>` (3 lần học) của lần chạy cấp số dòng đó (dòng `LAN_CHAY_TRUOC`: của lần chạy trước); trống khi không có lần chạy tham chiếu (cờ file `NO_RUN_3_DAYS`); file tạm: `TAM V33_L112=<id>` | `SEL2 MOC=CTR-… V33_L112=CTR-… V36_two_stage=CTR-…` |
-| 16 | `data_cutoff_date` | ngày / trống | Ngày dữ liệu cuối của lần chạy cấp số dòng đó (D-1 của lần chạy đó); trống khi không có lần chạy tham chiếu | `2026-11-09` |
-| 17 | `is_stale` | 0 / 1 | 1 = file không có lần chạy SEL2 của chính ngày D (mục 4) | `0` |
-| 18 | `flags` | chuỗi / trống | Cờ của dòng, cách nhau bằng dấu phẩy: cờ lần chạy + `LAN_CHAY_TRUOC:<ngày>` (khi dùng số lần chạy trước) + `AVG_<lý do>` (mục 3.2) | `OPEN_HOURS_LAG,AVG_NO_ROW` |
+| 3 | `seller_code` | chuỗi / trống | (1.4.3) Phần của `sku_code` **trước dấu chấm đầu tiên**; trống khi `sku_code` không có dấu chấm | `MEDX` |
+| 4 | `product_code` | chuỗi | (1.4.3) Phần của `sku_code` **sau dấu chấm đầu tiên** (mã có nhiều dấu chấm chỉ tách ở dấu đầu: `A.B.C` → `A` / `B.C`); không có dấu chấm → nguyên `sku_code` | `ABC-ABC-010` |
+| 5 | `fc_code` | chuỗi | Mã kho | `FC-A` |
+| 6 | `nhom` | chuỗi / trống | Nhóm A / B / C của lần chạy SEL2 (B7, 90 ngày); trống khi SKU × FC không có trong lần chạy | `B` |
+| 7 | `forecast_date` | ngày | Ngày dự báo D (cả khi file dùng lần chạy cũ) | `2026-11-10` |
+| 8 | `target_date` | ngày | Ngày đích D + h − 1 | `2026-11-12` |
+| 9 | `horizon` | số nguyên 1..7 | Vị trí ngày đích tính **từ D** (1 = D) | `3` |
+| 10 | `lightgbm_forecast` | số nguyên / trống | Số công bố SEL2 (`final_qty`: làm tròn 6 số; < 0,2 → 0; còn lại làm tròn lên) của lần chạy hôm nay; khi dòng dùng số của lần chạy trước (`DUNG_SO_LAN_CHAY_TRUOC`) là số của lần chạy đó (ngày ở cờ `LAN_CHAY_TRUOC:<ngày>`); trống khi không lần chạy nào có số | `3` |
+| 11 | `avg_demand` | số thực / trống | Giá trị AVG_DEMAND của **ngày D** (cùng một số cho cả 7 dòng), không làm tròn; trống khi không có (lý do ở `flags`) | `4.3` |
+| 12 | `forecast_source` | chuỗi | Nguồn cấu hình: `LIGHTGBM` hoặc `AVG_DEMAND` (không có dòng cấu hình = `AVG_DEMAND`) | `LIGHTGBM` |
+| 13 | `forecast_used` | **số nguyên ≥ 0, KHÔNG BAO GIỜ trống** | **Số dùng** theo quy tắc cố định 05/11/2026 (1.4.3): số LightGBM của hôm nay (kể cả 0) khi nguồn `LIGHTGBM`; ngoài phạm vi lần chạy → `0` (mọi tiền tố mã); thiếu số / hôm nay lỗi → số của lần chạy thành công gần nhất trong 3 ngày; không có → `avg_demand`; nguồn `AVG_DEMAND` → `avg_demand`, không có Avg → số LightGBM; **luôn làm tròn** (< 0,2 → 0, còn lại làm tròn lên); không có số nào → `0` (`export.py:367-430`, mục 3.1) | `3` |
+| 14 | `fallback_reason` | chuỗi / trống | Trống = dùng đúng nguồn đã cấu hình; ý nghĩa từng giá trị ở mục 3.1 | `NGOAI_PHAM_VI_GAN_0` |
+| 15 | `model_used` | chuỗi / trống | Mô hình SEL2 của dòng: `<A>+<B>` hoặc `FALLBACK:V33_L112` (file tạm: `V33_L112`) | `V33_L112+DOW4` |
+| 16 | `raw_value` | số thực / trống | Giá trị SEL2 thô trước làm tròn (`lgb_raw`) | `2.925` |
+| 17 | `model_version` | chuỗi / trống | `SEL2 MOC=<id> V33_L112=<id> V36_two_stage=<id>` (3 lần học) của lần chạy cấp số dòng đó (dòng `LAN_CHAY_TRUOC`: của lần chạy trước); trống khi không có lần chạy tham chiếu (cờ file `NO_RUN_3_DAYS`); file tạm: `TAM V33_L112=<id>` | `SEL2 MOC=CTR-… V33_L112=CTR-… V36_two_stage=CTR-…` |
+| 18 | `data_cutoff_date` | ngày / trống | Ngày dữ liệu cuối của lần chạy cấp số dòng đó (D-1 của lần chạy đó); trống khi không có lần chạy tham chiếu | `2026-11-09` |
+| 19 | `is_stale` | 0 / 1 | 1 = file không có lần chạy SEL2 của chính ngày D (mục 4) | `0` |
+| 20 | `flags` | chuỗi / trống | Cờ của dòng, cách nhau bằng dấu phẩy: cờ lần chạy + `LAN_CHAY_TRUOC:<ngày>` (khi dùng số lần chạy trước) + `AVG_<lý do>` (mục 3.2) | `OPEN_HOURS_LAG,AVG_NO_ROW` |
 
-Ví dụ 7 dòng của một SKU × FC (giả, khớp ví dụ tính tay của `03_logic_du_bao.md`; ẩn cột 2, 15):
+Ví dụ 7 dòng của một SKU × FC (giả, khớp ví dụ tính tay của `03_logic_du_bao.md`; ẩn cột 2–4, 17):
 
 | sku_code | fc_code | nhom | forecast_date | target_date | horizon | lightgbm_forecast | avg_demand | forecast_source | forecast_used | fallback_reason | model_used | raw_value | data_cutoff_date | is_stale | flags |
 |---|---|---|---|---|---:|---:|---:|---|---:|---|---|---:|---|---:|---|
@@ -134,9 +136,11 @@ File tạm `_TAM`: hai dòng đầu là `ghi_chu` = "bản tạm – chưa chọ
 | 1 | `sku_code` | chuỗi | Mã SKU | `SKU-DEMO-001` |
 | 2 | `fc_code` | chuỗi | Mã kho | `FC-A` |
 | 3 | `ten_san_pham` | chuỗi / trống | Tên sản phẩm | `Sản phẩm demo 001` |
-| 4 | `ghi_chu` | chuỗi / trống | Ghi chú lúc cấu hình | `thử LightGBM` |
-| 5 | `updated_by` | chuỗi | Tài khoản Windows đã đổi | `<user>` |
-| 6 | `updated_at` | chuỗi (UTC ISO) | Lúc đổi | `2026-11-05T02:10:00+00:00` |
+| 4 | `seller_code` | chuỗi / trống | (1.4.3) Phần của `sku_code` **trước dấu chấm đầu tiên**; trống khi `sku_code` không có dấu chấm | `MEDX` |
+| 5 | `product_code` | chuỗi | (1.4.3) Phần của `sku_code` **sau dấu chấm đầu tiên** (mã có nhiều dấu chấm chỉ tách ở dấu đầu: `A.B.C` → `A` / `B.C`); không có dấu chấm → nguyên `sku_code` | `ABC-ABC-010` |
+| 6 | `ghi_chu` | chuỗi / trống | Ghi chú lúc cấu hình | `thử LightGBM` |
+| 7 | `updated_by` | chuỗi | Tài khoản Windows đã đổi | `<user>` |
+| 8 | `updated_at` | chuỗi (UTC ISO) | Lúc đổi | `2026-11-05T02:10:00+00:00` |
 
 SKU × FC không có trong bảng cấu hình = `AVG_DEMAND` (không liệt kê). Đổi cấu hình: màn hình "Nguồn dự báo"
 (`/forecast-source`) hoặc tải lên `.xlsx` (`backend/app/ml/sel2/source_config.py:1-20`); có hiệu lực từ lần xuất sau,

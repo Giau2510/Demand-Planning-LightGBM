@@ -17,8 +17,8 @@ from app.ml.sel2 import export
 
 D = date(2026, 11, 2)
 SCOPE = "SC-T6"
-COLS = ["sku_code", "ten_san_pham", "fc_code", "nhom", "forecast_date", "target_date", "horizon", "lightgbm_forecast",
-        "avg_demand", "forecast_source", "forecast_used", "fallback_reason", "model_used", "raw_value", "model_version",
+COLS = ["sku_code", "ten_san_pham", "seller_code", "product_code", "fc_code", "nhom", "forecast_date", "target_date",
+        "horizon", "lightgbm_forecast", "avg_demand", "forecast_source", "forecast_used", "fallback_reason", "model_used", "raw_value", "model_version",
         "data_cutoff_date", "is_stale", "flags"]
 
 
@@ -142,7 +142,7 @@ def test_autofilter_freeze_summary_and_config(scenario):
     res = export.write_daily_export(D, scope_key=SCOPE, trigger="MANUAL")
     wb = _book(res)
     ws = wb["DU_BAO"]
-    assert ws.freeze_panes == "A2" and ws.auto_filter.ref == "A1:R36"
+    assert ws.freeze_panes == "A2" and ws.auto_filter.ref == "A1:T36"
     s = _summary(wb)
     assert s["forecast_date"] == D.isoformat() and s["data_cutoff_date"] == "2026-11-01"
     assert s["export_version"] == 1 and s["trigger"] == "MANUAL" and s["is_stale"] == 0 and s["stale_reason"] is None
@@ -158,9 +158,10 @@ def test_autofilter_freeze_summary_and_config(scenario):
     assert s["avg_source_kind"] == "CURRENT" and s["avg_source_modified"] == "2026-11-02T03:15:00+00:00"
     assert s["avg_seller_rule"] == "PENDING"
     cfg = list(wb["CONFIG"].iter_rows(values_only=True))
-    assert list(cfg[0]) == ["sku_code", "fc_code", "ten_san_pham", "ghi_chu", "updated_by", "updated_at"]
-    assert [r[:4] for r in cfg[1:]] == [("S1", "F1", "Thuoc A", "chuyen LGBM"), ("S3", "F1", None, None),
-                                         ("S4", "F1", "Thuoc D", None), ("S9", "F1", None, None)]
+    assert list(cfg[0]) == ["sku_code", "fc_code", "ten_san_pham", "seller_code", "product_code", "ghi_chu",
+                            "updated_by", "updated_at"]
+    assert [r[:3] + r[5:6] for r in cfg[1:]] == [("S1", "F1", "Thuoc A", "chuyen LGBM"), ("S3", "F1", None, None),
+                                                  ("S4", "F1", "Thuoc D", None), ("S9", "F1", None, None)]
     assert wb["CONFIG"].freeze_panes == "A2"
 
 

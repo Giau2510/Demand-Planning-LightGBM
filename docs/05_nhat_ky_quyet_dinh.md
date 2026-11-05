@@ -301,3 +301,9 @@ mục này làm lịch sử batch; mục nào đã có quyết định mới hơ
   lại Excel 05/11, 0 dòng sai quy tắc; (5) 4 tài liệu bàn giao đã cập nhật vào `docs\06_ban_giao\` trong commit 1.4.3;
   push branch github/1.4.2, github/1.4.3 + tag v1.4.2, v1.4.3 (loại file như v1.4.0, quét bảo mật trước), không merge
   main, không force push; (6) xoá thư mục tạm 1.4.1 và gói 1.4.1 trong ban-1.4\dist; thư mục ZIP nháp giữ lại.
+* **~14:18 – BỔ SUNG 1.4.3: 2 cột `seller_code`, `product_code` trong file Excel hằng ngày** (sheet `DU_BAO`, NGAY SAU
+  `ten_san_pham`; sheet `CONFIG` cũng thêm 2 cột sau `ten_san_pham`). Tách `sku_code` tại dấu chấm ĐẦU TIÊN: phần trước
+  = `seller_code`, phần sau = `product_code` (`MEDX.ABC-ABC-010` -> `MEDX` / `ABC-ABC-010`; `BML_E.0a1b2c3d4e5f` ->
+  `BML_E` / `0a1b2c3d4e5f`). Không có dấu chấm: `seller_code` trống, `product_code` = nguyên `sku_code`. Giữ nguyên mọi
+  cột khác và thứ tự. Test: các ví dụ, mã không có / có nhiều dấu chấm, toàn bộ dòng file thật `seller_code` + "." +
+  `product_code` = `sku_code`. Đóng gói lại 1.4.3 trước khi cài (runner CAI-143 giữ lại bằng khoá vận hành từ 14:19).

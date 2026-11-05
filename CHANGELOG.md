@@ -20,6 +20,9 @@ Owner decisions 05/11/2026 (docs/05_nhat_ky_quyet_dinh.md).
   LightGBM number -> the LightGBM number (`KHONG_CO_AVG_DUNG_LIGHTGBM`). forecast_used is always rounded (below 0.2 -> 0,
   else rounded up; 6 decimals first, the same rule as the SEL2 publication) and never empty (no number at all -> 0,
   `KHONG_CO_SO_NAO`). `lightgbm_forecast` and `avg_demand` keep the original values.
+* **Daily Excel, two new columns `seller_code`, `product_code`** (owner 05/11/2026) right after `ten_san_pham` in
+  `DU_BAO` and `CONFIG`: `sku_code` split at its FIRST dot (`MEDX.ABC-ABC-010` -> `MEDX` / `ABC-ABC-010`); without a dot
+  `seller_code` is empty and `product_code` is the whole `sku_code`. Every other column keeps its order.
 * **Upgrade without repeated backups**: `deploy-upgrade.ps1 -VerifiedBackup <zip> -RestoreReport <json>` skips the online
   backup and the `install.ps1` pre-upgrade backup when the zip is a backup of the live DB (same DB path and schema) in
   the backups folder, restore-tested OK (DB + models, `passed`), at most 6 hours old by its name stamp; otherwise the
