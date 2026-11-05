@@ -330,3 +330,12 @@ mục này làm lịch sử batch; mục nào đã có quyết định mới hơ
   biến lịch lễ Tết; backtest trên giai đoạn Tết 2026. **Dữ liệu từ 01/2025 trở đi KHÔNG BAO GIỜ bị dọn** (ghi cả vào
   CLAUDE.md). Thời hạn lưu `forecast_refresh_values` / `actual_daily`: chủ dự án chốt sau khi có số đo dung lượng từng
   bảng và danh sách bảng dùng để học (bảng dùng để học không thuộc diện dọn).
+
+## 06/11/2026
+
+* **~00:05 – Dọn thư mục cho nhẹ** (KHÔNG đụng DB production, không cắt giảm dữ liệu trong DB). Dọn thử rồi xoá các mục
+  "XOÁ": bản cài cũ 1.2.14, 1.3.1 (giữ 1.4.3, 1.4.2; 1.4.0 giữ lại vì tác vụ DemandForecastCleanup còn chạy script trong
+  đó – đổi tác vụ cần chủ dự án cho phép); gói cài cũ trong dist (giữ 1.4.2, 1.4.3); scratchpad các phiên Claude đã xong
+  (gồm bản sao d3; giữ bản sao g1); ZIP bàn giao nháp; sao lưu (giữ pre-143, 3 bản mới nhất mỗi loại, mọi bản 7 ngày
+  gần nhất: còn 29 / 71); bản sao DB tạm D:\Buymed\tmp\b4; dữ liệu trung gian của các thử nghiệm đã đóng gói (giữ
+  package\ và .md). Không có log nào quá 30 ngày. Giải phóng ~46,4 GB (D: 44,4 -> 51,8 GB trống; C: 32,5 -> 70,4 GB).
