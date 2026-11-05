@@ -307,3 +307,22 @@ mục này làm lịch sử batch; mục nào đã có quyết định mới hơ
   `BML_E` / `0a1b2c3d4e5f`). Không có dấu chấm: `seller_code` trống, `product_code` = nguyên `sku_code`. Giữ nguyên mọi
   cột khác và thứ tự. Test: các ví dụ, mã không có / có nhiều dấu chấm, toàn bộ dòng file thật `seller_code` + "." +
   `product_code` = `sku_code`. Đóng gói lại 1.4.3 trước khi cài (runner CAI-143 giữ lại bằng khoá vận hành từ 14:19).
+* **~18:30 – Tầm dự báo 20 ngày, tách sheet theo kho** (không học lại, không backtest; có hiệu lực từ file sáng 06/11):
+  file Excel hằng ngày thay sheet `DU_BAO` bằng `DU_BAO_BD` và `DU_BAO_HN`, mỗi sheet ĐỦ mọi SKU × kho của kho đó ×
+  horizon 1–20 (D … D+19), cùng các cột hiện tại + cột `cach_tinh`: horizon 1–7 = `SEL2`; 8–20 = `UOC_TINH_THEO_TUAN`
+  (`lightgbm_forecast` = `raw_value` cùng thứ trong tuần ở horizon 1–7 của lần chạy hôm nay). Áp quy tắc `forecast_used`
+  cố định cho mọi horizon. Giữ `TOM_TAT` (ghi rõ ngày 8–20 là ước tính theo nhịp tuần; số dòng mỗi sheet) và `CONFIG`;
+  có bộ lọc, cố định dòng tiêu đề. Mỗi sheet < 1.048.576 dòng; kho > 50.000 SKU × kho → báo điện thoại xử lý trước.
+  Làm bằng **script vận hành** chạy ngay sau khi app xuất file (cả khi xuất lại tay), KHÔNG sửa code app; đưa vào app ở
+  bản sau. Test: số dòng = SKU × kho × 20; `forecast_used` nguyên ≥ 0; thứ trong tuần khớp; mở được bằng Excel; thời
+  gian tạo, dung lượng. (05/11: BD 31.955, HN 26.636 SKU × kho cấu hình → 639.100 / 532.720 dòng.)
+* **~18:20 – Chống gián đoạn do gập máy / ngủ / mất mạng** (runner: phát hiện máy dậy, chờ mạng không giới hạn, xếp hàng
+  tin nhắn gửi bù; sao lưu đã thử khôi phục quá hạn → tự làm lại; giai đoạn cài chỉ khi cắm sạc, máy ngủ giữa chừng →
+  chờ hoặc rollback 1.4.2; khung giờ cấm theo giờ thật; app tắt sau khi máy dậy → tự khởi động + báo; chạy bù D-1 lỗi
+  trước 12:00 → làm mới → xuất Excel, kiểm mỗi 10 phút).
+* **~22:45 – Ưu tiên kết quả hiện tại, HOÃN backtest ngày 8–20.** Thứ tự: (1) 1.4.3 chạy lại + kiểm tra sau cài; (2) xuất
+  lại Excel 05/11, kiểm 0 dòng sai quy tắc + 2 cột seller_code / product_code; (3) script Excel 20 ngày theo kho (BD, HN)
+  cho file 06/11, kiểm tra; (4) push GitHub v1.4.2, v1.4.3 + dọn dẹp; (5) đăng ký chống gián đoạn và chạy bù đêm. CHỈ sau
+  khi xong cả 5 việc và chủ dự án xác nhận file 06/11 đạt mới chạy backtest mô hình ngày 8–20 (ngoài giờ làm việc); file
+  hằng ngày tạm dùng ước tính theo nhịp tuần cho ngày 8–20. Báo điện thoại sau mỗi việc. (1.4.3 cài xong 22:44, app dừng
+  22:31–22:44 nhờ bỏ 2 lần sao lưu; máy ngủ 18:32–22:20.)
