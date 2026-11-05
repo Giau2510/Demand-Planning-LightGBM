@@ -326,3 +326,7 @@ mục này làm lịch sử batch; mục nào đã có quyết định mới hơ
   khi xong cả 5 việc và chủ dự án xác nhận file 06/11 đạt mới chạy backtest mô hình ngày 8–20 (ngoài giờ làm việc); file
   hằng ngày tạm dùng ước tính theo nhịp tuần cho ngày 8–20. Báo điện thoại sau mỗi việc. (1.4.3 cài xong 22:44, app dừng
   22:31–22:44 nhờ bỏ 2 lần sao lưu; máy ngủ 18:32–22:20.)
+* **~23:15 – Danh sách cải tiến (khoảng tháng 12/2026, trước Tết 2027):** nạp dữ liệu từ 01/2025 vào production; thêm
+  biến lịch lễ Tết; backtest trên giai đoạn Tết 2026. **Dữ liệu từ 01/2025 trở đi KHÔNG BAO GIỜ bị dọn** (ghi cả vào
+  CLAUDE.md). Thời hạn lưu `forecast_refresh_values` / `actual_daily`: chủ dự án chốt sau khi có số đo dung lượng từng
+  bảng và danh sách bảng dùng để học (bảng dùng để học không thuộc diện dọn).
