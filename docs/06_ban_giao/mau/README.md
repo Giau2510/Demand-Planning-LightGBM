@@ -27,8 +27,9 @@ Mọi ô `forecast_used` là **số nguyên ≥ 0, không trống**. Cột `sell
 (`rows_fallback_reason:<lý do>`) và dòng `previous_runs`. File thật ngày 04/11/2026 có 410.137 dòng (58.591 SKU × FC ×
 7 ngày), khoảng 23 MB. Đặc tả từng cột: `01_tai_lieu\09_file_xuat.md`.
 
-Script tạo hai file (để tạo lại sau khi đổi code): `03_ma_nguon` không chứa script này; cách tạo: gọi
-`app.ml.sel2.export._rows` với dữ liệu giả rồi `_write_book` (không cần database).
+Hai file `.xlsx` **không nằm trong Git** (quy định của repo: `.gitignore` loại `*.xlsx` – file dữ liệu kinh doanh); bản
+có sẵn nằm trong bộ tài liệu bàn giao nháp. Tạo lại (sau khi đổi code): gọi `app.ml.sel2.export._rows` với dữ liệu giả
+rồi `_summary_rows` và `_write_book` (không cần database).
 
 `03_ma_nguon\docs\mau\mau_cau_hinh_nguon_du_bao.xlsx` là file mẫu để tải lên cấu hình nguồn dự báo (không phải file
 xuất).
