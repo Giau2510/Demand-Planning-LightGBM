@@ -339,3 +339,17 @@ mục này làm lịch sử batch; mục nào đã có quyết định mới hơ
   (gồm bản sao d3; giữ bản sao g1); ZIP bàn giao nháp; sao lưu (giữ pre-143, 3 bản mới nhất mỗi loại, mọi bản 7 ngày
   gần nhất: còn 29 / 71); bản sao DB tạm D:\Buymed\tmp\b4; dữ liệu trung gian của các thử nghiệm đã đóng gói (giữ
   package\ và .md). Không có log nào quá 30 ngày. Giải phóng ~46,4 GB (D: 44,4 -> 51,8 GB trống; C: 32,5 -> 70,4 GB).
+* **~00:25 – TỔNG HỢP CUỐI của chủ dự án (thay mọi prompt lẻ trước; ghi cả vào CLAUDE.md):** (A) bỏ giới hạn giờ làm
+  việc – việc nặng chạy bất kỳ giờ nào, mỗi lúc 1 việc, tránh 23:45–00:15 và 00:45–03:45, cài không trùng D0 / làm mới;
+  giữ OPS_LOCK, [tên phiên], báo điện thoại mỗi bước; quy tắc forecast_used không đổi. (B) Tự duyệt tới 07:00 ngày 07/11
+  theo tiêu chí (file 06/11 đạt → chạy backtest 8–20 + kiểm chứng học lại; giao diện 1.4.4 giữ nguyên bố cục + số khớp
+  Excel → được cài; cài 1.4.4 đạt test / review / sao lưu + khôi phục / kiểm tra sau cài → cài + push v1.4.4, lỗi → quay
+  về 1.4.3; dọn thư mục theo quy tắc). KHÔNG tự duyệt: đổi cách dự báo ngày 8–20 trên production, bật học lại mỗi ngày,
+  thay quy tắc forecast_used / config nguồn / xoá dữ liệu DB production. (C) Ưu tiên 0: file 06/11 (00:31: chưa tới giờ
+  D-1 01:10, chưa có lỗi). (D) GitHub (mọi thay đổi chưa push, đường dẫn máy thành biến cấu hình), 1.4.4 (Excel 20 ngày
+  trong app trùng từng ô với script; giao diện đọc SEL2 mới nhất, actual_daily ở chế độ SEL2, dòng "Nguồn – làm mới lúc –
+  dữ liệu đến", ảnh trước–sau reports\1.4.4\anh\), dọn thư mục, báo cáo đơn đột biến 30 ngày. (E) Đêm 06→07/11 file
+  07/11 đủ 20 ngày. (F) Backtest ngày 8–20 (4 cách) + kiểm chứng học lại mỗi ngày trên g1 (không cài / không bật – chờ).
+  (G) Báo cáo tổng hợp 07:00 ngày 07/11. (H) Danh sách cải tiến (tháng 12: dữ liệu từ 01/2025 + Tết; FALLBACK a + b; báo
+  hằng tuần SKU×kho có lightgbm_forecast mà config AVG; test frontend chập chờn; tối ưu lưu trữ open_hours_daily; chuẩn
+  bị tắt lịch tự động trên máy này khi máy chủ công ty chạy thật).
