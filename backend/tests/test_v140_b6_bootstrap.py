@@ -262,10 +262,10 @@ def test_temp_file_name_location_rows_and_values(tam):
     # group NaN -> empty; no AVG row -> flag, never 0
     s3 = by[("S3", "F1", 3)]
     assert (s3["nhom"], s3["avg_demand"], s3["forecast_used"]) == (None, None, 7) and "AVG_NO_ROW" in s3["flags"]
-    # LIGHTGBM without a candidate, sku_code prefix not MEDX -> AVG + KHONG_CO_DU_LIEU_DEMAND (owner 04/11/2026)
+    # LIGHTGBM without a candidate (outside the scope) -> 0 + NGOAI_PHAM_VI_GAN_0, any prefix (owner rule 05/11/2026)
     s4 = by[("S4", "F1", 1)]
-    assert (s4["lightgbm_forecast"], s4["forecast_used"], s4["fallback_reason"], s4["model_used"], s4["nhom"]) == \
-        (None, 3.0, "KHONG_CO_DU_LIEU_DEMAND", None, None)
+    assert (s4["lightgbm_forecast"], s4["avg_demand"], s4["forecast_used"], s4["fallback_reason"], s4["model_used"],
+            s4["nhom"]) == (None, 3.0, 0, "NGOAI_PHAM_VI_GAN_0", None, None)
     assert res["sku_fc"] == {"total": 4, "in_forecast_scope": 3, "configured_lightgbm": 3,
                              "configured_lightgbm_not_in_file": 0}
 
@@ -279,7 +279,8 @@ def test_temp_summary_note_trigger_and_config(tam):
     s = {r[0]: r[1] for r in rows[1:]}
     assert (s["export_version"], s["is_stale"], s["refresh_run_id"], s["run_forecast_date"]) == ("TAM", 0, None, "2026-11-02")
     assert (s["model_version"], s["data_cutoff_date"], s["rows_total"]) == ("TAM V33_L112=CTR-V33", "2026-11-01", 28)
-    assert s["sku_fc_model_used:V33_L112"] == 3 and s["rows_fallback_reason:KHONG_CO_DU_LIEU_DEMAND"] == 7
+    assert s["sku_fc_model_used:V33_L112"] == 3 and s["rows_fallback_reason:NGOAI_PHAM_VI_GAN_0"] == 7
+    assert "rows_fallback_reason:KHONG_CO_DU_LIEU_DEMAND" not in s
     assert s["avg_source_kind"] == "CURRENT" and s.get("file_flags") is None
     cfg = list(wb["CONFIG"].iter_rows(values_only=True))
     assert [r[:2] for r in cfg[1:]] == [("S1", "F1"), ("S3", "F1"), ("S4", "F1")]
@@ -319,7 +320,7 @@ def test_temp_is_not_recorded_never_a_version_nor_the_latest_copy_and_audited(ta
         [(r["sku_code"], r["fc_code"], r["horizon"]) for r in t_rows]
     o_avg = [[r[c] for c in cols] for r in o_rows if r["forecast_source"] != "LIGHTGBM" or r["fallback_reason"]]
     t_avg = [[r[c] for c in cols] for r in t_rows if r["forecast_source"] != "LIGHTGBM" or r["fallback_reason"]]
-    assert len(o_avg) == 14 and o_avg == t_avg                           # S2 (AVG_DEMAND) + S4 (KHONG_CO_DU_LIEU_DEMAND)
+    assert len(o_avg) == 14 and o_avg == t_avg                           # S2 (AVG_DEMAND) + S4 (NGOAI_PHAM_VI_GAN_0)
     assert set(COLS) >= set(cols)
 
 

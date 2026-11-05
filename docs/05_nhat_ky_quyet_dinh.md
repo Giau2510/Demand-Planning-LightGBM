@@ -250,3 +250,54 @@ mục này làm lịch sử batch; mục nào đã có quyết định mới hơ
   ngày 1 và 7 ngày, theo nhóm); bật B nếu Đúng(B) >= Đúng(A) và thiếu(B) không cao hơn A quá 1 điểm; chạy ngoài giờ.
   (6) **1.4.3 (ưu tiên cao):** dọn dữ liệu cũ forecast_refresh_values / actual_daily theo thời hạn lưu (DB ~10 GB);
   FALLBACK a + b; các mục còn lại của danh sách cải tiến.
+
+## 05/11/2026
+
+* **~09:05 – Chủ dự án chọn C: cài 1.4.2 NGAY trong giờ làm việc** (lần cài 05:33 bị runner dừng lúc 06:00 khi hết khung
+  04:00–06:00, lúc đang storage-verify chỉ đọc – production không đổi). Kèm: khoá vận hành `run\OPS_LOCK`; runner giữ máy
+  không ngủ, báo khi chạy pin, báo mọi thay đổi trạng thái; khung giờ chỉ xét lúc BẮT ĐẦU bước cài; mọi báo cáo mở đầu
+  bằng [tên phiên].
+* **~11:00 – Chủ dự án chọn A: chạy tiếp lượt cài** (storage-verify 1 giờ do thiếu RAM; chủ dự án đóng bớt ứng dụng).
+* **~11:10 – 1.4.3 ƯU TIÊN SỐ 1: quy tắc forecast_used** (file Excel hằng ngày, cột forecast_used = số cuối cùng):
+  (1) LUÔN làm tròn: < 0,2 -> 0, còn lại làm tròn LÊN; áp cho MỌI nguồn (LightGBM, Avg, mã mới mặc định Avg).
+  (2) KHÔNG BAO GIỜ trống: không có số nào -> 0, fallback_reason = KHONG_CO_SO_NAO.
+  (3) Giữ nguyên lightgbm_forecast và avg_demand gốc trong file để đối chiếu.
+  Đây là quy tắc nghiệp vụ được chủ dự án xác lập cho việc đổi "thiếu số" thành 0 (AGENTS.md mục 4) – chỉ cho cột
+  forecast_used. Gộp cùng các mục ưu tiên cao: giảm kích thước DB (dọn forecast_refresh_values / actual_daily), deploy
+  bỏ sao lưu lặp lại khi đã có bản sao lưu thử khôi phục đạt trong 6 giờ. Cài 1.4.3 tối 05/11 sau 19:00 nếu 1.4.2 đã
+  xong và ổn. ZIP bàn giao đóng từ bản cuối cùng đã cài (1.4.3 nếu kịp; nếu không: 1.4.2 và ghi rõ quy tắc làm tròn ở
+  1.4.3).
+* **~12:15 – QUYẾT ĐỊNH CUỐI về forecast_used (QUY TẮC CỐ ĐỊNH, ghi cả vào CLAUDE.md; mọi phiên tuân theo, không hỏi
+  lại)** – thay quy tắc 04/11 (mã không phải MEDX ngoài phạm vi dùng Avg) và bổ sung quy tắc 11:10:
+  (1) Có `lightgbm_forecast` (kể cả = 0) -> dùng `lightgbm_forecast`; KHÔNG thay số 0 bằng Avg (kiểm theo từng SKU tháng
+  10: thay bằng Avg làm 54,5 % SKU lệch nhiều hơn, chỉ 5 % đúng hơn; tổng lệch tăng từ 18.971 lên 81.439).
+  (2) Không có `lightgbm_forecast` (ngoài phạm vi lần chạy) -> 0 với MỌI tiền tố mã, `fallback_reason` =
+  `NGOAI_PHAM_VI_GAN_0`. Riêng lần chạy SEL2 lỗi / cũ hoặc thiếu số trong phạm vi -> giữ `avg_demand` (`STALE` /
+  `KHONG_CO_SO`) để một ngày lỗi không làm mọi số thành 0.
+  (3) Cấu hình AVG_DEMAND (mã mới) + có `lightgbm_forecast` + không có `avg_demand` -> dùng `lightgbm_forecast`.
+  (4) forecast_used luôn làm tròn: < 0,2 -> 0, còn lại làm tròn lên; không bao giờ trống (không có số nào -> 0,
+  `KHONG_CO_SO_NAO`).
+  Áp vào T1 của 1.4.3 (test từng trường hợp); cài 1.4.3 tối 05/11 như kế hoạch.
+* **~12:35 – BỔ SUNG QUY TẮC CỐ ĐỊNH forecast_used (ghi cả vào CLAUDE.md)** – thay trường hợp (2) phần "lần chạy SEL2 lỗi
+  / cũ / thiếu số trong phạm vi -> Avg": nếu lần chạy SEL2 hôm nay lỗi hoặc cũ, hoặc SKU × kho trong phạm vi thiếu số ->
+  lấy `lightgbm_forecast` của LẦN CHẠY SEL2 THÀNH CÔNG GẦN NHẤT có dự báo cho đúng `target_date` đó, với điều kiện lần
+  chạy đó cách `forecast_date` hôm nay KHÔNG QUÁ 3 NGÀY; `fallback_reason` = `DUNG_SO_LAN_CHAY_TRUOC` và ghi ngày lần chạy
+  đã dùng (trong `flags`). Không có lần chạy nào trong 3 ngày -> `avg_demand` (`STALE` / `KHONG_CO_SO`) như cũ. Vẫn làm
+  tròn và không bao giờ trống. Test: (a) hôm nay lỗi, hôm qua thành công -> số hôm qua cho target_date tương ứng; (b) lỗi
+  4 ngày liên tiếp -> Avg; (c) thiếu số 1 SKU trong phạm vi -> số lần chạy trước của SKU đó; (d) lần chạy trước không có
+  SKU đó -> Avg. Đưa vào T1 của 1.4.3 trước khi đóng gói; trễ quá 23:30 thì báo chủ dự án kèm phương án.
+* **~12:45 – Chủ dự án xác nhận cách hiểu bổ sung 12:35, sửa 1 điểm (ghi cả vào CLAUDE.md):** ngày lần chạy hôm nay lỗi
+  -> dùng PHẠM VI của lần chạy SEL2 thành công gần nhất trong 3 ngày: mã TRONG phạm vi đó -> số của lần chạy đó
+  (`DUNG_SO_LAN_CHAY_TRUOC`); mã NGOÀI phạm vi đó -> 0 (`NGOAI_PHAM_VI_GAN_0`), giống ngày bình thường. CHỈ khi KHÔNG có
+  lần chạy thành công nào trong 3 ngày mới dùng Avg cho toàn bộ (`STALE`). Thêm test: ngày lỗi, mã ngoài phạm vi lần
+  chạy trước -> 0, không phải Avg. Ngày của lần chạy đã dùng ghi trong `flags` (`LAN_CHAY_TRUOC:YYYY-MM-DD`), không thêm
+  cột (giữ cấu trúc file Excel).
+* **~13:55 – Chủ dự án: BỎ ZIP bàn giao và BỎ diễn tập trên bản sao DB** (lý do: cách cài thông thường vừa chạy thật
+  thành công với 1.4.2 lúc 13:47; quy tắc forecast_used chỉ đổi cách xuất file; lưới an toàn là bản sao lưu đã thử khôi
+  phục ngay trước khi cài). Làm ngay, mỗi lúc 1 việc nặng, qua runner, báo điện thoại mỗi bước: (1) 1.4.3 commit + toàn
+  bộ test + đóng gói; (2) production sao lưu + thử khôi phục; (3) cài 1.4.3 với `-VerifiedBackup` trỏ đúng bản sao lưu
+  bước 2 – lỗi ở bất kỳ bước nào: quay về 1.4.2 (rollback; không được thì khôi phục từ bản sao lưu bước 2), bảo đảm app
+  chạy lại, báo ngay; (4) kiểm tra sau cài: health 1.4.3, số dòng các bảng trước / sau, lịch chạy trùng tuyệt đối; xuất
+  lại Excel 05/11, 0 dòng sai quy tắc; (5) 4 tài liệu bàn giao đã cập nhật vào `docs\06_ban_giao\` trong commit 1.4.3;
+  push branch github/1.4.2, github/1.4.3 + tag v1.4.2, v1.4.3 (loại file như v1.4.0, quét bảo mật trước), không merge
+  main, không force push; (6) xoá thư mục tạm 1.4.1 và gói 1.4.1 trong ban-1.4\dist; thư mục ZIP nháp giữ lại.

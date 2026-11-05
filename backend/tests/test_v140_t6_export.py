@@ -120,20 +120,21 @@ def test_sheets_columns_rows_and_truth_table(scenario):
     s2 = by[("S2", "F1", 1)]
     assert (s2["forecast_source"], s2["lightgbm_forecast"], s2["forecast_used"], s2["fallback_reason"]) == \
         ("AVG_DEMAND", 1, 4.0, None)
-    # LIGHTGBM in the run without a number for the day -> AVG + KHONG_CO_SO; no AVG row -> empty, never 0
+    # LIGHTGBM in the run without a number for the day -> AVG + KHONG_CO_SO; no AVG row either -> 0 + KHONG_CO_SO_NAO
+    # (owner decision 05/11/2026: forecast_used never empty; avg_demand stays empty)
     s3a, s3b = by[("S3", "F1", 5)], by[("S3", "F1", 6)]
     assert (s3a["lightgbm_forecast"], s3a["forecast_used"], s3a["fallback_reason"]) == (0, 0, None)
     assert (s3b["lightgbm_forecast"], s3b["avg_demand"], s3b["forecast_used"], s3b["fallback_reason"]) == \
-        (None, None, None, "KHONG_CO_SO")
+        (None, None, 0, "KHONG_CO_SO_NAO")
     assert s3b["model_used"] is None and "AVG_NO_ROW" in s3b["flags"]
-    # LIGHTGBM not in the forecast scope, sku_code prefix not MEDX -> AVG + KHONG_CO_DU_LIEU_DEMAND (owner 04/11/2026)
+    # LIGHTGBM not in the forecast scope -> 0 + NGOAI_PHAM_VI_GAN_0, any prefix (owner final rule 05/11/2026)
     s4 = by[("S4", "F1", 1)]
-    assert (s4["lightgbm_forecast"], s4["forecast_used"], s4["fallback_reason"], s4["nhom"]) == \
-        (None, 3.0, "KHONG_CO_DU_LIEU_DEMAND", None)
-    # AVG without a value (seller rule pending): empty cell + reason flag
+    assert (s4["lightgbm_forecast"], s4["avg_demand"], s4["forecast_used"], s4["fallback_reason"], s4["nhom"]) == \
+        (None, 3.0, 0, "NGOAI_PHAM_VI_GAN_0", None)
+    # AVG without a value (seller rule pending): avg_demand empty, forecast_used 0 + KHONG_CO_SO_NAO + reason flag
     s5 = by[("S5", "F1", 7)]
     assert (s5["avg_demand"], s5["forecast_used"], s5["fallback_reason"], s5["flags"]) == \
-        (None, None, None, "AVG_SELLER_RULE_PENDING")
+        (None, 0, "KHONG_CO_SO_NAO", "AVG_SELLER_RULE_PENDING")
     assert not any(r["lightgbm_forecast"] == 99 for r in rows)          # the older run is not used
 
 
@@ -148,8 +149,9 @@ def test_autofilter_freeze_summary_and_config(scenario):
     assert s["refresh_run_id"] == "R1" and s["export_time_utc"] == res["summary"]["created_at"]
     assert (s["sku_fc_total"], s["sku_fc_in_forecast_scope"], s["sku_fc_configured_lightgbm"],
             s["sku_fc_configured_lightgbm_not_in_file"], s["rows_total"]) == (5, 3, 4, 1, 35)
-    assert s["rows_fallback_reason:KHONG_CO_DU_LIEU_DEMAND"] == 7 and s["rows_fallback_reason:KHONG_CO_SO"] == 2
-    assert s["rows_fallback_reason:(none)"] == 26
+    assert s["rows_fallback_reason:NGOAI_PHAM_VI_GAN_0"] == 7 and s["rows_fallback_reason:KHONG_CO_SO_NAO"] == 2 + 7
+    assert s["rows_fallback_reason:(none)"] == 19 and "rows_fallback_reason:KHONG_CO_SO" not in s
+    assert "rows_fallback_reason:KHONG_CO_DU_LIEU_DEMAND" not in s
     assert s["rows_flag:OPEN_HOURS_LAG"] == 3 * 7 - 2 and s["rows_flag:AVG_SELLER_RULE_PENDING"] == 7
     assert s["sku_fc_avg_reason:SELLER_RULE_PENDING"] == 1 and s["sku_fc_avg_reason:NO_ROW"] == 1
     assert s["sku_fc_model_used:MOC+DOW4"] == 1 and s["sku_fc_model_used:FALLBACK:V33_L112"] == 1
@@ -208,16 +210,24 @@ def test_stale_run_of_an_earlier_day(sel2_on):
     # target D = horizon 3 of the old run -> horizon 1 of the file
     assert (by[("S1", "F1", 1)]["lightgbm_forecast"], by[("S1", "F1", 1)]["forecast_used"],
             by[("S1", "F1", 1)]["target_date"]) == (30, 30, _dt(D))
-    assert by[("S1", "F1", 5)]["forecast_used"] == 70 and by[("S1", "F1", 5)]["fallback_reason"] is None
-    # days the old run does not cover -> AVG + STALE
+    # owner rule 05/11/2026 (R3'): numbers of the previous run (D-2, within D-3 .. D-1) with reason + run-day flag
+    assert by[("S1", "F1", 5)]["forecast_used"] == 70
+    assert by[("S1", "F1", 5)]["fallback_reason"] == "DUNG_SO_LAN_CHAY_TRUOC"
+    assert by[("S1", "F1", 1)]["flags"] == f"MODEL_PREV_WEEK,LAN_CHAY_TRUOC:{old.isoformat()}"
+    # days the old run does not cover -> AVG + STALE; no AVG value either -> 0 + KHONG_CO_SO_NAO
     assert (by[("S1", "F1", 6)]["lightgbm_forecast"], by[("S1", "F1", 6)]["forecast_used"],
             by[("S1", "F1", 6)]["fallback_reason"]) == (None, 2.0, "STALE")
-    assert by[("S2", "F1", 1)]["fallback_reason"] == "STALE" and by[("S2", "F1", 1)]["avg_demand"] is None
-    assert by[("S7", "F1", 1)]["fallback_reason"] == "KHONG_CO_DU_LIEU_DEMAND"
+    assert by[("S2", "F1", 1)]["fallback_reason"] == "KHONG_CO_SO_NAO" and by[("S2", "F1", 1)]["avg_demand"] is None
+    assert by[("S2", "F1", 1)]["forecast_used"] == 0
+    # LIGHTGBM outside the scope of the (stale) run used -> 0 + NGOAI_PHAM_VI_GAN_0 (owner final rule 05/11/2026)
+    assert (by[("S7", "F1", 1)]["avg_demand"], by[("S7", "F1", 1)]["forecast_used"],
+            by[("S7", "F1", 1)]["fallback_reason"]) == (1.5, 0, "NGOAI_PHAM_VI_GAN_0")
     assert by[("S1", "F1", 1)]["data_cutoff_date"] == _dt(old - timedelta(days=1))
     s = _summary(wb)
     assert s["is_stale"] == 1 and s["stale_reason"] == "NO_RUN_FOR_DAY" and s["run_forecast_date"] == old.isoformat()
-    assert s["rows_fallback_reason:STALE"] == 2 + 7 and s["rows_flag:MODEL_PREV_WEEK"] == 5
+    assert s["rows_fallback_reason:STALE"] == 2 and s["rows_fallback_reason:KHONG_CO_SO_NAO"] == 7
+    assert s["rows_flag:MODEL_PREV_WEEK"] == 5
+    assert s["rows_fallback_reason:DUNG_SO_LAN_CHAY_TRUOC"] == 5 and s[f"rows_flag:LAN_CHAY_TRUOC:{old.isoformat()}"] == 5
     with db.read() as c:
         rec = db.one(c, "SELECT is_stale, flags, refresh_run_id FROM export_runs")
     assert rec["is_stale"] == 1 and rec["refresh_run_id"] == "ROLD" and rec["flags"].startswith("STALE")
@@ -232,14 +242,14 @@ def test_no_run_at_all_every_row_from_avg(sel2_on):
     by = _by(rows)
     assert (by[("S1", "F1", 1)]["forecast_used"], by[("S1", "F1", 1)]["fallback_reason"]) == (2.0, "KHONG_CO_SO")
     assert (by[("S2", "F2", 1)]["forecast_used"], by[("S2", "F2", 1)]["fallback_reason"],
-            by[("S2", "F2", 1)]["flags"]) == (None, None, "AVG_AVG_DEMAND_NULL")
+            by[("S2", "F2", 1)]["flags"]) == (0, "KHONG_CO_SO_NAO", "AVG_AVG_DEMAND_NULL")
     assert res["summary"]["stale_reason"] == "NO_SEL2_RUN" and res["summary"]["refresh_run_id"] is None
 
 
-def test_owner_rule_outside_the_scope_medx_zero_other_prefixes_avg(sel2_on):
-    """Owner decision 04/11/2026, every SKU x FC LIGHTGBM: a LightGBM number (0 included) is used; outside the scope of
-    the run, sku_code prefix MEDX -> 0 + NGOAI_PHAM_VI_GAN_0 and any other prefix -> AVG + KHONG_CO_DU_LIEU_DEMAND.
-    In the run without a number keeps AVG + KHONG_CO_SO (never 0); AVG_DEMAND configured is unchanged."""
+def test_owner_rule_outside_the_scope_zero_for_every_prefix(sel2_on):
+    """Owner final rule 05/11/2026, every SKU x FC LIGHTGBM: a LightGBM number (0 included) is used; outside the scope
+    of the run -> 0 + NGOAI_PHAM_VI_GAN_0 for every sku_code prefix (MEDX, MEDX_E, BML_INT, ...), with or without an
+    AVG value. In the run without a number keeps AVG + KHONG_CO_SO (never 0); AVG_DEMAND configured is unchanged."""
     _run("R1", D, {("MEDX.A", "F1"): ("A", "MOC+DOW4", {h: (0 if h == 1 else h, 0.1) for h in range(1, 8)}),
                    ("MEDX.C", "F1"): ("C", "MOC+DOW4", {h: (2, 2.0) for h in range(1, 6)})})
     _avg(D, [("MEDX.A", "F1", "SL1", 2.0, None), ("MEDX.B", "F1", "SL1", 5.0, None),
@@ -253,12 +263,13 @@ def test_owner_rule_outside_the_scope_medx_zero_other_prefixes_avg(sel2_on):
     pick = lambda k: (by[k]["lightgbm_forecast"], by[k]["avg_demand"], by[k]["forecast_used"], by[k]["fallback_reason"])
     assert pick(("MEDX.A", "F1", 1)) == (0, 2.0, 0, None) and pick(("MEDX.A", "F1", 2)) == (2, 2.0, 2, None)
     assert all(pick(("MEDX.B", "F1", h)) == (None, 5.0, 0, "NGOAI_PHAM_VI_GAN_0") for h in range(1, 8))
-    assert all(pick(("MEDX_E.X", "F1", h)) == (None, 3.0, 3.0, "KHONG_CO_DU_LIEU_DEMAND") for h in range(1, 8))
-    assert pick(("BML_INT.Y", "F2", 1)) == (None, None, None, "KHONG_CO_DU_LIEU_DEMAND")    # no AVG value: empty
+    assert all(pick(("MEDX_E.X", "F1", h)) == (None, 3.0, 0, "NGOAI_PHAM_VI_GAN_0") for h in range(1, 8))
+    assert all(pick(("BML_INT.Y", "F2", h)) == (None, None, 0, "NGOAI_PHAM_VI_GAN_0") for h in range(1, 8))
     assert pick(("MEDX.C", "F1", 5)) == (2, 1.0, 2, None) and pick(("MEDX.C", "F1", 6)) == (None, 1.0, 1.0, "KHONG_CO_SO")
     assert by[("MEDX.D", "F1", 1)]["forecast_source"] == "AVG_DEMAND" and pick(("MEDX.D", "F1", 1)) == (None, 6.0, 6.0, None)
     s = _summary(wb)
-    assert s["rows_fallback_reason:NGOAI_PHAM_VI_GAN_0"] == 7 and s["rows_fallback_reason:KHONG_CO_DU_LIEU_DEMAND"] == 14
+    assert s["rows_fallback_reason:NGOAI_PHAM_VI_GAN_0"] == 3 * 7
+    assert "rows_fallback_reason:KHONG_CO_DU_LIEU_DEMAND" not in s and "rows_fallback_reason:KHONG_CO_SO_NAO" not in s
     assert s["rows_fallback_reason:KHONG_CO_SO"] == 2 and "rows_fallback_reason:NGOAI_PHAM_VI" not in s
 
 

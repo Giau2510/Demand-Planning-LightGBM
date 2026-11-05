@@ -7,9 +7,12 @@
                      If data already exists elsewhere it is NOT moved here - use scripts\migrate-storage.ps1.
 .PARAMETER LogsDir / BackupsDir / ReportsDir  Optional, with -DataDir.
 .PARAMETER Autostart  Also start the app automatically at logon.
+.PARAMETER SkipBackup 1.4.3: no pre-upgrade backup. Only for deploy-upgrade.ps1, after it accepted a backup restore-tested OK
+                     within the last 6 hours (-VerifiedBackup); writes made after that backup are not in it. Honoured only
+                     when DF_DEPLOY_VERIFIED_BACKUP (set by deploy-upgrade.ps1) names an existing file.
 #>
 param([string]$DataDir, [string]$LogsDir, [string]$BackupsDir, [string]$ReportsDir,
-      [switch]$Autostart, [switch]$NoShortcuts, [switch]$NoStart)
+      [switch]$Autostart, [switch]$NoShortcuts, [switch]$NoStart, [switch]$SkipBackup)
 $ErrorActionPreference = "Continue"  # native tools (python, winget) write to stderr; exit codes are checked explicitly
 $src = Split-Path -Parent $PSScriptRoot
 $version = (Get-Content (Join-Path $src "VERSION") -Raw).Trim()
@@ -100,9 +103,22 @@ if ($p.db_exists) {
         Write-Host "Da co du lieu tai $($p.data_dir). -DataDir KHONG tu di chuyen du lieu." -ForegroundColor Yellow
         Write-Host "Dung / use: scripts\migrate-storage.ps1 -DataDir `"$DataDir`"" -ForegroundColor Yellow
     }
-    # back up existing data before an upgrade (verified backup)
-    & $srcPy -m app.cli backup | Out-Host
-    if ($LASTEXITCODE -ne 0) { Stop-Install 1 "Pre-upgrade backup failed - installation aborted, nothing changed." }
+    # 1.4.3 (05/11/2026, owner): with a 10 GB database this backup takes hours; deploy-upgrade.ps1 passes -SkipBackup
+    # only for a backup restore-tested OK within the last 6 hours, and names it in DF_DEPLOY_VERIFIED_BACKUP for this
+    # call. A manual -SkipBackup (no such variable, or it names no file) is ignored
+    $vbk = $env:DF_DEPLOY_VERIFIED_BACKUP
+    $skipOk = $SkipBackup -and $vbk -and (Test-Path -LiteralPath $vbk -PathType Leaf)
+    if ($SkipBackup -and -not $skipOk) {
+        Write-Host "-SkipBackup ignored: not called by deploy-upgrade.ps1 with a verified backup (DF_DEPLOY_VERIFIED_BACKUP names no file) - backup taken" -ForegroundColor Yellow
+    }
+    if ($skipOk) {
+        Write-Host "Pre-upgrade backup skipped (-SkipBackup: verified backup given to deploy-upgrade.ps1)" -ForegroundColor Yellow
+        Write-Host "Verified backup / restore point: $vbk"
+    } else {
+        # back up existing data before an upgrade (verified backup)
+        & $srcPy -m app.cli backup | Out-Host
+        if ($LASTEXITCODE -ne 0) { Stop-Install 1 "Pre-upgrade backup failed - installation aborted, nothing changed." }
+    }
 } elseif ($DataDir) {
     $initArgs = @("-m", "app.cli", "storage-init", "--data-dir", $DataDir)
     if ($LogsDir) { $initArgs += @("--logs-dir", $LogsDir) }

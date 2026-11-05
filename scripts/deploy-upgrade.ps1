@@ -2,6 +2,7 @@
 .SYNOPSIS  Controlled upgrade of Demand Forecasting from a portable ZIP. ASCII only.
            1. read-only prechecks (package SHA256 + VERSION, running app, storage, jobs, disk space)
            2. official online backup through the running app + verification of that backup
+              (1.4.3: skipped, like the install.ps1 backup, with an accepted -VerifiedBackup / -RestoreReport)
            3. explicit confirmation BEFORE the app is stopped
            4. install.ps1 of the package (stops the app, verified backup, copy, migrations, start)
            5. post-checks (version, health, storage.json unchanged, business tables not reduced)
@@ -10,9 +11,21 @@
 .PARAMETER ExpectedSha256  SHA256 published with the package (from the report / .sha256 file)
 .PARAMETER CheckOnly       Only run the read-only prechecks (nothing is written, nothing is stopped)
 .PARAMETER ConfirmToken    Non-interactive confirmation: must equal UPGRADE-<version>
+.PARAMETER VerifiedBackup  1.4.3: backup zip (with db/app.db) of the live database, restore-tested OK, directly in the
+                           backups folder of the installation and named backup-YYYYMMDD-HHMMSS-<reason>.zip (Vietnam time,
+                           at most 6 hours old). When it is accepted the two backups of the upgrade (2. online backup,
+                           4. install.ps1 pre-upgrade backup) are skipped. Writes made after that backup (D0 snapshots,
+                           publishes, imports, settings) are NOT in it.
+.PARAMETER RestoreReport   1.4.3: JSON report of the restore test of -VerifiedBackup:
+                           {"backup": "<full path of the zip>", "sha256": "<HEX>", "db_path": "<full path of the live DB>",
+                            "schema_version": <MAX(version) of schema_migrations>, "integrity": "ok", "count_differences": {},
+                            "models_equal_live_list": true, "model_sha_mismatch": [], "passed": true}  (extra keys allowed)
+                           Any condition not met (file, path, folder, name, database, schema, SHA256, integrity, count
+                           differences, passed, model checks, age, db/app.db, report older than the zip) only means: the
+                           normal backups are taken.
 #>
 param([Parameter(Mandatory = $true)][string]$Package, [Parameter(Mandatory = $true)][string]$ExpectedSha256,
-      [switch]$CheckOnly, [string]$ConfirmToken, [switch]$NoShortcuts)
+      [switch]$CheckOnly, [string]$ConfirmToken, [switch]$NoShortcuts, [string]$VerifiedBackup, [string]$RestoreReport)
 $ErrorActionPreference = "Continue"   # native tools log to stderr; exit codes are checked explicitly
 $base = Join-Path $env:LOCALAPPDATA "Programs\DemandForecast"
 $fails = New-Object System.Collections.ArrayList
@@ -39,7 +52,100 @@ try {
     else { $r = New-Object System.IO.StreamReader($ver.Open()); $newVersion = $r.ReadToEnd().Trim(); $r.Close(); Ok "package version $newVersion" }
     $bad = $zip.Entries | Where-Object { $_.Name -match '(?i)(application_default_credentials|client_secret.*\.json|service.?account.*\.json|\.env$)' }
     if ($bad) { Bad "package contains credential-like files: $($bad.FullName -join ', ')" } else { Ok "no credential files in the package" }
+    # 1.4.3: does the install.ps1 of the package know -SkipBackup (an older one takes its own pre-upgrade backup)
+    $pkgSkip = $false
+    $ie = $zip.Entries | Where-Object { $_.FullName.Replace('\', '/') -match '^DemandForecast-[^/]+/scripts/install\.ps1$' } | Select-Object -First 1
+    if ($ie) {
+        $r = New-Object System.IO.StreamReader($ie.Open()); $it = $r.ReadToEnd(); $r.Close()
+        $ia = [System.Management.Automation.Language.Parser]::ParseInput($it, [ref]$null, [ref]$null)
+        $pkgSkip = [bool]($ia.ParamBlock -and ($ia.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq "SkipBackup" }))
+    }
 } finally { $zip.Dispose() }
+# --- 1.4.3 (05/11/2026, owner): a backup restore-tested OK within the last 6 hours replaces the two backups of the
+# upgrade (the online backup and the pre-upgrade backup of install.ps1): with a 10 GB database they take hours.
+# Every condition must hold; otherwise the normal backups are taken (never a precheck failure). Decided once the
+# installation's storage paths are known (the backup must be of THIS database and schema, in its backups folder);
+# checked again right before the backup stage and right before the install
+$verifiedMaxHours = 6
+$restoreNote = "writes after it (D0 snapshots, publishes, imports, settings) are NOT in it - D0 values cannot be fetched again; " +
+               "a restore first takes a 'pre-restore' safety backup: keep it; if this upgrade changes the schema, the newer " +
+               "'pre-migration' backup (db.migrate) is the first restore point"
+function Get-EntryCount($x) {
+    # entries of a JSON value: absent/null/empty = 0; any other scalar counts as one entry
+    if ($null -eq $x) { return 0 }
+    if ($x -is [System.Management.Automation.PSCustomObject]) { return @($x.PSObject.Properties).Count }
+    if ($x -is [array]) { return $x.Count }
+    if ($x -is [string] -and $x -eq "") { return 0 }
+    return 1
+}
+function Get-StampAgeHours([datetime]$Stamp) {
+    # backup names carry Vietnam time (backup.py: now_vn; UTC+7, no daylight saving time)
+    return ([DateTime]::UtcNow - $Stamp.AddHours(-7)).TotalHours
+}
+function Test-VerifiedStill($V) {
+    # the accepted backup is unchanged (size, write time) and still at most 6 hours old: $null, otherwise the reason
+    $f = Get-Item -LiteralPath $V.Path -ErrorAction SilentlyContinue
+    if (-not $f -or $f.Length -ne $V.Length -or $f.LastWriteTime -ne $V.Written) { return "verified backup changed or removed since the prechecks" }
+    $a = Get-StampAgeHours $V.Stamp
+    if ($a -gt $verifiedMaxHours) { return "verified backup is now $([math]::Round($a, 2)) h old (more than $verifiedMaxHours h)" }
+    return $null
+}
+function Test-VerifiedBackup([string]$Zip, [string]$Report, $Paths, $LiveSchema) {
+    # returns the accepted backup (Path, Sha, AgeHours, Stamp, StampText, Length, Written) or the reason (a string) why
+    # it is not accepted
+    if (-not $Zip) { return "no -VerifiedBackup given" }
+    if (-not $Report) { return "no -RestoreReport given" }
+    if (-not (Test-Path -LiteralPath $Zip -PathType Leaf)) { return "backup not found: $Zip" }
+    if (-not (Test-Path -LiteralPath $Report -PathType Leaf)) { return "restore report not found: $Report" }
+    $zf = Get-Item -LiteralPath $Zip
+    $rf = Get-Item -LiteralPath $Report
+    try { $rep = Get-Content -LiteralPath $rf.FullName -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop } catch { return "restore report is not valid JSON ($($_.Exception.Message))" }
+    if (-not $rep.backup) { return "restore report names no backup" }
+    try { $same = [IO.Path]::GetFullPath([string]$rep.backup).TrimEnd('\') -ieq [IO.Path]::GetFullPath($zf.FullName).TrimEnd('\') } catch { $same = $false }
+    if (-not $same) { return "restore report is for another file ($($rep.backup))" }
+    # a restore point the backup retention keeps: directly in the backups folder, named like the app's backups
+    $bdir = if ($Paths.backups_dir) { [IO.Path]::GetFullPath([string]$Paths.backups_dir).TrimEnd('\') } else { "" }
+    if (-not $bdir) { return "the installation reports no backups folder" }
+    if ([IO.Path]::GetDirectoryName($zf.FullName).TrimEnd('\') -ine $bdir) { return "backup is not directly in the backups folder $bdir" }
+    $m = [regex]::Match($zf.Name, '^backup-(\d{8}-\d{6})-.+\.zip$', 'IgnoreCase')
+    if (-not $m.Success) { return "backup name $($zf.Name) is not backup-YYYYMMDD-HHMMSS-<reason>.zip" }
+    try { $stamp = [DateTime]::ParseExact($m.Groups[1].Value, 'yyyyMMdd-HHmmss', [Globalization.CultureInfo]::InvariantCulture) } catch { return "backup name $($zf.Name) has no valid time stamp" }
+    $stampText = $stamp.ToString('yyyy-MM-dd HH:mm:ss')
+    # the backup is of THIS database, at its current schema
+    if (-not $rep.db_path) { return "restore report names no database (db_path)" }
+    try { $sameDb = [IO.Path]::GetFullPath([string]$rep.db_path).TrimEnd('\') -ieq [IO.Path]::GetFullPath([string]$Paths.db_path).TrimEnd('\') } catch { $sameDb = $false }
+    if (-not $sameDb) { return "backup is of another database ($($rep.db_path); live $($Paths.db_path))" }
+    if ($null -eq $LiveSchema) { return "schema version of the live database not readable" }
+    $rs = $rep.schema_version
+    if ($null -eq $rs -or "$rs" -notmatch '^\d+$' -or [int]"$rs" -ne $LiveSchema) {
+        return "backup schema version $(if ($null -eq $rs) { 'missing' } else { $rs }) differs from the live database ($LiveSchema)"
+    }
+    if ([string]$rep.integrity -ne "ok") { return "restore test integrity '$($rep.integrity)' (expected ok)" }
+    $nDiff = Get-EntryCount $rep.count_differences
+    if ($nDiff) { return "restore test reported $nDiff count difference(s)" }
+    # the model results of the restore test: "passed" is required; the two model keys only when present
+    if (-not ($rep.passed -is [bool] -and $rep.passed)) { return "restore test passed is not true ($(if ($null -eq $rep.passed) { 'missing' } else { $rep.passed }))" }
+    $nMis = Get-EntryCount $rep.model_sha_mismatch
+    if ($nMis) { return "restore test reported $nMis model SHA256 mismatch(es)" }
+    if ($rep.PSObject.Properties["models_equal_live_list"] -and -not ($rep.models_equal_live_list -is [bool] -and $rep.models_equal_live_list)) {
+        return "restored models differ from the live model list (models_equal_live_list $($rep.models_equal_live_list))"
+    }
+    # the age comes from the time stamp in the name (a copy or a touch changes the write time, not the content)
+    $age = Get-StampAgeHours $stamp
+    if ($age -lt 0) { return "backup time stamp $stampText is in the future" }
+    if ($age -gt $verifiedMaxHours) { return "backup age $([math]::Round($age, 2)) h (allowed 0-$verifiedMaxHours h)" }
+    if ($rf.LastWriteTime -lt $zf.LastWriteTime) { return "restore report is older than the backup" }
+    try {
+        $vz = [System.IO.Compression.ZipFile]::OpenRead($zf.FullName)
+        try { $hasDb = [bool]($vz.Entries | Where-Object { $_.FullName.Replace('\', '/') -eq 'db/app.db' }) } finally { $vz.Dispose() }
+    } catch { return "backup is not a readable zip ($($_.Exception.Message))" }
+    if (-not $hasDb) { return "backup has no db/app.db" }
+    Info "computing SHA-256 of the backup (can take minutes)..."
+    $h = (Get-FileHash -LiteralPath $zf.FullName -Algorithm SHA256).Hash
+    if ($h -ine ([string]$rep.sha256).Trim()) { return "backup SHA256 $h differs from the restore report ($($rep.sha256))" }
+    return [pscustomobject]@{ Path = $zf.FullName; Sha = $h; AgeHours = $age; Stamp = $stamp; StampText = $stampText
+                              Length = $zf.Length; Written = $zf.LastWriteTime }
+}
 # --- currently installed / running version
 $prev = $null
 $cur = Join-Path $base "current.txt"
@@ -70,6 +176,26 @@ try {
 } finally { Pop-Location }
 # without the storage paths nothing below can be checked (not even which port the app uses): stop here
 if (-not ($paths -and $paths.db_path)) { Bad "the CLI of installed version $prev returned no storage paths: $((($pathsJson -join ' ') -replace '\s+', ' ').Trim())"; exit 2 }
+$verified = $null
+if ($VerifiedBackup -or $RestoreReport) {
+    # schema version of the live database: read-only (mode=ro) with the stdlib sqlite3 of the installed runtime, run from
+    # its own backend folder (no double quotes in the code: Windows PowerShell 5.1 native arguments)
+    $liveSchema = $null
+    Push-Location $prevBackend
+    try {
+        $sv = & $prevPy -c "import sqlite3,sys,pathlib; c=sqlite3.connect(pathlib.Path(sys.argv[1]).as_uri()+'?mode=ro',uri=True); print(c.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0]); c.close()" $paths.db_path 2>$null
+        $svLast = "$(@($sv)[-1])".Trim()
+        if ($LASTEXITCODE -eq 0 -and $svLast -match '^\d+$') { $liveSchema = [int]$svLast }
+    } finally { Pop-Location }
+    $vb = Test-VerifiedBackup $VerifiedBackup $RestoreReport $paths $liveSchema
+    if ($vb -is [string]) { Info "verified backup not accepted: $vb - normal backups" }
+    else {
+        $verified = $vb
+        $skipped = if ($pkgSkip) { "the two backups are skipped" } else { "only the online backup is skipped (install.ps1 of the package has no -SkipBackup: it takes its own pre-upgrade backup)" }
+        Ok "verified backup $(Split-Path -Leaf $vb.Path) (taken $($vb.StampText) Vietnam time, age $([math]::Round($vb.AgeHours, 2)) h, schema $liveSchema, restore test ok): $skipped"
+        Info "restore point: verified backup $($vb.Path) taken $($vb.StampText); $restoreNote"
+    }
+}
 $sj = Join-Path $env:LOCALAPPDATA "DemandForecast\storage.json"
 $sjHash = if (Test-Path $sj) { (Get-FileHash $sj).Hash } else { $null }
 Info "storage.json: $sj sha256 $sjHash"
@@ -113,16 +239,28 @@ Start-Transcript -Path $log | Out-Null
 $stage = $null
 $stagingRoot = Get-DeployStagingRoot
 $code = 1
+$restorePoint = ""
 try {
     Write-Host "== backup (official, online) =="
     if (-not $running) { throw "the app must be running for the online backup (start it, then run again)" }
-    # 1.4.2: 3600 s (was 600): the online backup of a 9.4 GB database takes about 20 min, longer under memory pressure
-    # (04/11/2026: the 1.4.1 deploy stopped here with "The operation has timed out")
-    $b = Invoke-RestMethod -Method Post "$baseUrl/api/system/backups" -Headers @{ "X-DF-Client" = "web" } -TimeoutSec 3600 -ErrorAction Stop
-    $bz = Join-Path $b.dir $b.file
-    $z2 = [System.IO.Compression.ZipFile]::OpenRead($bz)
-    try { if (-not ($z2.Entries | Where-Object { $_.FullName -eq "db/app.db" })) { throw "backup has no db/app.db" } } finally { $z2.Dispose() }
-    Write-Host "backup: $bz sha256 $((Get-FileHash $bz).Hash)"
+    if ($verified) {
+        # 1.4.3: checked again - the prechecks (storage-verify of a 10 GB database) can take long
+        $why = Test-VerifiedStill $verified
+        if ($why) { Write-Host "${why}: normal backups"; $verified = $null }
+        else {
+            Write-Host "backup: skipped, verified backup $($verified.Path) sha256 $($verified.Sha)"
+            $restorePoint = " (restore point: verified backup $($verified.Path) taken $($verified.StampText); $restoreNote)"
+        }
+    }
+    if (-not $verified) {
+        # 1.4.2: 3600 s (was 600): the online backup of a 9.4 GB database takes about 20 min, longer under memory pressure
+        # (04/11/2026: the 1.4.1 deploy stopped here with "The operation has timed out")
+        $b = Invoke-RestMethod -Method Post "$baseUrl/api/system/backups" -Headers @{ "X-DF-Client" = "web" } -TimeoutSec 3600 -ErrorAction Stop
+        $bz = Join-Path $b.dir $b.file
+        $z2 = [System.IO.Compression.ZipFile]::OpenRead($bz)
+        try { if (-not ($z2.Entries | Where-Object { $_.FullName -eq "db/app.db" })) { throw "backup has no db/app.db" } } finally { $z2.Dispose() }
+        Write-Host "backup: $bz sha256 $((Get-FileHash $bz).Hash)"
+    }
     $before = Invoke-RestMethod "$baseUrl/api/system/status" -ErrorAction Stop
     Write-Host "== confirmation =="
     $want = "UPGRADE-$newVersion"
@@ -140,7 +278,23 @@ try {
     $stage = New-DeployStaging $stagingRoot $stamp $newVersion $sha
     Expand-Archive -LiteralPath $pkgFull -DestinationPath $stage -ErrorAction Stop
     $inst = Get-ChildItem $stage -Directory | Select-Object -First 1
-    if ($NoShortcuts) { & (Join-Path $inst.FullName "scripts\install.ps1") -NoShortcuts } else { & (Join-Path $inst.FullName "scripts\install.ps1") }
+    $instPs1 = Join-Path $inst.FullName "scripts\install.ps1"
+    $instArgs = @{}
+    if ($NoShortcuts) { $instArgs.NoShortcuts = $true }
+    if ($verified) {
+        # 1.4.3: an install.ps1 without -SkipBackup (older package) would refuse the parameter: it then takes its own backup
+        $instParams = try { (Get-Command -Name $instPs1 -ErrorAction Stop).Parameters } catch { $null }
+        # checked once more right before the install: the confirmation and the staging can take long
+        $why = Test-VerifiedStill $verified
+        if (-not ($instParams -and $instParams.ContainsKey("SkipBackup"))) { Write-Host "install.ps1 of the package has no -SkipBackup: it takes its own pre-upgrade backup" }
+        elseif ($why) { Write-Host "${why}: install.ps1 takes its own pre-upgrade backup" }
+        else {
+            $instArgs.SkipBackup = $true
+            # install.ps1 honours -SkipBackup only with this variable naming an existing file (never on a manual call)
+            $env:DF_DEPLOY_VERIFIED_BACKUP = $verified.Path
+        }
+    }
+    try { & $instPs1 @instArgs } finally { $env:DF_DEPLOY_VERIFIED_BACKUP = $null }   # removed, also on error
     if ($LASTEXITCODE -ne 0) { throw "install.ps1 failed with code $LASTEXITCODE (the previous version was restarted if it had been stopped)" }
     Write-Host "== post-checks =="
     $h2 = Invoke-RestMethod "$baseUrl/api/health" -TimeoutSec 30 -ErrorAction Stop
@@ -149,10 +303,10 @@ try {
     if ($after.data_dir -ne $before.data_dir) { throw "data folder changed: $($before.data_dir) -> $($after.data_dir)" }
     if ($after.active_source -ne $before.active_source) { throw "active source changed: $($before.active_source) -> $($after.active_source)" }
     if ($sjHash -and ((Get-FileHash $sj).Hash -ne $sjHash)) { throw "storage.json changed" }
-    Write-Host "UPGRADE OK: $prev -> $newVersion. Rollback if needed: scripts\rollback-version.ps1 -To $prev" -ForegroundColor Green
+    Write-Host "UPGRADE OK: $prev -> $newVersion. Rollback if needed: scripts\rollback-version.ps1 -To $prev$restorePoint" -ForegroundColor Green
     $code = 0
 } catch {
-    Write-Host "UPGRADE STOPPED: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "UPGRADE STOPPED: $($_.Exception.Message)$restorePoint" -ForegroundColor Red
     Write-Host "Rollback (if a new version is running): scripts\rollback-version.ps1 -To $prev" -ForegroundColor Yellow
     $code = 1
 } finally {

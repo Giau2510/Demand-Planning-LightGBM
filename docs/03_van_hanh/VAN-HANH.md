@@ -147,6 +147,18 @@ sau khi nâng cấp (job, forecast mới) sẽ không có trong bản khôi ph�
     - Trả lời sai: script in đúng câu trả lời đã nhận (có trong log `deploy-<thời điểm>.log`) và dừng, không dừng app, không cài gì.
     - Không có `-ConfirmToken` và không có console để hỏi (chạy tự động): cũng dừng như vậy.
     - Ví dụ 22/10/2026 23:10: lần đầu xác nhận bằng cách gõ (mọi lần trước dùng `-ConfirmToken`) dừng "not confirmed" khoảng 3 giây sau khi câu hỏi hiện, và không có log nào ghi lại câu trả lời đã nhận.
+  - **Bỏ sao lưu lặp lại (1.4.3, quyết định chủ dự án 05/11/2026).** Với DB ~10 GB mỗi lần sao lưu mất 30–60 phút.
+    `-VerifiedBackup <zip> -RestoreReport <json>`: khi có một bản sao lưu đã **thử khôi phục đạt** trong 6 giờ, script
+    bỏ CẢ sao lưu trực tuyến lẫn sao lưu `pre-upgrade` của `install.ps1`. Chỉ chấp nhận khi đủ mọi điều kiện: zip nằm
+    ngay trong thư mục `backups` của bản cài, tên `backup-YYYYMMDD-HHMMSS-*.zip`, tuổi theo tên ≤ 6 giờ (kiểm tra lúc
+    kiểm tra trước, trước bước sao lưu và ngay trước khi gọi `install.ps1`), có `db/app.db`; báo cáo ghi đúng đường dẫn
+    zip, SHA-256 khớp, `integrity` = ok, không lệch số dòng, model khớp, `passed` = true, `db_path` = DB đang chạy và
+    `schema_version` = schema đang chạy. Thiếu / sai bất kỳ điều kiện nào: sao lưu bình thường (không bao giờ dừng vì
+    lý do này). `install.ps1 -SkipBackup` gọi tay (không qua deploy-upgrade) bị bỏ qua và vẫn sao lưu.
+    - **Điểm khôi phục** khi đó là bản sao lưu đã kiểm (đường dẫn in trong log `deploy-<thời điểm>.log` và dòng UPGRADE
+      OK / STOPPED). Dữ liệu ghi SAU bản đó (snapshot D0, công bố, import, cài đặt) **không có trong bản đó**; giá trị D0
+      không lấy lại được. Khôi phục luôn tạo trước bản `…-pre-restore.zip` của DB hiện tại: **giữ bản này**. Nếu lần cài
+      có đổi schema, bản `pre-migration` (mới hơn) là điểm khôi phục đầu tiên.
   - **Thư mục giải nén gói (1.2.14, `scripts\_deploy_staging.ps1`).** Gói được giải nén vào một thư mục được quản lý:
     `%TEMP%\DemandForecast-deploy\<yyyyMMdd-HHmmss>`, có tệp đánh dấu `.df-deploy-staging.json` (lần chạy, phiên bản,
     SHA-256 của gói).

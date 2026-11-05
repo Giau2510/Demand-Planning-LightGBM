@@ -123,6 +123,8 @@ powershell -ExecutionPolicy Bypass -File scripts\run-tests.ps1               # b
 
 * Upgrades of the real installation use `scripts\deploy-upgrade.ps1 -Package <zip> -ExpectedSha256 <sha>` (prechecks,
   online backup, typed confirmation `UPGRADE-<version>`, install, post-checks, transcript). Run `-CheckOnly` first.
+  From 1.4.3 (owner 05/11/2026) `-VerifiedBackup <zip> -RestoreReport <json>` skips both backups only for a backup of
+  the live DB restore-tested OK within 6 hours; the restore point is then that backup (docs/03_van_hanh/VAN-HANH.md).
   Rollback: `scripts\rollback-version.ps1 -To <version>` (refuses when the DB schema is newer than the target).
 * Deploy only with the user's explicit authorization for that batch, outside scheduler slots, with no active job, and
   never bypass the script's confirmation.

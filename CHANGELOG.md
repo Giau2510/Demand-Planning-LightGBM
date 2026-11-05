@@ -5,6 +5,27 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.4.3 (05/11/2026) (forecast_used always a rounded whole number; no repeated backups on upgrade)
+
+Owner decisions 05/11/2026 (docs/05_nhat_ky_quyet_dinh.md).
+
+* **Daily Excel, forecast_used = owner's FINAL fixed rule 05/11/2026** (also in CLAUDE.md;
+  `backend/app/ml/sel2/export.py`): configured LIGHTGBM with a LightGBM number of the day (0 included) -> that number,
+  never replaced by Avg; configured LIGHTGBM outside the scope of the run -> 0 for EVERY sku prefix
+  (`NGOAI_PHAM_VI_GAN_0`; `KHONG_CO_DU_LIEU_DEMAND` of 1.4.1 / 1.4.2 is gone). No number inside the scope, or no run for the
+  day (failed): the number of the most recent successful SEL2 run of the last 3 days that has that target day
+  (`DUNG_SO_LAN_CHAY_TRUOC`, flag `LAN_CHAY_TRUOC:<date>`); on a failed day the scope is that of the most recent run of
+  the last 3 days (outside it -> 0); only without any run in the last 3 days -> AVG_DEMAND (`STALE` / `KHONG_CO_SO`). Runs
+  older than 3 days never supply numbers (TOM_TAT row `previous_runs`). Configured AVG_DEMAND without an AVG_DEMAND value but with a
+  LightGBM number -> the LightGBM number (`KHONG_CO_AVG_DUNG_LIGHTGBM`). forecast_used is always rounded (below 0.2 -> 0,
+  else rounded up; 6 decimals first, the same rule as the SEL2 publication) and never empty (no number at all -> 0,
+  `KHONG_CO_SO_NAO`). `lightgbm_forecast` and `avg_demand` keep the original values.
+* **Upgrade without repeated backups**: `deploy-upgrade.ps1 -VerifiedBackup <zip> -RestoreReport <json>` skips the online
+  backup and the `install.ps1` pre-upgrade backup when the zip is a backup of the live DB (same DB path and schema) in
+  the backups folder, restore-tested OK (DB + models, `passed`), at most 6 hours old by its name stamp; otherwise the
+  normal backups run. `install.ps1 -SkipBackup` works only when called by deploy-upgrade. The restore point is then that
+  backup: writes after it are not in it (docs/03_van_hanh/VAN-HANH.md).
+
 ## 1.4.2 (04/11/2026) (SEL2: daily open-hours read; SEL2 models in backups)
 
 Owner decision 04/11/2026.

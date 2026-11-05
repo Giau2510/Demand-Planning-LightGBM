@@ -484,10 +484,13 @@ def test_stale_uses_the_latest_earlier_day_and_recomputes_the_horizon(sel2_on):
     s = res["summary"]
     assert res["is_stale"] is True and s["refresh_run_id"] == "R-D1" and s["stale_reason"] == "NO_RUN_FOR_DAY"
     by = {r["horizon"]: r for r in _main(res)}
-    # target D is horizon 2 of the run of D-1 -> horizon 1 of the file; D+5 = run horizon 7; D+6 not covered
+    # target D is horizon 2 of the run of D-1 -> horizon 1 of the file; D+5 = run horizon 7; D+6 not covered (neither
+    # by the run of D-3); owner rule 05/11/2026 (R3'): previous-run numbers carry DUNG_SO_LAN_CHAY_TRUOC
+    prev = "DUNG_SO_LAN_CHAY_TRUOC"
     assert [(h, by[h]["lightgbm_forecast"], by[h]["fallback_reason"]) for h in range(1, 8)] == [
-        (1, 102, None), (2, 103, None), (3, 104, None), (4, 105, None), (5, 106, None), (6, 107, None),
-        (7, None, "STALE")]
+        (1, 102, prev), (2, 103, prev), (3, 104, prev), (4, 105, prev), (5, 106, prev), (6, 107, prev),
+        (7, None, "KHONG_CO_SO_NAO")]   # owner 05/11/2026: no number at all -> forecast_used 0, KHONG_CO_SO_NAO
+    assert f"LAN_CHAY_TRUOC:{(D - timedelta(days=1)).isoformat()}" in by[1]["flags"].split(",")
     assert by[1]["target_date"].date() == D and by[7]["target_date"].date() == D + timedelta(days=6)
     # only a run of a LATER day exists in another scope: not used (no SEL2 run for D or before; runs are immutable)
     _run("R-LATER", D + timedelta(days=1), {("S1", "F1"): {1: 5}}, "2026-11-02T23:00:00+00:00", scope="SC-LATER")
