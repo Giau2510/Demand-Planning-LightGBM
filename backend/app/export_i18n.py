@@ -177,7 +177,8 @@ HISTORY = {
         "rule_close": ("Vào giờ chốt cuối ngày (giờ Việt Nam, mặc định 23:59) thực tế của ngày được chốt thành một bản lưu riêng. Nguồn chưa có tín hiệu "
                        "hoàn tất thì là 'Đã chốt - cần xác minh', không phải 'Đã hoàn tất'. Dữ liệu đến muộn tạo bản chốt "
                        "bổ sung (revision) có số trước/sau; bản chốt cũ không bị sửa."),
-        "source": {"PRIMARY": "Forecast chính", "SNAPSHOT": "Snapshot dự phòng", "MISSING": "Thiếu dữ liệu forecast"},
+        "source": {"PRIMARY": "Forecast chính", "SNAPSHOT": "Snapshot dự phòng", "MISSING": "Thiếu dữ liệu forecast",
+                   "SEL2": "SEL2 (số đã công bố)", "LIGHTGBM_CU": "LightGBM cũ (1.3.x)"},
         "rule_d1": ("Mỗi ngày chạy chỉ lưu forecast của ngày hôm sau (D+1) từ phiên forecast hợp lệ mới nhất của ngày đó "
                     "(phiên = một lần forecast đã publish thành công). Forecast đã lưu không bao giờ bị sửa."),
         "rule_actual": ("Thực tế đọc từ dữ liệu D-1 đã nạp (SKU x FC không có dòng trong ngày đã nạp = 0); trước khi D-1 nạp "
@@ -252,7 +253,8 @@ HISTORY = {
         "rule_close": ("At the end-of-day close time (Vietnam time, default 23:59) the actual of the day is closed into a separate copy. Without a completion "
                        "signal from the source it is 'Closed - needs verification', not 'Complete'. Late data adds a revision "
                        "with before/after figures; an earlier close is never changed."),
-        "source": {"PRIMARY": "Official forecast", "SNAPSHOT": "Backup snapshot", "MISSING": "Forecast data missing"},
+        "source": {"PRIMARY": "Official forecast", "SNAPSHOT": "Backup snapshot", "MISSING": "Forecast data missing",
+                   "SEL2": "SEL2 (published number)", "LIGHTGBM_CU": "Old LightGBM (1.3.x)"},
         "rule_d1": ("For each run date only the forecast of the next day (D+1) of the newest valid forecast session of that "
                     "day is kept (session = one successfully published forecast). A stored forecast is never changed."),
         "rule_actual": ("Actual comes from the loaded D-1 data (a SKU x FC without a row on a loaded day = 0); before D-1 has "

@@ -5,6 +5,75 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.4.4 (06/11/2026) (daily Excel in the 20-day layout, written by the app)
+
+Owner decision 05/11/2026 evening (docs/05_nhat_ky_quyet_dinh.md), until now applied by the ops script
+`scripts/ops/excel20.py` rewriting the latest copy.
+
+* **Daily Excel, 20-day layout written directly** (`backend/app/ml/sel2/export.py`, daily file and the temporary
+  `_TAM` file): one sheet per warehouse `DU_BAO_<fc_code>` (sorted by `fc_code`, e.g. `DU_BAO_BD`, `DU_BAO_HN`), then
+  `TOM_TAT`, `CONFIG`; every SKU x FC x horizon 1..20 (D .. D+19), the 1.4.3 columns + last column `cach_tinh`. Horizon
+  1..7 = the 1.4.3 rows (`SEL2`, forecast_used rule unchanged); horizon 8..20 = `UOC_TINH_THEO_TUAN`: the row of the
+  same weekday (horizon `((h - 1) % 7) + 1`) with `lightgbm_forecast` = its `raw_value` and `forecast_used` re-derived
+  with the owner's fixed rule. Same cell values as the ops script for the same input (acceptance test
+  `backend/tests/test_v144_excel20.py`). TOM_TAT: the 1.4.3 rows (`rows_total` and the reason / flag counts = horizon
+  1..7) + `layout`, `horizon_8_20`, `rows:<sheet>`, `sku_fc:<sheet>`, `source` (the app version), `generated_at`; every
+  sheet has a frozen header and an autofilter. The 1.4.3 sheet `DU_BAO` is gone.
+* `export_runs.n_rows` and the `n_rows` of the export result = rows of every `DU_BAO_*` sheet (SKU x FC x 20; was x 7).
+* A warehouse with more than 50,000 SKU x FC (Excel row limit) or clashing sheet names: no file and no version are
+  written; error log flag `TOO_MANY_SKU_FC` / `SHEET_NAME_CLASH`, `SEL2_EXPORT_WRITE_FAILED`.
+* After installing 1.4.4 the ops task `DemandForecastExcel20` must be disabled: the app's file no longer has the sheet
+  `DU_BAO` the script reads (it would report `INPUT_INVALID` and leave the file unchanged).
+* **Forecast pages read the published SEL2 numbers** (owner 06/11/2026; same menu, page names and layout). New
+  `backend/app/api/sel2_view.py` builds the rows with `export._rows` (the fixed forecast_used rule, never
+  re-implemented) from the same inputs as the daily Excel; horizon 1..7 shown (8..20 = weekly estimate, Excel only).
+  *Dự báo hằng ngày*: a SEL2 run shows the Excel rows (`final_qty` = `forecast_used`, method = `model_used`, the
+  source column = the file's `forecast_source`) in the 1.4.3 columns (no column added; the API rows also carry
+  `lightgbm_forecast`, `avg_demand`, `forecast_source`, `fallback_reason`); a 1.3.1 run is unchanged. *Kết quả dự báo*: with a
+  published SEL2 run the page lists the SEL2 runs (`/api/daily-forecast/sel2-runs`, `sel2-summary`, `sel2-values`),
+  totals / chart / daily detail from `forecast_used` in the 1.4.3 columns, export link = the daily Excel of the run
+  day; no SEL2 run -> the 1.3.x page as before. The only visible addition on these pages is the info line. A run with a daily Excel uses the forecast source configuration AS OF that file (today's
+  table with the later changes of `forecast_source_config_history` undone; `CONFIG_HISTORY_INCOMPLETE` in the info
+  line when a later change has no history row) and the AVG_DEMAND read and seller rule that file recorded
+  (`summary_json.avg`), so a later Avg read of the day never changes the page; when that read's rows were replaced by
+  a later read of the same table, or the export did not record it, the page uses the day's newest read and the API
+  sets `avg_flag` = `AVG_READ_NOT_PINNED`. *Lịch sử Forecast & Thực tế*: from 04/11/2026 a run date shows the
+  STORED published number (`forecast_used` of the target day run date + 1 = horizon 2, as written in the newest daily
+  Excel of that day; never recomputed) vs the actual (same actual rule as before), source label SEL2; a day without a
+  SEL2 publication keeps its 1.3.x row (label `LightGBM cũ (1.3.x)`, e.g. after the emergency switch-off); earlier run
+  dates unchanged. The SEL2 days are read day by day (per-day aggregates; a page reads only the days that hold it;
+  no view: 30 days x 58k SKU x FC stay below 150 MiB in the test); every sort of the page (date, forecast, abs_error,
+  actual, sku) works; rows: SEL2 rows first, then the 1.3.x rows. The history Excel export has the same rows, days and
+  KPI as the page (source labels SEL2 / LightGBM cũ); sort date streams day by day, the other sorts sort the rows of
+  the range in memory (at most 1,000,000 rows, refused above).
+* **History sidecar files, no schema change** (owner decision 06/11/2026, database size; `ml/sel2/published.py`):
+  each daily Excel version gets `<export root>\.published\YYYYMMDD\du_bao_YYYYMMDD_vN.h2.json.gz` (outside the day folder) (gzip JSON: export_run_id,
+  forecast_date, horizons [2], sha256_of_xlsx, rows [sku, fc, target_date, forecast_used, forecast_source,
+  fallback_reason]), written atomically by `write_daily_export` right after the version file from the rows it built;
+  a failure = flag `SIDECAR_WRITE_FAILED`, never a failed export; the `_TAM` file has none. A missing / stale sidecar is
+  rebuilt from the recorded xlsx (sha256 = `export_runs.sha256`; 1.4.2 / 1.4.3 sheet `DU_BAO`, 1.4.4 sheets
+  `DU_BAO_<fc>`; a row without `forecast_used` is counted, never stored as 0; 1.4.2 fractional numbers kept and
+  counted); a history request may write that sidecar file (never the database), one rebuild per export at a time.
+  Not in the database backups (regenerable). Days exported before 1.4.4: `python -m app.cli
+  sel2-published-backfill --start D --end D [--yes]` (xlsx only read; dry run without `--yes`; idempotent).
+* **Info line** on Tổng quan, Kết quả dự báo, Lịch sử Forecast & Thực tế, Dự báo hằng ngày: `Nguồn: <SEL2 run id |
+  LightGBM cũ (1.3.x) | Avg> - làm mới lúc <giờ VN> - dữ liệu đến <ngày>` (`GET /api/forecast-info`; the history page
+  gets it from `/api/history/overview`): the run the Daily Forecast page shows (newest published refresh run; a 1.3.1
+  refresh run after the emergency switch-off is labelled LightGBM cũ), else the newest 1.3.x run, else Avg.
+* Page view cache (`sel2_view.py`): at most one view (about 115 MiB at 58k SKU x FC, 10 minutes); its signature
+  includes the newest id of `forecast_source_config_history` and the export used, so two source changes in the same
+  second or a new export are seen.
+* **actual_daily refreshed in SEL2 mode** (`ml/sel2/jobs.actual_refresh`): the FORECAST_REFRESH job rewrites D-14 ..
+  D-1 from `demand_daily` (the 1.3.1 `refresh_actual_daily`, one transaction, clipped to the data window, no day
+  outside the range touched) before the SEL2 child; a failure = flag `DAILY_ACTUAL_FAILED` + one WARNING alert, never
+  blocks the forecast. Until 1.4.4 actual_daily stopped when SEL2 replaced the 1.3.1 refresh.
+* **Database writes of 1.4.4** (no schema change, schema stays 12): the pages and the history never write the
+  database; the jobs write what 1.4.3 wrote (`export_runs`, the SEL2 tables) plus `actual_daily` D-14 .. D-1 of the
+  scope (rewritten by the SEL2 refresh with the same function as 1.3.1; `actual_daily` is not a training input).
+* Known limits: the in-process LRU of published rows holds about 10 days (600,000 rows), a longer history range
+  re-reads the sidecar files of the older days on each request; the default range of the history page is unchanged
+  (`forecast_history._range`).
+
 ## 1.4.3 (05/11/2026) (forecast_used always a rounded whole number; no repeated backups on upgrade)
 
 Owner decisions 05/11/2026 (docs/05_nhat_ky_quyet_dinh.md).

@@ -35,6 +35,9 @@
                                             du_bao_YYYYMMDD_TAM.xlsx with V33_L112, other trainings, past
                                             candidates, today)
   sel2-export --date D [--yes]              1.4.0: a new version of the daily Excel of forecast day D
+  sel2-published-backfill --start D --end D [--yes]   1.4.4: the history sidecar files (horizon 2) of days
+                                            exported before 1.4.4, built from the newest recorded Excel of each
+                                            day (xlsx only read, sha256 checked); without --yes only counted
                                             sel2-*: without --yes only the database path and the plan
                                             sel2-train / sel2-day: [--trigger T] [--job-id ID] recorded with the
                                             runs (default trigger cli; the app's jobs pass their own)
@@ -220,6 +223,11 @@ def main(argv=None) -> int:
     s2x = sub.add_parser("sel2-export", help="1.4.0: write a new version of the daily Excel of a forecast day")
     s2x.add_argument("--date", required=True, help="forecast day (Vietnam, YYYY-MM-DD)")
     s2x.add_argument("--yes", action="store_true", help="write (without it: the database path and the target file)")
+    # 1.4.4 history rows of days exported before 1.4.4 (ml/sel2/published.py)
+    s2p = sub.add_parser("sel2-published-backfill", help="1.4.4: create the missing history sidecars of past exports")
+    s2p.add_argument("--start", required=True, help="first forecast day (YYYY-MM-DD)")
+    s2p.add_argument("--end", required=True, help="last forecast day (YYYY-MM-DD)")
+    s2p.add_argument("--yes", action="store_true", help="write (without it: counts only, nothing written)")
     a = ap.parse_args(argv)
     from . import paths
     try:
@@ -352,6 +360,8 @@ def _run(a) -> int:
         return _apply_preset(a)
     if a.cmd == "sel2-export":
         return _sel2_export(a)
+    if a.cmd == "sel2-published-backfill":
+        return _sel2_published_backfill(a)
     if a.cmd.startswith("sel2-") and a.cmd != "sel2-avg-read":
         return _sel2(a)
     if a.cmd == "sel2-avg-read":
@@ -597,6 +607,37 @@ def _sel2_export(a) -> int:
         return 1
     except Exception as e:  # noqa: BLE001 - printed as JSON for the job (never a bare traceback only)
         return _sel2_unexpected(out, e)
+    print(json.dumps({"ok": True, **out, "result": res}, indent=2, ensure_ascii=False, default=str))
+    return 0
+
+
+def _sel2_published_backfill(a) -> int:
+    """1.4.4 `sel2-published-backfill --start D --end D [--yes]` on the configured database (never migrates, never
+    writes the database; writes only the sidecar files of ml/sel2/published.py). Exit 0 ok, 1 failed, 2 refused."""
+    from datetime import date
+    from . import db, paths
+    paths.ensure_storage()
+    out = {"db": str(paths.db_path()), "dry_run": not a.yes}
+    try:
+        s, e = date.fromisoformat(a.start), date.fromisoformat(a.end)
+    except ValueError:
+        print(json.dumps({"ok": False, **out, "refused": "--start / --end must be YYYY-MM-DD"}, indent=2))
+        return 2
+    if s > e or (e - s).days > 400:
+        print(json.dumps({"ok": False, **out, "refused": "--start must not be after --end (at most 400 days)"}, indent=2))
+        return 2
+    with db.read() as c:
+        schema = c.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] or 0
+    out["schema_version"] = schema
+    if schema < 12:
+        print(json.dumps({"ok": False, **out, "refused": f"database schema {schema}: needs schema 12 (export_runs)"},
+                         indent=2))
+        return 2
+    from .ml.sel2 import published
+    try:
+        res = published.backfill(s, e, apply=bool(a.yes))
+    except Exception as ex:  # noqa: BLE001 - printed as JSON
+        return _sel2_unexpected(out, ex)
     print(json.dumps({"ok": True, **out, "result": res}, indent=2, ensure_ascii=False, default=str))
     return 0
 

@@ -5,6 +5,7 @@ import { useSystem } from "../App";
 import { useI18n } from "../i18n";
 import { AssessmentBox, Bars, Card, Code, Empty, ErrorBox, JobProgress, LineChart, Loading, MethodLabel, OkBox, PageHeader, Pill, SourceBadge, Stat, Term, fmtDate, fmtNum, fmtPct, fmtSignedPct, fmtTime, useAction, useAsync } from "../components/ui";
 import { Icon } from "../components/icons";
+import ForecastInfoLine from "../components/ForecastInfoLine";
 
 export function HorizonPicker({ value, onChange, options }: { value: number; onChange: (h: number) => void; options: number[] }) {
   const { t } = useI18n();
@@ -81,6 +82,7 @@ export default function Dashboard() {
         <button className="primary" onClick={train} disabled={act.busy || jobActive || !s?.scope}>
           <Icon name={jobActive ? "running" : "model"} className={jobActive ? "spin" : undefined} />{jobActive ? t("common.running") : t("dash.train_now")}</button>
       </>} />
+      <ForecastInfoLine />
       <ErrorBox error={act.error} />
       <OkBox text={act.ok} />
       {jobId && alreadyActive && jobActive && <div className="alert info small">{t("job.already_active")}</div>}

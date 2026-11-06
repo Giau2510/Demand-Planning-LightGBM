@@ -44,6 +44,7 @@ AVG_DAY_PASSED = "SEL2_AVG_REEXPORT_DAY_PASSED"
 STALE_NOT_NEEDED = "SEL2_STALE_EXPORT_NOT_NEEDED"
 FLAG_AVG_READ_FAILED = "AVG_READ_FAILED"
 FLAG_OPEN_HOURS_READ_FAILED = "OPEN_HOURS_READ_FAILED"   # = daily_refresh.OPEN_HOURS_ALERT
+FLAG_ACTUAL_DAILY_FAILED = "DAILY_ACTUAL_FAILED"       # = daily_refresh.ACTUAL_DAILY_ALERT (1.4.4)
 # 1.3.1 NOT_READY codes: the attempt is a SKIPPED row with its reason, the schedule makes the next attempt
 NOT_READY_CODES = ("OPEN_HOURS_INVALID", "REFRESH_WAITS_FOR_D1", "NOT_APPLICABLE_FOR_SOURCE")
 # free commit (MB) needed to start the day's run next to a running CANDIDATE_TRAIN (= pipeline.MIN_COMMIT_MB, not
@@ -263,6 +264,29 @@ def open_hours_read(d: date, scope: dict) -> dict:
         return {"error": err}
 
 
+# ------------------------------------------------------------------ actual_daily (light, in process)
+def actual_refresh(d: date, scope: dict) -> dict:
+    """1.4.4: actual_daily of the scope for D-14 .. D-1 from demand_daily (daily_refresh.refresh_actual_daily, the
+    1.3.1 step after its publication; the SEL2 child never ran it, so actual_daily stopped in SEL2 mode). The range is
+    rewritten in one transaction (idempotent; no day outside it is touched), clipped to the data window. A failure is
+    logged + ONE WARNING alert (daily_refresh.ACTUAL_DAILY_ALERT), never blocks the day's forecast."""
+    from datetime import timedelta
+    from ...data.demand import data_window
+    from .. import daily_refresh
+    start, end = d - timedelta(days=daily_refresh.ACTUAL_DAYS), d - timedelta(days=1)
+    try:
+        with db.read() as c:
+            floor = data_window(c, today=d, scope=scope)["start"]
+        n = daily_refresh.refresh_actual_daily(scope["scope_key"], start, end, floor=floor)
+        return {"rows": n, "start": str(start), "end": str(end)}
+    except Exception as e:  # noqa: BLE001 - the day's forecast goes on; done again at the next refresh
+        err = (f"{e.code}: {e.detail or ''}" if isinstance(e, AppError) else f"{type(e).__name__}: {e}")[:500]
+        log.warning("sel2 actual_daily refresh failed", extra={"ctx": {"business_date": str(d), "error": err}})
+        daily_refresh._warn(daily_refresh.ACTUAL_DAILY_ALERT, {"business_date": str(d), "error": err},
+                            "scope", scope["scope_key"])
+        return {"rows": None, "error": err}
+
+
 # ------------------------------------------------------------------ handlers
 def _day(v) -> date:
     return date.fromisoformat(str(v)[:10]) if v else today_vn()
@@ -298,10 +322,14 @@ def refresh(job_id, params: dict, cancel=None, progress=None, trigger: str = "SC
     avg = avg_read(d)
     if avg["status"] == "FAILED":
         flags.append(FLAG_AVG_READ_FAILED)
+    # 1.4.4: actual_daily D-14 .. D-1 (after today's D-1 load, gate above); a past day rewrites the same range again
+    act = actual_refresh(d, scope) if scope is not None else None
+    if act and act.get("error"):
+        flags.append(FLAG_ACTUAL_DAILY_FAILED)
     stage("FORECASTING")                                # candidates + SEL2 + publication + export (child)
     res = call_cli(["sel2-day", "--date", str(d), "--yes", *(["--force"] if force else []),
                     *_job_args(job_id, trigger)], cancel)
-    base.update(open_hours=oh, avg_read=avg, flags=flags, exit_code=res.get("exit_code"))
+    base.update(open_hours=oh, avg_read=avg, actual_daily=act, flags=flags, exit_code=res.get("exit_code"))
     if res.get("ok"):
         r = res.get("result") or {}
         st = r.get("status")

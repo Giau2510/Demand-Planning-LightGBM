@@ -80,14 +80,14 @@ def test_daily_export_du_bao_and_config(sel2_on):
     _config([(s, "F1", "LIGHTGBM", "ghi chu" if s == "NODOT" else None) for s in SKUS])
     res = export.write_daily_export(D, scope_key=SCOPE)
     wb = load_workbook(paths.data_dir() / res["path"])
-    assert [c.value for c in wb["DU_BAO"][1]] == MAIN_HEADER
+    assert [c.value for c in wb["DU_BAO_F1"][1]] == MAIN_HEADER + ["cach_tinh"]
     rows = _main_rows(wb)
-    assert len(rows) == res["n_rows"] == len(SKUS) * 7
+    assert len(rows) == len(SKUS) * 7 and res["n_rows"] == len(SKUS) * 20
     _check_split(rows)
     medx = next(r for r in rows if r["sku_code"] == "MEDX.ABC-ABC-010")
     assert (medx["ten_san_pham"], medx["seller_code"], medx["product_code"], medx["fc_code"], medx["forecast_used"]) \
         == ("Ten MEDX.ABC-ABC-010", "MEDX", "ABC-ABC-010", "F1", 1)
-    assert wb["DU_BAO"].auto_filter.ref == f"A1:T{len(rows) + 1}"
+    assert wb["DU_BAO_F1"].auto_filter.ref == f"A1:U{len(SKUS) * 20 + 1}"
     cfg = _check_config(wb, SKUS)
     assert (cfg["BML_E.0a1b2c3d4e5f"]["seller_code"], cfg["BML_E.0a1b2c3d4e5f"]["product_code"]) == \
         ("BML_E", "0a1b2c3d4e5f")
@@ -102,7 +102,7 @@ def test_temp_export_du_bao_and_config(sel2_on):
     res = export.write_temp_export(D, groups={(s, "F1"): "A" for s in SKUS[:3]}, scope_key=SCOPE)
     wb = load_workbook(paths.data_dir() / res["path"])
     rows = _main_rows(wb)                                       # header checked against COLS
-    assert len(rows) == res["n_rows"] == len(SKUS) * 7
+    assert len(rows) == len(SKUS) * 7 and res["n_rows"] == len(SKUS) * 20
     _check_split(rows)
     nodot = [r for r in rows if r["sku_code"] == "NODOT"]
     assert {(r["seller_code"], r["product_code"], r["fallback_reason"]) for r in nodot} == \

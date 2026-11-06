@@ -5,6 +5,7 @@ import { useDailyStatus } from "../App";
 import { Card, Confirm, DateInput, Empty, ErrorBox, Field, FilterBar, JobProgress, Loading, MethodLabel, OkBox, PageHeader, Pager, Pill,
   SearchInput, Stat, fmtDate, fmtNum, fmtTime, useAction, useAsync } from "../components/ui";
 import { Icon } from "../components/icons";
+import ForecastInfoLine from "../components/ForecastInfoLine";
 
 const PAGE = 100;
 const GROUPS = ["A", "B", "C"];
@@ -148,6 +149,9 @@ export default function DailyForecast() {
     return x;
   };
   const lgbmKeys = lgbm.data;
+  // 1.4.4: the rows of the daily Excel (final_qty = forecast_used; the source column = the file's forecast_source);
+  // the columns stay those of 1.4.3
+  const sel2Rows = !!v?.sel2;
   const showSource = isSel2Run(run) && !!lgbmKeys;
   const nFilters = [runId, date, h, group, q.trim()].filter(Boolean).length;
   const clear = () => { setRunId(""); setDate(""); setH(""); setGroup(""); setQ(""); setQd(""); };
@@ -155,6 +159,7 @@ export default function DailyForecast() {
   return (
     <div className="stack" data-testid="daily-page">
       {header}
+      <ForecastInfoLine />
       <ErrorBox error={status.error} />
       {/* the label itself is the shell banner above; here only what it means for this page */}
       {s.trial_label && <p className="small warn-t" data-testid="daily-trial">{t("daily.trial_note")}</p>}
@@ -273,7 +278,8 @@ export default function DailyForecast() {
                 <th>{t("daily.flags")}</th></tr></thead>
               <tbody>
                 {list(v.rows).map((x: any) => {
-                  const kind = rowSourceKind(run, lgbmKeys, x.sku_code, x.fc_code);
+                  const kind = sel2Rows && x.forecast_source ? (x.forecast_source === "LIGHTGBM" ? "LIGHTGBM" : "OTHER")
+                    : rowSourceKind(run, lgbmKeys, x.sku_code, x.fc_code);
                   return (
                   <tr key={`${x.fc_code}|${x.sku_code}|${x.horizon}`}>
                     <td className="nowrap">{fmtDate(x.forecast_date)}</td><td className="nowrap">{fmtDate(x.target_date)}</td>

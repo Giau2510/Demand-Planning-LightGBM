@@ -1732,6 +1732,18 @@ export const DICT: Record<string, [string, string]> = {
   "stage.EXPORTING": ["Ghi file Excel", "Writing the Excel file"],
   "dexp.source_col": ["Nguồn", "Source"],
   "dexp.using_lgbm": ["đang dùng LightGBM", "using LightGBM"],
+  // 1.4.4: one info line on every forecast page (source, refresh time, data cut-off)
+  "finfo.source": ["Nguồn", "Source"],
+  "finfo.refreshed": ["làm mới lúc", "refreshed at"],
+  "finfo.data_to": ["dữ liệu đến", "data up to"],
+  "finfo.none": ["chưa có số dự báo", "no forecast yet"],
+  "finfo.src.SEL2": ["SEL2", "SEL2"],
+  "finfo.src.LIGHTGBM_CU": ["LightGBM cũ (1.3.x)", "Old LightGBM (1.3.x)"],
+  "finfo.src.AVG": ["Avg", "Avg"],
+  "finfo.config_incomplete": ["cấu hình nguồn lúc xuất file không dựng lại được đủ (thiếu lịch sử thay đổi): số trên trang có thể khác file Excel",
+    "the source configuration at export time cannot be fully rebuilt (change history missing): page numbers may differ from the Excel file"],
+  "fh.src.SEL2": ["SEL2", "SEL2"],
+  "fh.src.LIGHTGBM_CU": ["LightGBM cũ (1.3.x)", "Old LightGBM (1.3.x)"],
 };
 
 type Ctx = { lang: Lang; setLang: (l: Lang) => void; t: (k: string) => string; pick: (o?: { vi?: string; en?: string } | null) => string };

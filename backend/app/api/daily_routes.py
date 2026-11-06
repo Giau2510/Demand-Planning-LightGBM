@@ -29,7 +29,7 @@ from ..messages import AppError
 from ..ml import accuracy_report, feature_registry, feature_report, features
 from ..ml.pipeline import feature_table_snapshot
 from ..timeutil import VN_TZ, iso, now_iso, now_vn, parse_iso, today_vn, vn_slot
-from . import background
+from . import background, sel2_view
 
 router = APIRouter(prefix="/api")
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -194,6 +194,13 @@ def _value_row(run: dict, r, names: dict) -> dict:
             "flags": r["flags"]}
 
 
+def _sel2_value_row(r: dict) -> dict:
+    """An export row with the field names of the page (final_qty = forecast_used, lgb_raw = raw_value, method =
+    model_used, group_code = nhom) and the columns of the Excel."""
+    return {**r, "product_name": r["ten_san_pham"], "group_code": r["nhom"], "lgb_raw": r["raw_value"],
+            "final_qty": r["forecast_used"], "method": r["model_used"]}
+
+
 @router.get("/daily-forecast/values")
 def daily_values(run_id: str | None = None, forecast_date: str | None = None, horizon: int | None = Query(None, ge=1),
                  group: str | None = None, q: str | None = None, page: int = Query(0, ge=0)):
@@ -205,6 +212,11 @@ def daily_values(run_id: str | None = None, forecast_date: str | None = None, ho
         run = _find_run(c, scope["scope_key"] if scope else None, run_id, fd)
         if run is None:
             return {"run": None, "rows": [], "total": 0, "page": page, "page_size": PAGE, "horizons": []}
+        v = sel2_view.view(c, run["id"])
+        if v is not None:      # 1.4.4: a SEL2 run shows the rows of the daily Excel (export._rows), horizon 1..7
+            total, rows = sel2_view.page(v, v.filter(q=q, group=group), horizon, page * PAGE, PAGE)
+            return {"run": run, "rows": [_sel2_value_row(r) for r in rows], "total": total, "page": page,
+                    "page_size": PAGE, "horizons": list(range(1, sel2_view.HORIZON + 1)), "sel2": True}
         where, params = _filters(run["id"], horizon, group, q)
         total = c.execute(f"SELECT COUNT(*) FROM forecast_refresh_values WHERE {where}", params).fetchone()[0]
         names = _names(c, scope)
@@ -214,6 +226,81 @@ def daily_values(run_id: str | None = None, forecast_date: str | None = None, ho
         horizons = [r[0] for r in c.execute("SELECT DISTINCT horizon FROM forecast_refresh_values WHERE run_id=? "
                                             "ORDER BY horizon", (run["id"],)).fetchall()]
     return {"run": run, "rows": rows, "total": total, "page": page, "page_size": PAGE, "horizons": horizons}
+
+
+@router.get("/forecast-info")
+def forecast_info():
+    """1.4.4: the info line of the forecast pages (sel2_view.info): newest SEL2 run of the active scope, else the
+    newest 1.3.x run (LIGHTGBM_CU), else the newest AVG_DEMAND read."""
+    with db.read() as c:
+        scope = _scope(c)
+        return sel2_view.info(c, scope["scope_key"] if scope else None)
+
+
+def _sel2_run(c, run_id: str | None) -> tuple[dict | None, sel2_view.View | None]:
+    """(run as shown on the Results page, view) of the given SEL2 run of the active scope, else its newest one."""
+    scope = _scope(c)
+    sk = scope["scope_key"] if scope else None
+    run = _find_run(c, sk, run_id) if run_id else sel2_view.latest_run(c, sk)
+    v = sel2_view.view(c, run["id"]) if run else None
+    if v is None:
+        return None, None
+    r = v.run
+    return {"id": r["id"], "model_version": r["model_version"], "data_source": scope["data_source"],
+            "scope_key": sk, "forecast_origin": r["forecast_date"], "forecast_date": r["forecast_date"],
+            "data_as_of": r["data_as_of"], "created_at": r["created_at"], "max_horizon": sel2_view.HORIZON,
+            "horizons": list(range(1, sel2_view.HORIZON + 1)), "fcs": v.fcs, "sel2": True}, v
+
+
+@router.get("/daily-forecast/sel2-runs")
+def sel2_runs(limit: int = Query(30, ge=1, le=200)):
+    """Published SEL2 runs of the active scope, newest first (the run list of the Results page in SEL2 mode)."""
+    with db.read() as c:
+        scope = _scope(c)
+        if scope is None:
+            return []
+        return [_run_row(r) for r in db.rows(
+            c, f"SELECT {RUN_COLS} FROM forecast_refresh_runs WHERE scope_key=? AND status='PUBLISHED' "
+               "AND config_version LIKE ? ORDER BY forecast_date DESC, created_at DESC, rowid DESC LIMIT ?",
+            (scope["scope_key"], sel2_view.SEL2_PREFIX + "%", limit))]
+
+
+@router.get("/daily-forecast/sel2-summary")
+def sel2_summary(run_id: str | None = None, horizon: int = Query(7, ge=1, le=7), sku_id: str | None = None,
+                 fc_id: str | None = None, q: str | None = None, limit: int = Query(100, ge=1, le=1000),
+                 offset: int = Query(0, ge=0)):
+    """Results page (SEL2 mode): per SKU x FC the total of forecast_used over horizon 1..horizon and the daily totals
+    of the filtered SKU x FC - the numbers of the daily Excel of the run's day."""
+    with db.read() as c:
+        run, v = _sel2_run(c, run_id)
+        if v is None:
+            return {"run": None, "series": [], "daily": [], "n_series": 0, "grand_total": 0}
+        keys = v.filter(sku=sku_id, fc=fc_id, q=q)
+    daily = [{"target_date": v.days[i], "total": sum(v.used[k][i] for k in keys)} for i in range(horizon)]
+    series = [{"sku_id": k[0], "fc_id": k[1], "product_name": v.names.get(k[0]), "total": sum(v.used[k][:horizon]),
+               "method": v.model[k], "model_used": v.model[k], "forecast_source": v.source[k]}
+              for k in keys[offset:offset + limit]]
+    return {"run": run, "start_date": v.days[0], "end_date": v.days[horizon - 1], "horizon": horizon,
+            "grand_total": sum(d["total"] for d in daily), "daily": daily, "n_series": len(keys), "series": series,
+            "actual": None}
+
+
+@router.get("/daily-forecast/sel2-values")
+def sel2_values(run_id: str | None = None, horizon: int = Query(7, ge=1, le=7), sku_id: str | None = None,
+                fc_id: str | None = None, q: str | None = None, date_from: str | None = None,
+                date_to: str | None = None, limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0)):
+    """Results page (SEL2 mode), daily detail: the rows of the daily Excel (horizon 1..horizon) with the field names
+    of the page (sku_id, fc_id, horizon_day, forecast_qty = forecast_used, method = model_used)."""
+    df, dt = _date(date_from, "date_from"), _date(date_to, "date_to")
+    with db.read() as c:
+        run, v = _sel2_run(c, run_id)
+        if v is None:
+            return {"run": None, "rows": [], "total": 0}
+        total, rows = sel2_view.page(v, v.filter(sku=sku_id, fc=fc_id, q=q), None, offset, limit, df, dt, horizon)
+    return {"run": run, "total": total, "actual": None, "rows": [
+        {**r, "sku_id": r["sku_code"], "fc_id": r["fc_code"], "product_name": r["ten_san_pham"],
+         "horizon_day": r["horizon"], "weekday": date.fromisoformat(r["target_date"]).isoweekday(),
+         "forecast_qty": r["forecast_used"], "method": r["model_used"]} for r in rows]}
 
 
 @router.get("/daily-forecast/export.xlsx")

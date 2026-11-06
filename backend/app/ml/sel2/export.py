@@ -13,8 +13,10 @@ the latest copy comes after: when it cannot be replaced (du_bao_YYYYMMDD.xlsx op
 flagged LATEST_COPY_LOCKED (export_runs.flags and the result), never failed. A day without a completed AVG_DEMAND read
 is flagged AVG_NO_READ (file level: TOM_TAT and export_runs.flags).
 
-  DU_BAO   one row per SKU x FC x target day (D .. D+6): the union of the SKU x FC of the SEL2 run used and of the
-           SKU x FC with an AVG_DEMAND row of day D. forecast_used
+  DU_BAO_<fc_code>  (1.4.4, 20-day layout below) one sheet per warehouse; the rows of horizon 1..7 are the rows
+           described here (cach_tinh SEL2).
+  DU_BAO   (up to 1.4.3) one row per SKU x FC x target day (D .. D+6): the union of the SKU x FC of the SEL2 run used
+           and of the SKU x FC with an AVG_DEMAND row of day D. forecast_used
            follows the owner's fixed rule 05/11/2026 (with its supplement of the same day):
            Reference run: today's run (the SEL2 run of D); without it (failed / missing) the most recent SEL2 run of
            D-3 .. D-1 (same scope_key); runs older than D-3 are never a reference and never supply numbers.
@@ -48,6 +50,24 @@ is flagged AVG_NO_READ (file level: TOM_TAT and export_runs.flags).
            product_code = sku_code; an empty part before the dot (".X") gives seller_code empty, an empty part after
            it ("X.") product_code empty (split_sku).
 
+20-day layout (owner decision 05/11/2026 evening; 1.4.4 writes it directly, same values cell by cell as the ops script
+scripts/ops/excel20.py that rewrote the latest copy of 1.4.3 from 06/11):
+  DU_BAO_<fc_code>  one sheet per warehouse, sorted by fc_code (sheet_name: DU_BAO_BD, DU_BAO_HN), then TOM_TAT,
+           CONFIG. Every SKU x FC of that warehouse (sorted by sku_code) x horizon 1..20 (target_date D .. D+19), the
+           columns of DU_BAO + cach_tinh (last column). h 1..7: the rows above, cach_tinh SEL2. h 8..20: cach_tinh
+           UOC_TINH_THEO_TUAN; template = the row of the same SKU x FC with horizon ((h - 1) % 7) + 1 (same weekday);
+           target_date D + h - 1, horizon h, lightgbm_forecast = the template's raw_value (unrounded, empty without
+           one), every other column copied from the template, forecast_used re-derived with the owner's fixed rule
+           (derive_used: outside the scope stays 0; LIGHTGBM with a raw_value -> that value rounded (R5); otherwise the
+           template's forecast_used / reason; AVG_DEMAND without Avg -> the raw_value rounded).
+  TOM_TAT  the rows of the 7-day file (rows_total and the rows_fallback_reason / rows_flag counts are those of horizon
+           1..7), then layout, horizon_8_20 (note), rows:<sheet> / sku_fc:<sheet>, source (the app version),
+           generated_at (VN). Every sheet: bold header, frozen, autofilter.
+  export_runs.n_rows (and n_rows of the result / summary) = the rows of every DU_BAO_* sheet (SKU x FC x 20).
+  A warehouse with more than MAX_SKU_FC SKU x FC (50,000 x 20 rows stays below Excel's 1,048,576) or sheet names that
+  clash: no file is written (no version, no record): error log with the flag TOO_MANY_SKU_FC / SHEET_NAME_CLASH and
+  SEL2_EXPORT_WRITE_FAILED (detail = the flag).
+
 Stale mode: without a SEL2 run published for D the file is marked is_stale = 1 and its numbers come only from R3'
 (runs of D-3 .. D-1, horizon recomputed from D). The latest SEL2 run of an earlier day (whatever its age) stays the
 file's run for refresh_run_id / run_forecast_date (export_runs.refresh_run_id), column nhom and the SKU x FC of the
@@ -61,7 +81,7 @@ AVG_DEMAND. Writing is refused while sel2_pipeline.enabled = False.
 
 Temporary file of the first start (write_temp_export, pipeline.bootstrap): du_bao_YYYYMMDD_TAM.xlsx = the V33_L112
 candidate of D for every SKU x FC in place of the SEL2 run (same DU_BAO / CONFIG logic, TOM_TAT note "bản tạm"); not a
-version, not the latest copy, not in export_runs; replaced by the next bootstrap of the same day.
+version, not the latest copy, not in export_runs; replaced by the next bootstrap of the same day. Same 20-day layout.
 """
 from __future__ import annotations
 
@@ -70,18 +90,20 @@ import json
 import logging
 import math
 import os
+import re
 import sqlite3
 import threading
 import time
 import uuid
 from datetime import date, datetime, timedelta
+from itertools import islice
 from pathlib import Path, PureWindowsPath
 
-from ... import db, paths
+from ... import __version__, db, paths
 from ... import settings_service as ss
 from ...messages import AppError
 from ...timeutil import VN_TZ, now_utc, iso
-from . import avg_demand
+from . import avg_demand, published
 from .source_config import DEFAULT_SOURCE
 from .xlsx_stream import Sheet, write_xlsx
 
@@ -111,7 +133,19 @@ FLAG_LATEST_LOCKED, FLAG_LATEST_FAILED = "LATEST_COPY_LOCKED", "LATEST_COPY_FAIL
 MAX_VERSION_TRIES = 1000
 STALE_TEMP_SECONDS = 3600                 # .reserved / .tmp files older than this are left by a crashed process
 MAX_LATEST_COPIES = 10                    # latest copy re-done while a newer version was recorded meanwhile
-_lock = threading.Lock()                  # one export at a time in this process (version numbers, file names)
+# 1.4.4 20-day layout (owner decision 05/11/2026 evening, values as scripts/ops/excel20.py)
+H_ALL = 20                                # horizons per SKU x FC in the file (1..7 SEL2, 8..20 weekly estimate)
+SHEET_PREFIX = "DU_BAO_"                  # one sheet per warehouse: DU_BAO_<fc_code>
+COLUMNS20 = COLUMNS + ("cach_tinh",)
+CACH_SEL2, CACH_WEEK = "SEL2", "UOC_TINH_THEO_TUAN"
+LAYOUT_20 = "20 ngay, tach sheet theo kho"
+NOTE_8_20 = ("UOC_TINH_THEO_TUAN: lightgbm_forecast = raw_value cung thu trong tuan o horizon 1-7 cua lan chay hom nay "
+             "(khong phai SEL2)")
+MAX_SKU_FC = 50_000                       # per warehouse: 50,000 x 20 rows stays below Excel's 1,048,576
+WARN_SKU_FC = 45_000                      # per warehouse: warning in the log from here on (05/11: BD 31,955 / HN 26,636)
+FLAG_TOO_MANY_SKU_FC, FLAG_SHEET_CLASH = "TOO_MANY_SKU_FC", "SHEET_NAME_CLASH"
+_I = {c: i for i, c in enumerate(COLUMNS)}
+_lock = threading.Lock()                 # one export at a time in this process (version numbers, file names)
 
 
 def _day(d) -> date:
@@ -452,13 +486,116 @@ def _rows(d: date, keys: list, run: dict | None, run_keys: dict, vals: dict, avg
                    v[1] if v else None, v[5] if from_prev else mv, v[6] if from_prev else cutoff, st, flags]
 
 
-def _write_book(target: Path, rows, n_rows: int, summary_rows, config_rows: list) -> None:
-    """Bold header on every sheet; DU_BAO and CONFIG: header frozen + autofilter. Streamed (xlsx_stream: openpyxl's
-    writer took about 380 s for 420k rows); summary_rows is read after DU_BAO is written."""
-    write_xlsx(target, [Sheet(SHEET_MAIN, COLUMNS, rows, n_rows, freeze_header=True, autofilter=True),
-                        Sheet(SHEET_SUMMARY, SUMMARY_COLUMNS, summary_rows),
-                        Sheet(SHEET_CONFIG, CONFIG_COLUMNS, config_rows, len(config_rows), freeze_header=True,
-                              autofilter=True)])
+# ------------------------------------------------------------------ 20-day layout (1.4.4)
+def _num(v) -> float | None:
+    """Finite float of a value, None when missing / not a number."""
+    if v is None or isinstance(v, bool):
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _roundup(x) -> int:
+    x = round(float(x), 6)
+    return 0 if x < USED_THRESHOLD else math.ceil(x)
+
+
+def derive_used(src, t_used, t_reason, raw) -> tuple[int, str | None]:
+    """(forecast_used, fallback_reason) of a horizon 8..20 row from its template (forecast_source, forecast_used,
+    fallback_reason) and the template's raw_value (_num); always an int >= 0 (owner's fixed rule, R5)."""
+    if t_reason == REASON_OUT_ZERO:
+        return 0, REASON_OUT_ZERO
+    if src == LIGHTGBM:
+        if raw is not None:
+            return _roundup(raw), (REASON_PREVIOUS if t_reason == REASON_PREVIOUS else None)
+        used, reason = t_used, t_reason                     # Avg / 0 of the template
+    elif t_reason == REASON_AVG_MISSING_LGBM and raw is not None:
+        return _roundup(raw), REASON_AVG_MISSING_LGBM
+    else:
+        used, reason = t_used, t_reason                     # AVG_DEMAND: the template's value
+    u = _num(used)
+    if reason == REASON_NO_NUMBER or u is None:
+        return 0, REASON_NO_NUMBER
+    return _roundup(u), reason
+
+
+def sheet_name(fc) -> str:
+    """DU_BAO_<fc_code> (characters Excel refuses in a sheet name -> _, at most 31 characters)."""
+    s = re.sub(r"[\[\]:*?/\\']", "_", str(fc if fc not in (None, "") else "KHONG_FC"))
+    return (SHEET_PREFIX + s)[:31]
+
+
+def _sheet_plan(keys: list) -> list[tuple[str, list]]:
+    """[(sheet name, SKU x FC of that warehouse in the order of keys)], sorted by fc_code. ValueError (flag first)
+    when a warehouse has more than MAX_SKU_FC SKU x FC or two sheet names clash."""
+    by_fc: dict = {}
+    for k in keys:
+        by_fc.setdefault(k[1], []).append(k)
+    fcs = sorted(by_fc, key=lambda x: (x is None, str(x)))
+    big = {str(fc): len(by_fc[fc]) for fc in fcs if len(by_fc[fc]) > MAX_SKU_FC}
+    if big:
+        raise ValueError(f"{FLAG_TOO_MANY_SKU_FC}: SKU x FC per warehouse > {MAX_SKU_FC}: {big}")
+    near = {str(fc): len(by_fc[fc]) for fc in fcs if len(by_fc[fc]) > WARN_SKU_FC}
+    if near:                                          # early warning before the hard limit refuses the daily file
+        log.warning("sel2 export: warehouse near the 20-day sheet limit",
+                    extra={"ctx": {"limit": MAX_SKU_FC, "warn_from": WARN_SKU_FC, "sku_fc": near}})
+    names = [sheet_name(fc) for fc in fcs]
+    folded = [n.casefold() for n in names]            # Excel sheet names are unique regardless of case
+    if len(set(folded)) != len(folded) or SHEET_SUMMARY.casefold() in folded or SHEET_CONFIG.casefold() in folded:
+        raise ValueError(f"{FLAG_SHEET_CLASH}: {names}")
+    return [(nm, by_fc[fc]) for nm, fc in zip(names, fcs)]
+
+
+def _plan_or_fail(keys: list, d: date) -> list[tuple[str, list]]:
+    """_sheet_plan; a refused plan is logged (error) and raised as SEL2_EXPORT_WRITE_FAILED before any file is written."""
+    try:
+        return _sheet_plan(keys)
+    except ValueError as e:
+        flag = str(e).split(":", 1)[0]
+        log.error("sel2 export refused: 20-day layout", extra={"ctx": {"forecast_date": d.isoformat(), "flag": flag,
+                                                                       "error": str(e)[:300]}})
+        raise AppError("SEL2_EXPORT_WRITE_FAILED", 500, detail=str(e)[:300]) from None
+
+
+def _rows20(rows7, d: date):
+    """20 rows per SKU x FC (COLUMNS20) from the rows of _rows (7 consecutive rows per SKU x FC, horizon 1..7):
+    horizon 1..7 unchanged + SEL2; horizon 8..20 from the template of the same weekday + UOC_TINH_THEO_TUAN."""
+    i_td, i_h, i_lg, i_raw = _I["target_date"], _I["horizon"], _I["lightgbm_forecast"], _I["raw_value"]
+    i_src, i_used, i_reason = _I["forecast_source"], _I["forecast_used"], _I["fallback_reason"]
+    targets = [d + timedelta(days=h - 1) for h in range(H_ALL + 1)]
+    it = iter(rows7)
+    for first in it:
+        g = [first, *islice(it, HORIZON - 1)]
+        if [r[i_h] for r in g] != list(range(1, HORIZON + 1)):
+            raise RuntimeError("DU_BAO rows: 7 consecutive horizons expected per SKU x FC")
+        for r in g:
+            yield [*r, CACH_SEL2]
+        for h in range(HORIZON + 1, H_ALL + 1):
+            t = g[(h - 1) % HORIZON]
+            r = list(t)
+            raw = _num(t[i_raw])
+            r[i_td], r[i_h], r[i_lg] = targets[h], h, raw
+            r[i_used], r[i_reason] = derive_used(t[i_src], t[i_used], t[i_reason], raw)
+            r.append(CACH_WEEK)
+            yield r
+
+
+def _layout_summary(plan: list) -> dict:
+    return {"sheets": {nm: len(ks) * H_ALL for nm, ks in plan}, "sku_fc": {nm: len(ks) for nm, ks in plan}}
+
+
+def _write_book(target: Path, d: date, plan: list, rows_for, summary_rows, config_rows: list) -> None:
+    """Sheets DU_BAO_<fc> (plan order), TOM_TAT, CONFIG; bold header, frozen, autofilter on every sheet. rows_for(keys)
+    = the _rows generator of those SKU x FC. Streamed (xlsx_stream: openpyxl's writer took about 380 s for 420k rows);
+    summary_rows is read after every DU_BAO_* sheet is written."""
+    sheets = [Sheet(nm, COLUMNS20, _rows20(rows_for(ks), d), len(ks) * H_ALL, freeze_header=True, autofilter=True)
+              for nm, ks in plan]
+    write_xlsx(target, sheets + [Sheet(SHEET_SUMMARY, SUMMARY_COLUMNS, summary_rows, freeze_header=True, autofilter=True),
+                                 Sheet(SHEET_CONFIG, CONFIG_COLUMNS, config_rows, len(config_rows), freeze_header=True,
+                                       autofilter=True)])
 
 
 def _summary_rows(s: dict) -> list:
@@ -474,7 +611,7 @@ def _summary_rows(s: dict) -> list:
            ["sku_fc_total", s["sku_fc"]["total"]], ["sku_fc_in_forecast_scope", s["sku_fc"]["in_forecast_scope"]],
            ["sku_fc_configured_lightgbm", s["sku_fc"]["configured_lightgbm"]],
            ["sku_fc_configured_lightgbm_not_in_file", s["sku_fc"]["configured_lightgbm_not_in_file"]],
-           ["rows_total", s["n_rows"]]]
+           ["rows_total", s["n_rows_h1_7"]]]                # horizon 1..7 (the counts below are of these rows)
     out += [[f"rows_fallback_reason:{k or '(none)'}", v] for k, v in sorted(s["rows_by_fallback_reason"].items())]
     out += [[f"rows_flag:{k}", v] for k, v in sorted(s["flag_rows"].items())]
     out += [[f"sku_fc_avg_reason:{k}", v] for k, v in sorted(s["avg"]["no_value_by_reason"].items())]
@@ -483,6 +620,11 @@ def _summary_rows(s: dict) -> list:
     out += [["avg_source_kind", a["source_kind"]], ["avg_source_table", a["source_table"]],
             ["avg_source_modified", a["source_modified"]], ["avg_read_completed_at", a["completed_at"]],
             ["avg_seller_rule", a["rule"]]]
+    lay = s["layout"]                                       # 1.4.4 20-day layout (rows as scripts/ops/excel20.py)
+    out += [["layout", LAYOUT_20], ["horizon_8_20", NOTE_8_20]]
+    out += [[f"rows:{nm}", n] for nm, n in lay["sheets"].items()]
+    out += [[f"sku_fc:{nm}", n] for nm, n in lay["sku_fc"].items()]
+    out += [["source", f"Demand Forecast {__version__} (ghi truc tiep)"], ["generated_at", s["created_at_vn"] + " (VN)"]]
     return out
 
 
@@ -532,7 +674,8 @@ def write_daily_export(forecast_date, trigger: str = "SCHEDULE", job_id=None, sc
         if avg[k]["reason"]:
             no_value[avg[k]["reason"]] = no_value.get(avg[k]["reason"], 0) + 1
     stats = {"rows_by_fallback_reason": {}, "flag_rows": {}}
-    n_rows = len(keys) * HORIZON
+    plan = _plan_or_fail(keys, d)                           # before any version is reserved
+    n_rows = len(keys) * H_ALL
     file_flags = ([STALE_NO_RUN if run is None else "STALE"] if is_stale else []) + \
         ([STALE_NO_RUN_3_DAYS] if no_run_3_days else []) + ([FLAG_AVG_NO_READ] if av["read_id"] is None else [])
     ymd, latest_name = file_names(d)
@@ -558,7 +701,7 @@ def write_daily_export(forecast_date, trigger: str = "SCHEDULE", job_id=None, sc
                        "previous_runs": [f"{r['forecast_date']}:{r['id']}" for r in prev_runs],
                        "model_version": ref["model_version"] if ref else None,
                        "data_cutoff_date": ref["data_as_of"] if ref else None, "scope_key": scope_key,
-                       "n_rows": n_rows,
+                       "n_rows": n_rows, "n_rows_h1_7": len(keys) * HORIZON, "layout": _layout_summary(plan),
                        "sku_fc": {"total": len(keys), "in_forecast_scope": len(run_keys) if ref else 0,
                                   "configured_lightgbm": len(lgbm_keys),
                                   "configured_lightgbm_not_in_file": len(lgbm_keys - set(keys))},
@@ -568,13 +711,17 @@ def write_daily_export(forecast_date, trigger: str = "SCHEDULE", job_id=None, sc
                                "source_modified": av["source_modified"], "completed_at": av["completed_at"],
                                "rule": av["rule"], "sku_fc_with_value": sum(1 for k in keys if not avg[k]["reason"]),
                                "no_value_by_reason": no_value}}
-            rows = _rows(d, keys, run, run_keys, vals, avg, conf, names, is_stale, stats, prev, scoped)
+            kept: dict = {}                         # 1.4.4: rows of published.HISTORY_HORIZONS (history page)
+
+            def rows_for(ks):
+                return published.keep(_rows(d, ks, run, run_keys, vals, avg, conf, names, is_stale, stats, prev,
+                                            scoped), kept, COLUMNS)
             tmp = _tmp_name(folder, vpath.stem)
             config_rows = _config_book_rows(cfg_rows, names)
             try:
-                # TOM_TAT is written after DU_BAO: its counts are complete once the rows generator is consumed
+                # TOM_TAT is written after DU_BAO_*: its counts are complete once the rows generators are consumed
                 with os.fdopen(_excl(tmp), "wb") as f:
-                    _write_book(f, rows, n_rows, _LazySummary(summary), config_rows)
+                    _write_book(f, d, plan, rows_for, _LazySummary(summary), config_rows)
                 os.rename(tmp, vpath)                       # fails (never replaces) when the version file exists
             finally:
                 tmp.unlink(missing_ok=True)
@@ -592,7 +739,16 @@ def write_daily_export(forecast_date, trigger: str = "SCHEDULE", job_id=None, sc
                          {"forecast_date": d.isoformat(), "version": version, "rows": n_rows, "is_stale": is_stale,
                           "trigger": trigger})
             recorded = True
-        except (OSError, sqlite3.IntegrityError) as e:
+            # 1.4.4: sidecar of the history page (published.py) from the rows written; a failure is only a flag
+            sflag = published.write_safe(vpath, rid, d, sha, kept)
+            if sflag:
+                flags.append(sflag)
+                try:
+                    with db.tx() as c:
+                        c.execute("UPDATE export_runs SET flags=? WHERE id=?", (",".join(flags), rid))
+                except sqlite3.Error:                   # the flag stays in the result and the log only
+                    pass
+        except (OSError, sqlite3.IntegrityError, RuntimeError, ValueError) as e:   # _rows20 / xlsx_stream refusals too
             raise AppError("SEL2_EXPORT_WRITE_FAILED", 500, detail=f"{type(e).__name__}: {e}"[:300]) from None
         finally:
             if not recorded and vpath.exists():         # this call's own file without a record: removed
@@ -702,7 +858,8 @@ def write_temp_export(forecast_date, groups: dict | None = None, job_id=None, sc
         if avg[k]["reason"]:
             no_value[avg[k]["reason"]] = no_value.get(avg[k]["reason"], 0) + 1
     stats = {"rows_by_fallback_reason": {}, "flag_rows": {}}
-    n_rows = len(keys) * HORIZON
+    plan = _plan_or_fail(keys, d)
+    n_rows = len(keys) * H_ALL
     file_flags = [FLAG_AVG_NO_READ] if av["read_id"] is None else []
     ymd, _ = file_names(d)
     folder = root / ymd
@@ -714,6 +871,7 @@ def write_temp_export(forecast_date, groups: dict | None = None, job_id=None, sc
                "note": TEMP_NOTE, "is_stale": False, "stale_reason": None, "file_flags": file_flags,
                "refresh_run_id": None, "run_forecast_date": d.isoformat(), "model_version": run["model_version"],
                "data_cutoff_date": run["data_as_of"], "scope_key": scope_key, "n_rows": n_rows,
+               "n_rows_h1_7": len(keys) * HORIZON, "layout": _layout_summary(plan),
                "sku_fc": {"total": len(keys), "in_forecast_scope": len(run_keys), "configured_lightgbm": len(lgbm_keys),
                           "configured_lightgbm_not_in_file": len(lgbm_keys - set(keys))},
                "rows_by_fallback_reason": stats["rows_by_fallback_reason"], "flag_rows": stats["flag_rows"],
@@ -721,7 +879,8 @@ def write_temp_export(forecast_date, groups: dict | None = None, job_id=None, sc
                "avg": {"source_kind": av["source_kind"], "source_table": av["source_table"],
                        "source_modified": av["source_modified"], "completed_at": av["completed_at"], "rule": av["rule"],
                        "sku_fc_with_value": sum(1 for k in keys if not avg[k]["reason"]), "no_value_by_reason": no_value}}
-    rows = _rows(d, keys, run, run_keys, vals, avg, conf, names, False, stats)
+    def rows_for(ks):
+        return _rows(d, ks, run, run_keys, vals, avg, conf, names, False, stats)
     config_rows = _config_book_rows(cfg_rows, names)
     with _lock:
         try:
@@ -730,7 +889,7 @@ def write_temp_export(forecast_date, groups: dict | None = None, job_id=None, sc
             tmp = _tmp_name(folder, target.stem)
             try:
                 with os.fdopen(_excl(tmp), "wb") as f:
-                    _write_book(f, rows, n_rows, _LazyTempSummary(summary), config_rows)
+                    _write_book(f, d, plan, rows_for, _LazyTempSummary(summary), config_rows)
                 os.replace(tmp, target)                     # an earlier temporary file of the day is replaced
             finally:
                 tmp.unlink(missing_ok=True)

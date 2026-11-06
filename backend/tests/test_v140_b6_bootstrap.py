@@ -235,9 +235,9 @@ def test_hook_passes_the_groups_of_today(sel2_on, monkeypatch):
 def test_temp_file_name_location_rows_and_values(tam):
     res = export.write_temp_export(D, groups=GROUPS, job_id="J1", scope_key=SCOPE)
     assert res["path"] == TAM_REL and export.temp_file_name(D) == "du_bao_20261102_TAM.xlsx"
-    assert (res["n_rows"], res["trigger"], res["model_used"], res["temporary"]) == (28, "BOOTSTRAP_TEMP", "V33_L112", True)
+    assert (res["n_rows"], res["trigger"], res["model_used"], res["temporary"]) == (80, "BOOTSTRAP_TEMP", "V33_L112", True)
     wb = load_workbook(paths.data_dir() / res["path"])
-    assert wb.sheetnames == ["DU_BAO", "TOM_TAT", "CONFIG"]
+    assert wb.sheetnames == ["DU_BAO_F1", "TOM_TAT", "CONFIG"]
     rows = _main_rows(wb)
     assert len(rows) == 28 and [r["sku_code"] for r in rows[::7]] == ["S1", "S2", "S3", "S4"]
     by = _by(rows)
@@ -308,7 +308,7 @@ def test_temp_is_not_recorded_never_a_version_nor_the_latest_copy_and_audited(ta
     a = _audit()
     assert len(a) == 1 and (a[0]["entity_type"], a[0]["entity_id"]) == ("export_file", TAM_REL)
     det = json.loads(a[0]["details_json"])
-    assert det == {"forecast_date": "2026-11-02", "rows": 28, "sha256": res["sha256"], "model": "V33_L112",
+    assert det == {"forecast_date": "2026-11-02", "rows": 80, "sha256": res["sha256"], "model": "V33_L112",
                    "trigger": "BOOTSTRAP_TEMP", "job_id": "J7"}
     assert len(_audit("SEL2_EXPORT_WRITTEN")) == 1                       # the official version only
     # AVG_DEMAND rows (configured AVG_DEMAND or fallen back to AVG) identical to the official file of the same day
@@ -432,7 +432,7 @@ def test_bootstrap_end_to_end_models_identical_to_ascending_training(sel2_on, mo
     # temporary file = published_qty of today's stored V33_L112 candidate
     te = r["temp_export"]
     assert te["ok"] is True and te["candidates"] == "STORED" and te["path"].endswith("20261026/du_bao_20261026_TAM.xlsx")
-    assert te["n_rows"] == 10 * 7
+    assert te["n_rows"] == 10 * 20
     with db.read() as c:
         cand = {(s, f, h): v for s, f, h, v in c.execute(
             "SELECT sku_code, fc_code, horizon, value FROM candidate_forecasts WHERE forecast_date=? AND model='V33_L112'",

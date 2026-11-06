@@ -437,11 +437,15 @@ def _cfg_rows(rows):
 
 
 def _main(res) -> list[dict]:
+    """1.4.4: SEL2 rows (horizon 1..7) of every DU_BAO_<fc_code> sheet."""
     wb = load_workbook(paths.data_dir() / res["path"], read_only=True)
-    rows = list(wb["DU_BAO"].iter_rows(values_only=True))
-    out = [dict(zip(rows[0], r)) for r in rows[1:]]
+    out = []
+    for name in wb.sheetnames:
+        if name.startswith("DU_BAO_"):
+            rows = list(wb[name].iter_rows(values_only=True))
+            out += [dict(zip(rows[0], r)) for r in rows[1:]]
     wb.close()
-    return out
+    return [r for r in out if r["horizon"] <= 7]
 
 
 def test_lightgbm_key_missing_from_run_and_avg_is_counted_without_rows(sel2_on):
@@ -451,7 +455,7 @@ def test_lightgbm_key_missing_from_run_and_avg_is_counted_without_rows(sel2_on):
     _cfg_rows([("S1", "F1", "LIGHTGBM"), ("SX", "F1", "LIGHTGBM"), ("SY", "F2", "LIGHTGBM"), ("SZ", "F1", "AVG_DEMAND")])
     res = export.write_daily_export(D, scope_key=SCOPE)
     rows = _main(res)
-    assert {r["sku_code"] for r in rows} == {"S1"} and res["n_rows"] == 7
+    assert {r["sku_code"] for r in rows} == {"S1"} and len(rows) == 7 and res["n_rows"] == 20
     sku_fc = res["summary"]["sku_fc"]
     assert (sku_fc["total"], sku_fc["configured_lightgbm"], sku_fc["configured_lightgbm_not_in_file"]) == (1, 3, 2)
     wb = load_workbook(paths.data_dir() / res["path"], read_only=True)
@@ -503,8 +507,9 @@ def test_export_with_nothing_at_all_writes_an_empty_valid_file(sel2_on):
     res = export.write_daily_export(D, scope_key=SCOPE)
     assert res["n_rows"] == 0 and res["is_stale"] is True
     wb = load_workbook(paths.data_dir() / res["path"])
-    assert [list(r) for r in wb["DU_BAO"].iter_rows(values_only=True)][1:] == []
-    assert wb["DU_BAO"].auto_filter.ref == "A1:T1"
+    assert wb.sheetnames == ["TOM_TAT", "CONFIG"]          # 1.4.4: no SKU x FC -> no DU_BAO_<fc_code> sheet
+    assert [list(r) for r in wb["CONFIG"].iter_rows(values_only=True)][1:] == []
+    assert wb["CONFIG"].auto_filter.ref == "A1:H1" and wb["TOM_TAT"].freeze_panes == "A2"
 
 
 # ------------------------------------------------------------------ API export download

@@ -275,7 +275,7 @@ def test_temp_export_rows_follow_the_rule(sel2_on):
     _config([("S3", "F1", "LIGHTGBM", None), ("S5", "F1", "LIGHTGBM", None), ("S6", "F1", "LIGHTGBM", None),
              ("MEDX.Z", "F1", "LIGHTGBM", None)])
     res = export.write_temp_export(D, groups={}, scope_key=B6_SCOPE)
-    assert res["path"].endswith("du_bao_20261102_TAM.xlsx") and res["n_rows"] == 7 * 7
+    assert res["path"].endswith("du_bao_20261102_TAM.xlsx") and res["n_rows"] == 7 * 20
     wb = _book(res)
     rows = _main_rows(wb)
     assert len(rows) == 49 and all(type(r["forecast_used"]) is int and r["forecast_used"] >= 0 for r in rows)
@@ -592,7 +592,7 @@ def test_several_runs_of_a_previous_day_only_the_latest_of_each_day_counts(sel2_
     assert all(_pick(by, ("S5", "F1", h)) == (None, 4.0, 0, "NGOAI_PHAM_VI_GAN_0") for h in range(1, 8))
     assert not any(r["lightgbm_forecast"] in (11, 55) for r in by.values())
     counts = _counts(by)
-    assert sum(counts.values()) == s["rows_total"] == res["n_rows"] == 4 * 7
+    assert sum(counts.values()) == s["rows_total"] == 4 * 7 and res["n_rows"] == 4 * 20
     assert {k: v for k, v in s.items() if k.startswith("rows_fallback_reason:")} == \
         {f"rows_fallback_reason:{x or '(none)'}": v for x, v in counts.items()}
     assert {k: v for k, v in s.items() if k.startswith("rows_flag:")} == \

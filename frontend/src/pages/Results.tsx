@@ -6,6 +6,7 @@ import { AssessmentBox, Card, DateInput, Empty, ErrorBox, Field, FilterBar, JobP
 import { Icon } from "../components/icons";
 import { HorizonPicker } from "./Dashboard";
 import ExplainPanel from "./ExplainPanel";
+import ForecastInfoLine from "../components/ForecastInfoLine";
 
 const PAGE = 100;
 
@@ -47,6 +48,9 @@ export function ActualNotice({ actual, run }: { actual: any; run?: any }) {
 export default function Results() {
   const { t, lang } = useI18n();
   const runs = useAsync(() => get("/api/forecast-runs?limit=100"), []);
+  // 1.4.4: with a published SEL2 run the page shows the SEL2 runs with the numbers of the daily Excel (horizon 1..7)
+  const sel2Runs = useAsync(() => get("/api/daily-forecast/sel2-runs?limit=30").catch(() => []), []);
+  const sel2 = Array.isArray(sel2Runs.data) && sel2Runs.data.length > 0;
   const [runId, setRunId] = useState<string>("");
   const [h, setH] = useState<number>(7);
   const [sku, setSku] = useState("");
@@ -65,11 +69,12 @@ export default function Results() {
   const { status: sys } = useSystem();
   // 1.2.2: the default run is the newest run of the ACTIVE source's scope - never a newer run of another source
   // (e.g. an old DEMO run while the source is BIGQUERY); such runs stay selectable, clearly labelled
-  const activeRuns = (runs.data ?? []).filter((x: any) => x.active_scope !== false);
+  const activeRuns = sel2 ? (sel2Runs.data as any[]) : (runs.data ?? []).filter((x: any) => x.active_scope !== false);
+  const runList: any[] = sel2 ? (sel2Runs.data as any[]) : runs.data ?? [];
   useEffect(() => {
-    if (!runId && activeRuns.length) setRunId(activeRuns[0].id);
-  }, [runs.data, runId]);
-  const run = useAsync(() => (runId ? get(`/api/forecast-runs/${runId}`) : Promise.resolve(null)), [runId]);
+    if (!sel2Runs.loading && !runId && activeRuns.length) setRunId(activeRuns[0].id);
+  }, [runs.data, sel2Runs.data, sel2Runs.loading, runId]);
+  const run = useAsync(() => (runId && !sel2 ? get(`/api/forecast-runs/${runId}`) : Promise.resolve(null)), [runId, sel2]);
   useEffect(() => {
     if (run.data) setH(run.data.horizons?.[0] ?? run.data.max_horizon);
   }, [run.data?.id]);
@@ -79,11 +84,15 @@ export default function Results() {
   }, []);
 
   const filters = { horizon: h, sku_id: sku, fc_id: fc, q: qd };
-  const summary = useAsync(() => (runId ? get(`/api/forecast-runs/${runId}/summary${qs({ ...filters, limit: PAGE, offset: page * PAGE })}`) : Promise.resolve(null)),
-    [runId, h, sku, fc, qd, page]);
-  const daily = useAsync(() => (runId && tab === "daily" ? get(`/api/forecast-runs/${runId}/values${qs({ ...filters, date_from: from, date_to: to, limit: PAGE, offset: page * PAGE })}`) : Promise.resolve(null)),
-    [runId, h, sku, fc, qd, from, to, page, tab]);
-  const acc = useAsync(() => (runId ? get(`/api/forecast-runs/${runId}/accuracy`) : Promise.resolve(null)), [runId]);
+  const summary = useAsync(() => (!runId ? Promise.resolve(null)
+    : sel2 ? get(`/api/daily-forecast/sel2-summary${qs({ run_id: runId, ...filters, limit: PAGE, offset: page * PAGE })}`)
+    : get(`/api/forecast-runs/${runId}/summary${qs({ ...filters, limit: PAGE, offset: page * PAGE })}`)),
+    [runId, sel2, h, sku, fc, qd, page]);
+  const daily = useAsync(() => (!runId || tab !== "daily" ? Promise.resolve(null)
+    : sel2 ? get(`/api/daily-forecast/sel2-values${qs({ run_id: runId, ...filters, date_from: from, date_to: to, limit: PAGE, offset: page * PAGE })}`)
+    : get(`/api/forecast-runs/${runId}/values${qs({ ...filters, date_from: from, date_to: to, limit: PAGE, offset: page * PAGE })}`)),
+    [runId, sel2, h, sku, fc, qd, from, to, page, tab]);
+  const acc = useAsync(() => (runId && !sel2 ? get(`/api/forecast-runs/${runId}/accuracy`) : Promise.resolve(null)), [runId, sel2]);
 
   const extend = async () => {
     const j = await act.run(() => post(`/api/forecast-runs/${runId}/extend`));
@@ -96,12 +105,12 @@ export default function Results() {
   };
 
   const header = <PageHeader icon="results" title={t("nav.results")} desc={t("page.results.desc")} />;
-  if (runs.loading && !runs.data) return <div className="stack">{header}<Loading /></div>;   // a reload must not unmount the page (job progress)
-  if (!runs.data?.length) return <div className="stack">{header}<Empty text={t("dash.no_run")} hint={t("dash.no_run_hint")} /></div>;
-  const r = run.data;
+  if ((runs.loading && !runs.data) || (sel2Runs.loading && !sel2Runs.data)) return <div className="stack">{header}<Loading /></div>;   // a reload must not unmount the page (job progress)
+  if (!runs.data?.length && !sel2) return <div className="stack">{header}<Empty text={t("dash.no_run")} hint={t("dash.no_run_hint")} /></div>;
   const s = summary.data;
+  const r = sel2 ? s?.run ?? null : run.data;
   const cov = r?.horizon_coverage;
-  const horizonOptions: number[] = cov?.run_horizons ?? (r ? [r.max_horizon] : []);
+  const horizonOptions: number[] = cov?.run_horizons ?? (r?.sel2 ? r.horizons : r ? [r.max_horizon] : []);
   const total = tab === "totals" ? s?.n_series ?? 0 : daily.data?.total ?? 0;
   const actual = s?.actual;
   const today = actual?.date;
@@ -111,6 +120,7 @@ export default function Results() {
   return (
     <div className="stack">
       {header}
+      <ForecastInfoLine />
       <ErrorBox error={runs.error || run.error || summary.error || daily.error || act.error} />
       {!activeRuns.length && (
         <div className="alert warn" data-testid="no-run-active">{t("fc.no_run_active").replace("{src}", sys?.active_source ?? "—")}</div>
@@ -125,13 +135,13 @@ export default function Results() {
           <Field label={t("fc.select_run")}>
             <select value={runId} onChange={(e) => setRunId(e.target.value)} data-testid="run-select">
               {!runId && <option value="">{t("fc.pick_run")}</option>}
-              {runs.data.map((x: any) => (
+              {runList.map((x: any) => sel2 ? <option key={x.id} value={x.id}>{fmtDate(x.forecast_date)} · {fmtTime(x.created_at)} · SEL2 · {x.model_version} · {x.id}</option> : (
                 <option key={x.id} value={x.id}>{fmtTime(x.created_at)} · {x.data_source}{x.active_scope === false ? ` (${t("fc.other_source")})` : ""} · {x.model_version} · {(x.horizons ?? []).join("/")} {t("common.days")}{x.derived_from_run_id ? ` · ${t("fc.extended")}` : ""}{x.assessment?.usage === "USABLE_WITH_WARNING" ? ` · ⚠ ${t("fc.below_tag")}` : ""}</option>
               ))}
             </select>
           </Field>
           {r && <HorizonPicker value={h} onChange={setH} options={horizonOptions} />}
-          {r && <a className="btn" href={`/api/forecast-runs/${runId}/export.xlsx?horizon=${h}&lang=${lang}`} title={t("fc.export_scope")}>
+          {r && <a className="btn" href={sel2 ? `/api/sel2/export/${r.forecast_date}` : `/api/forecast-runs/${runId}/export.xlsx?horizon=${h}&lang=${lang}`} title={t("fc.export_scope")}>
             <Icon name="export" />{t("fc.export")} ({lang.toUpperCase()})</a>}
         </div>
         <p className="small muted">{t("fc.horizon_help")}</p>
@@ -203,7 +213,7 @@ export default function Results() {
             </>
           )}
         </FilterBar>
-        {r && (
+        {r && !sel2 && (
           <p className="small muted" data-testid="names-source">
             {r.data_source !== "BIGQUERY" ? t("fc.names_not_bq")
               : r.product_names?.fetched_at ? t("fc.names_source").replace("{src}", r.product_names.source).replace("{at}", fmtTime(r.product_names.fetched_at))
@@ -226,7 +236,7 @@ export default function Results() {
                   <tr key={x.sku_id + x.fc_id}><td className="sku">{x.sku_id}</td><td className="pname"><ProductName name={x.product_name} /></td><td className="nowrap">{x.fc_id}</td><td className="num">{fmtNum(x.total)}</td>
                     <td className="num"><ActualCell value={x.actual_today} actual={actual} /></td>
                     <td className="small method-c"><MethodLabel code={x.method} /></td>
-                    <td className="nowrap"><button className="link" onClick={() => setExplain({ sku: x.sku_id, fc: x.fc_id, date: s.start_date })}>{t("ex.open")}</button></td></tr>
+                    <td className="nowrap">{!sel2 && <button className="link" onClick={() => setExplain({ sku: x.sku_id, fc: x.fc_id, date: s.start_date })}>{t("ex.open")}</button>}</td></tr>
                 ))}
               </tbody>
             </table>
@@ -246,7 +256,7 @@ export default function Results() {
                     <td className="num">{fmtNum(x.forecast_qty)}</td>
                     <td className="num"><ActualCell value={x.actual_today} actual={daily.data.actual} /></td>
                     <td className="small method-c"><MethodLabel code={x.method} /></td>
-                    <td className="nowrap"><button className="link" onClick={() => setExplain({ sku: x.sku_id, fc: x.fc_id, date: x.target_date })}>{t("ex.open")}</button></td></tr>
+                    <td className="nowrap">{!sel2 && <button className="link" onClick={() => setExplain({ sku: x.sku_id, fc: x.fc_id, date: x.target_date })}>{t("ex.open")}</button>}</td></tr>
                 ))}
               </tbody>
             </table>
@@ -267,7 +277,7 @@ export default function Results() {
           </table>
         )}
       </Card>
-      {explain && r && <ExplainPanel runId={r.id} sku={explain.sku} fc={explain.fc} date={explain.date} maxHorizon={r.max_horizon}
+      {explain && r && !sel2 && <ExplainPanel runId={r.id} sku={explain.sku} fc={explain.fc} date={explain.date} maxHorizon={r.max_horizon}
         origin={r.forecast_origin} onClose={() => setExplain(null)} />}
     </div>
   );

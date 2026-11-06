@@ -3,6 +3,7 @@ import { get, qs } from "../api";
 import { useI18n } from "../i18n";
 import { Card, CompareChart, DateInput, Empty, ErrorBox, Field, FilterBar, Loading, PageHeader, Pager, Pill, SearchInput, SourceBadge, Stat, fmtDate, fmtDateWd, fmtNum, fmtPct, fmtPctX, fmtTime, useAsync } from "../components/ui";
 import { Icon } from "../components/icons";
+import ForecastInfoLine from "../components/ForecastInfoLine";
 import { ProductName } from "./Results";
 
 const PAGE = 100;
@@ -32,8 +33,11 @@ export function ActualStatus({ status, reason }: { status?: string | null; reaso
  *  snapshot day, its creation time and the source run in the tooltip). */
 export function ForecastSource({ r }: { r: any }) {
   const { t } = useI18n();
+  // 1.4.4: a SEL2 run date (published SEL2 number); the 1.3.x rows carry source_label LIGHTGBM_CU in the tooltip
+  if (r.forecast_source === "SEL2")
+    return <span data-testid="fh-src-sel2" title={`${t("fh.run_id")}: ${r.forecast_run_id} · ${r.model_version ?? ""}`}><Pill status="OK" label={t("fh.src.SEL2")} /> <span className="small muted">{fmtTime(r.published_at).slice(11)}</span></span>;
   if (r.forecast_source !== "SNAPSHOT")
-    return <span title={`${fmtTime(r.session_started_at)} · ${t("fh.run_id")}: ${r.forecast_run_id} · ${r.model_version}`}>{fmtTime(r.session_started_at).slice(11)}</span>;
+    return <span title={`${r.source_label ? `${t(`fh.src.${r.source_label}`)} · ` : ""}${fmtTime(r.session_started_at)} · ${t("fh.run_id")}: ${r.forecast_run_id} · ${r.model_version}`}>{fmtTime(r.session_started_at).slice(11)}</span>;
   return (
     <span data-testid="fh-backup" title={t("fh.backup_tip").replace("{d}", fmtDate(r.snapshot_business_date)).replace("{t}", fmtTime(r.snapshot_created_at))
       .replace("{run}", r.forecast_run_id).replace("{m}", r.model_version ?? "")}>
@@ -64,7 +68,11 @@ export default function ForecastHistory() {
   const o = ov.data;
   // run dates with a stored forecast: official sessions and (1.2.6) days covered by the end-of-day backup, newest first
   const days: any[] = [...(o?.days ?? []).map((d: any) => ({ ...d, source: "PRIMARY" })),
-    ...(o?.backup_days ?? []).map((d: any) => ({ ...d, source: "SNAPSHOT" }))].sort((a, b) => (a.run_date < b.run_date ? 1 : -1));
+    ...(o?.backup_days ?? []).map((d: any) => ({ ...d, source: "SNAPSHOT" })),
+    // 1.4.4: run dates with a published SEL2 run (from o.sel2_from: they replace the 1.3.x day of the same date)
+    ...(o?.sel2_days ?? []).map((d: any) => ({ ...d, source: "SEL2" }))]
+    .filter((d: any, _i: number, all: any[]) => d.source === "SEL2" || !(o?.sel2_from && d.run_date >= o.sel2_from && all.some((x: any) => x.source === "SEL2" && x.run_date === d.run_date)))
+    .sort((a, b) => (a.run_date < b.run_date ? 1 : -1));
   const latest = days[0]?.run_date ?? o?.today ?? "";
   const oldest = days[days.length - 1]?.run_date ?? latest;
   const range = mode === "last30" ? [addDays(latest, -29), latest] : mode === "last7" ? [addDays(latest, -6), latest]
@@ -110,6 +118,7 @@ export default function ForecastHistory() {
   return (
     <div className="stack">
       {header}
+      <ForecastInfoLine info={o?.forecast_info ?? null} />
       <ErrorBox error={summary.error || rows.error} />
       <div className="alert info small" data-testid="fh-today">
         {o.today_session
@@ -137,7 +146,7 @@ export default function ForecastHistory() {
                 <option value="all">{t("fh.all")}</option>
                 <option value="custom">{t("fh.custom")}</option>
                 <optgroup label={t("fh.one_day")}>
-                  {days.map((d) => <option key={d.run_date} value={d.run_date}>{fmtDate(d.run_date)} → {fmtDateWd(d.target_date, lang)}{d.source === "SNAPSHOT" ? ` (${t("fh.src.SNAPSHOT_short")})` : ""}</option>)}
+                  {days.map((d) => <option key={d.run_date} value={d.run_date}>{fmtDate(d.run_date)} → {fmtDateWd(d.target_date, lang)}{d.source === "SNAPSHOT" ? ` (${t("fh.src.SNAPSHOT_short")})` : d.source === "SEL2" ? ` (${t("fh.src.SEL2")})` : ""}</option>)}
                 </optgroup>
               </select>
             </Field>
@@ -228,6 +237,7 @@ export default function ForecastHistory() {
                   x: d.target_date, forecast: d.has_history && d.n_rows ? d.forecast : null, actual: d.actual,
                   provisional: d.actual_status === "PROVISIONAL" || d.actual_status === "CLOSED", backup: d.forecast_source === "SNAPSHOT",
                   tip: [`${t("fh.target_date")}: ${fmtDateWd(d.target_date, lang)}`, `${t("fh.run_date")}: ${fmtDate(d.run_date)}`,
+                    ...(d.source_label ? [`${t("fh.src")}: ${t(`fh.src.${d.source_label}`)}`] : []),
                     !d.has_history ? t("fh.no_history_day") : `${t("fh.tip.forecast")}: ${d.n_rows ? fmtNum(d.forecast) : t("fh.filtered_out")}`,
                     ...(d.forecast_source === "SNAPSHOT" ? [`${t("fh.src")}: ${t("fh.src.SNAPSHOT")} ${fmtDate(d.snapshot.snapshot_business_date)} · ${d.forecast_run_id}`] : []),
                     ...(d.has_history && d.n_rows ? [d.actual === null ? `${t("fh.tip.actual")}: ${t("fh.st.NO_ACTUAL")}`

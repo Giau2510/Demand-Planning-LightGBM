@@ -38,16 +38,21 @@ bản sau 1.4.2 (đã chốt, chưa làm): mỗi ngày chỉ giữ 1 file cuối
 
 ## 2. Cấu trúc file
 
-3 sheet, theo thứ tự: `DU_BAO`, `TOM_TAT`, `CONFIG` (`export.py:58`). Dòng tiêu đề in đậm; `DU_BAO` và `CONFIG` cố định
-dòng tiêu đề và có bộ lọc (autofilter) (`export.py:323-329`). Kiểu ô (`xlsx_stream.py:1-15`): chuỗi = inline string
+Từ **1.4.4** (quyết định chủ dự án tối 05/11/2026; app ghi trực tiếp, giá trị trùng từng ô với script vận hành
+`scripts/ops/excel20.py` đã viết lại bản mới nhất của 1.4.3 từ sáng 06/11): các sheet theo thứ tự `DU_BAO_<fc_code>` (một
+sheet mỗi kho, sắp theo `fc_code`, ví dụ `DU_BAO_BD`, `DU_BAO_HN`), rồi `TOM_TAT`, `CONFIG` (`export._write_book`). Tên
+sheet: ký tự Excel không nhận (`[ ] : * ? / \ '`) → `_`, tối đa 31 ký tự, `fc_code` trống → `DU_BAO_KHONG_FC`
+(`export.sheet_name`). Không có SKU × FC nào → chỉ có `TOM_TAT`, `CONFIG`. Đến 1.4.3: một sheet `DU_BAO` 7 ngày. Mọi sheet:
+dòng tiêu đề in đậm, cố định dòng tiêu đề và có bộ lọc (autofilter). Kiểu ô (`xlsx_stream.py:1-15`): chuỗi = inline string
 (một ghi chú bắt đầu bằng `=` vẫn là chữ, không thành công thức); số nguyên / số thực = number (số thực ghi đủ chữ số);
 ngày = số sê-ri Excel định dạng `yyyy-mm-dd`; `None` = ô trống (không có ô).
 
-### 2.1 Sheet `DU_BAO` – một dòng mỗi SKU × FC × ngày đích
+### 2.1 Sheet `DU_BAO_<fc_code>` – một dòng mỗi SKU × FC × ngày đích (20 ngày)
 
 Tập SKU × FC = **hợp** của (a) các SKU × FC trong lần chạy SEL2 đang dùng và (b) các SKU × FC có dòng AVG_DEMAND của
-ngày D; sắp theo (`sku_code`, `fc_code`); mỗi SKU × FC đúng 7 dòng, ngày đích D .. D+6 (`export.py:375-391`).
-Thứ tự cột đúng như `COLUMNS` (`export.py:59-61`), giá trị dựng ở `export.py:282-321`:
+ngày D; mỗi sheet chứa các SKU × FC của **một kho**, sắp theo `sku_code`; mỗi SKU × FC đúng **20 dòng liền nhau**,
+horizon 1..20, ngày đích D .. D+19. Thứ tự cột = `COLUMNS` + cột cuối `cach_tinh` (`export.COLUMNS20`). Horizon 1..7
+(`cach_tinh = SEL2`) = các dòng 7 ngày như trước (`export._rows`); horizon 8..20 ở mục 2.1.1. Bảng cột (horizon 1..7):
 
 | # | Cột | Kiểu | Ý nghĩa | Ví dụ (giả) |
 |---:|---|---|---|---|
@@ -59,7 +64,7 @@ Thứ tự cột đúng như `COLUMNS` (`export.py:59-61`), giá trị dựng �
 | 6 | `nhom` | chuỗi / trống | Nhóm A / B / C của lần chạy SEL2 (B7, 90 ngày); trống khi SKU × FC không có trong lần chạy | `B` |
 | 7 | `forecast_date` | ngày | Ngày dự báo D (cả khi file dùng lần chạy cũ) | `2026-11-10` |
 | 8 | `target_date` | ngày | Ngày đích D + h − 1 | `2026-11-12` |
-| 9 | `horizon` | số nguyên 1..7 | Vị trí ngày đích tính **từ D** (1 = D) | `3` |
+| 9 | `horizon` | số nguyên 1..20 | Vị trí ngày đích tính **từ D** (1 = D) | `3` |
 | 10 | `lightgbm_forecast` | số nguyên / trống | Số công bố SEL2 (`final_qty`: làm tròn 6 số; < 0,2 → 0; còn lại làm tròn lên) của lần chạy hôm nay; khi dòng dùng số của lần chạy trước (`DUNG_SO_LAN_CHAY_TRUOC`) là số của lần chạy đó (ngày ở cờ `LAN_CHAY_TRUOC:<ngày>`); trống khi không lần chạy nào có số | `3` |
 | 11 | `avg_demand` | số thực / trống | Giá trị AVG_DEMAND của **ngày D** (cùng một số cho cả 7 dòng), không làm tròn; trống khi không có (lý do ở `flags`) | `4.3` |
 | 12 | `forecast_source` | chuỗi | Nguồn cấu hình: `LIGHTGBM` hoặc `AVG_DEMAND` (không có dòng cấu hình = `AVG_DEMAND`) | `LIGHTGBM` |
@@ -71,6 +76,7 @@ Thứ tự cột đúng như `COLUMNS` (`export.py:59-61`), giá trị dựng �
 | 18 | `data_cutoff_date` | ngày / trống | Ngày dữ liệu cuối của lần chạy cấp số dòng đó (D-1 của lần chạy đó); trống khi không có lần chạy tham chiếu | `2026-11-09` |
 | 19 | `is_stale` | 0 / 1 | 1 = file không có lần chạy SEL2 của chính ngày D (mục 4) | `0` |
 | 20 | `flags` | chuỗi / trống | Cờ của dòng, cách nhau bằng dấu phẩy: cờ lần chạy + `LAN_CHAY_TRUOC:<ngày>` (khi dùng số lần chạy trước) + `AVG_<lý do>` (mục 3.2) | `OPEN_HOURS_LAG,AVG_NO_ROW` |
+| 21 | `cach_tinh` | chuỗi | (1.4.4) `SEL2` (horizon 1..7) hoặc `UOC_TINH_THEO_TUAN` (horizon 8..20) | `SEL2` |
 
 Ví dụ 7 dòng của một SKU × FC (giả, khớp ví dụ tính tay của `03_logic_du_bao.md`; ẩn cột 2–4, 17):
 
@@ -86,10 +92,33 @@ Ví dụ 7 dòng của một SKU × FC (giả, khớp ví dụ tính tay của `
 
 Cùng chuỗi nhưng không cấu hình (mặc định `AVG_DEMAND`): `forecast_source = AVG_DEMAND`, `forecast_used = 5` cả 7
 dòng (Avg 4,3 làm tròn lên; cột `avg_demand` vẫn 4.3), `fallback_reason` trống; các cột LightGBM vẫn hiện để đối chiếu.
+(Ví dụ trên ẩn cột `cach_tinh` = `SEL2`.)
 Một SKU × FC chỉ có trong AVG_DEMAND (ngoài phạm vi dự báo): `nhom`, `lightgbm_forecast`, `model_used`, `raw_value`
 trống; nếu cấu hình `LIGHTGBM` (production từ 04/11: mọi SKU × FC) thì `forecast_used = 0` (`NGOAI_PHAM_VI_GAN_0`) với
 **mọi** tiền tố mã. Ngày lần chạy hôm nay lỗi, lần chạy D-1 có chuỗi này: 6 dòng đầu lấy số của lần chạy D-1
 (`DUNG_SO_LAN_CHAY_TRUOC`, cờ `LAN_CHAY_TRUOC:2026-11-09`), dòng D+6 dùng Avg làm tròn lên (`STALE`).
+
+#### 2.1.1 Horizon 8..20 (`cach_tinh = UOC_TINH_THEO_TUAN`, 1.4.4)
+
+Mẫu = dòng cùng SKU × FC có horizon `((h − 1) % 7) + 1` (cùng thứ trong tuần: h 8 → mẫu h 1, h 14 → h 7, h 15 → h 1).
+`target_date` = D + h − 1, `horizon` = h, `lightgbm_forecast` = `raw_value` của mẫu (không làm tròn; trống khi mẫu không
+có `raw_value`); các cột khác chép từ mẫu (kể cả `avg_demand`, `model_used`, `raw_value`, `model_version`, `flags`).
+`forecast_used` / `fallback_reason` tính lại theo quy tắc cố định (`export.derive_used`), luôn là số nguyên ≥ 0:
+
+| Mẫu | `forecast_used` | `fallback_reason` |
+|---|---|---|
+| `NGOAI_PHAM_VI_GAN_0` | `0` | `NGOAI_PHAM_VI_GAN_0` |
+| `LIGHTGBM`, có `raw_value` | `raw_value` làm tròn (< 0,2 → 0, còn lại làm tròn lên) | `DUNG_SO_LAN_CHAY_TRUOC` nếu mẫu có, còn lại trống |
+| `LIGHTGBM`, không có `raw_value` | `forecast_used` của mẫu | lý do của mẫu |
+| `AVG_DEMAND`, mẫu `KHONG_CO_AVG_DUNG_LIGHTGBM` và có `raw_value` | `raw_value` làm tròn | `KHONG_CO_AVG_DUNG_LIGHTGBM` |
+| `AVG_DEMAND` khác | `forecast_used` của mẫu | lý do của mẫu |
+| Lý do mẫu `KHONG_CO_SO_NAO` hoặc không có số | `0` | `KHONG_CO_SO_NAO` |
+
+Giới hạn: một kho tối đa `MAX_SKU_FC` = 50.000 SKU × FC (50.000 × 20 dòng < 1.048.576 dòng của Excel). Vượt (hoặc hai
+tên sheet trùng nhau): **không ghi file** (không có phiên bản, không có bản ghi `export_runs`), nhật ký lỗi có cờ
+`TOO_MANY_SKU_FC` / `SHEET_NAME_CLASH`, lỗi `SEL2_EXPORT_WRITE_FAILED` (detail = cờ + số SKU × FC theo kho).
+`export_runs.n_rows` và `n_rows` của kết quả = tổng số dòng các sheet `DU_BAO_*` (SKU × FC × 20). Bản tạm `_TAM` cùng
+bố cục.
 
 ### 2.2 Sheet `TOM_TAT` – hai cột `muc`, `gia_tri`
 
@@ -107,19 +136,24 @@ Các dòng theo đúng thứ tự (`export.py:332-352`); dòng có tiền tố l
 | `file_flags` | Cờ cấp file (mục 3.3) | `AVG_NO_READ` |
 | `refresh_run_id`, `run_forecast_date`, `model_version` | Lần chạy SEL2 của file, ngày dự báo của nó (khi `NO_RUN_3_DAYS`: chỉ để thông tin, không cấp số; `model_version` trống) | `FRR-…`, `2026-11-10`, `SEL2 MOC=…` |
 | `previous_runs` | Các lần chạy D-3 .. D-1 đã xét cho quy tắc dùng số lần chạy trước (ngày + mã) | `2026-11-09:FRR-…` |
-| `sku_fc_total` | Số SKU × FC trong file (= số dòng / 7) | `58591` |
+| `sku_fc_total` | Số SKU × FC trong file (= tổng số dòng / 20) | `58591` |
 | `sku_fc_in_forecast_scope` | Số SKU × FC có trong lần chạy SEL2 | `14733` |
 | `sku_fc_configured_lightgbm` | Số SKU × FC cấu hình `LIGHTGBM` | `58591` |
 | `sku_fc_configured_lightgbm_not_in_file` | Số SKU × FC cấu hình `LIGHTGBM` nhưng không có dòng nào trong file | `0` |
-| `rows_total` | Số dòng `DU_BAO` | `410137` |
-| `rows_fallback_reason:<lý do>` | Số dòng theo `fallback_reason`; `(none)` = không có lý do | `rows_fallback_reason:(none)` = 410130 |
-| `rows_flag:<cờ>` | Số dòng mang cờ đó | `rows_flag:AVG_NO_ROW` = 1050 |
+| `rows_total` | Số dòng horizon 1..7 (`SEL2`) – giữ như file 7 ngày; tổng dòng từng sheet ở `rows:<sheet>` | `410137` |
+| `rows_fallback_reason:<lý do>` | Số dòng horizon 1..7 theo `fallback_reason`; `(none)` = không có lý do | `rows_fallback_reason:(none)` = 410130 |
+| `rows_flag:<cờ>` | Số dòng horizon 1..7 mang cờ đó | `rows_flag:AVG_NO_ROW` = 1050 |
 | `sku_fc_avg_reason:<lý do>` | Số SKU × FC không có giá trị AVG_DEMAND, theo lý do | `sku_fc_avg_reason:NO_ROW` = 150 |
 | `sku_fc_model_used:<mô hình>` | Số SKU × FC theo `model_used` (lấy theo horizon nhỏ nhất) | `sku_fc_model_used:FALLBACK:V33_L112` = 5428 |
 | `avg_source_kind` | `CURRENT` hoặc `HISTORICAL` (trống nếu chưa đọc) | `CURRENT` |
 | `avg_source_table` | Bảng AVG_DEMAND đã đọc | `lakehouse-prod-394907.gold_buymed_vn2.fact_avg_demand_sku` |
 | `avg_source_modified`, `avg_read_completed_at` | Thời điểm bảng nguồn sửa lần cuối; lúc đọc xong | `2026-11-09T…Z` |
 | `avg_seller_rule` | Quy tắc gộp nhiều seller (`PENDING`, `SUM`, `MAX`, `SELLER:<mã>`) | `PENDING` |
+| `layout` | (1.4.4) `20 ngay, tach sheet theo kho` | |
+| `horizon_8_20` | (1.4.4) Ghi chú cách tính horizon 8..20 | `UOC_TINH_THEO_TUAN: lightgbm_forecast = raw_value …` |
+| `rows:<sheet>` / `sku_fc:<sheet>` | (1.4.4) Số dòng / số SKU × FC của từng sheet `DU_BAO_<fc_code>` | `rows:DU_BAO_BD` = 600000 |
+| `source` | (1.4.4) App đã ghi file: `Demand Forecast <phiên bản> (ghi truc tiep)` (file do script vận hành viết lại có `source_file` + `source_sha256` thay cho dòng này) | `Demand Forecast 1.4.4 (ghi truc tiep)` |
+| `generated_at` | (1.4.4) Thời điểm ghi, giờ VN | `2026-11-10 03:25:13 (VN)` |
 
 Các số trong cột ví dụ là minh hoạ; riêng `sku_fc_total`, `sku_fc_in_forecast_scope`, `rows_total` và
 `sku_fc_model_used:FALLBACK:V33_L112` lấy theo file ngày 04/11/2026.

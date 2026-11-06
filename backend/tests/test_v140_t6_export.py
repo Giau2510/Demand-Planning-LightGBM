@@ -63,10 +63,27 @@ def _book(res, normal=True):
     return load_workbook(paths.data_dir() / res["path"], read_only=not normal)
 
 
+COLS20 = COLS + ["cach_tinh"]
+
+
+def _all_rows(wb) -> list[dict]:
+    """1.4.4: rows of every DU_BAO_<fc_code> sheet in file order (20 per SKU x FC)."""
+    out = []
+    for name in wb.sheetnames:
+        if name.startswith("DU_BAO_"):
+            rows = list(wb[name].iter_rows(values_only=True))
+            assert list(rows[0]) == COLS20
+            out += [dict(zip(COLS20, r)) for r in rows[1:]]
+    return out
+
+
 def _main_rows(wb) -> list[dict]:
-    rows = list(wb["DU_BAO"].iter_rows(values_only=True))
-    assert list(rows[0]) == COLS
-    return [dict(zip(COLS, r)) for r in rows[1:]]
+    """1.4.4: the SEL2 rows (horizon 1..7) of every DU_BAO_<fc_code> sheet in the order of the 1.4.3 sheet DU_BAO
+    (sku_code, fc_code, horizon); every SKU x FC has its 20 rows, cach_tinh SEL2 for horizon 1..7."""
+    rows = _all_rows(wb)
+    assert [r["horizon"] for r in rows] == list(range(1, 21)) * (len(rows) // 20)
+    assert all(r["cach_tinh"] == ("SEL2" if r["horizon"] <= 7 else "UOC_TINH_THEO_TUAN") for r in rows)
+    return sorted((r for r in rows if r["horizon"] <= 7), key=lambda r: (r["sku_code"], r["fc_code"]))
 
 
 def _summary(wb) -> dict:
@@ -104,9 +121,9 @@ def scenario(sel2_on):
 def test_sheets_columns_rows_and_truth_table(scenario):
     res = export.write_daily_export(D, scope_key=SCOPE)
     wb = _book(res)
-    assert wb.sheetnames == ["DU_BAO", "TOM_TAT", "CONFIG"]
+    assert wb.sheetnames == ["DU_BAO_F1", "TOM_TAT", "CONFIG"]
     rows = _main_rows(wb)
-    assert len(rows) == res["n_rows"] == 5 * 7 and res["is_stale"] is False
+    assert len(rows) == 5 * 7 and res["n_rows"] == 5 * 20 and res["is_stale"] is False
     assert [(r["sku_code"], r["horizon"]) for r in rows[:8]] == [("S1", h) for h in range(1, 8)] + [("S2", 1)]
     by = _by(rows)
     s1 = by[("S1", "F1", 3)]
@@ -141,8 +158,8 @@ def test_sheets_columns_rows_and_truth_table(scenario):
 def test_autofilter_freeze_summary_and_config(scenario):
     res = export.write_daily_export(D, scope_key=SCOPE, trigger="MANUAL")
     wb = _book(res)
-    ws = wb["DU_BAO"]
-    assert ws.freeze_panes == "A2" and ws.auto_filter.ref == "A1:T36"
+    ws = wb["DU_BAO_F1"]
+    assert ws.freeze_panes == "A2" and ws.auto_filter.ref == "A1:U101"
     s = _summary(wb)
     assert s["forecast_date"] == D.isoformat() and s["data_cutoff_date"] == "2026-11-01"
     assert s["export_version"] == 1 and s["trigger"] == "MANUAL" and s["is_stale"] == 0 and s["stale_reason"] is None
@@ -184,8 +201,8 @@ def test_versions_latest_copy_relative_path_and_sha(scenario):
         recs = db.rows(c, "SELECT * FROM export_runs ORDER BY version")
     assert [(r["version"], r["path"], r["sha256"], r["n_rows"], r["is_stale"], r["trigger"], r["job_id"],
              r["refresh_run_id"]) for r in recs] == [
-        (1, r1["path"], r1["sha256"], 35, 0, "SCHEDULE", None, "R1"),
-        (2, r2["path"], r2["sha256"], 35, 0, "MANUAL", "J1", "R1")]
+        (1, r1["path"], r1["sha256"], 100, 0, "SCHEDULE", None, "R1"),
+        (2, r2["path"], r2["sha256"], 100, 0, "MANUAL", "J1", "R1")]
     assert not recs[0]["path"].startswith(("/", "\\")) and ":" not in recs[0]["path"]
     assert json.loads(recs[1]["summary_json"])["version"] == 2
     assert [r["version"] for r in export.runs(D)] == [2, 1]
@@ -312,12 +329,12 @@ def test_api_download_runs_and_post(scenario, client, monkeypatch):
     job = r.json()
     assert r.status_code == 200 and job["job_type"] == "FORECAST_EXPORT" and job["status"] == "SUCCEEDED"
     res = json.loads(job["result_json"])["result"]
-    assert res["mode"] == "MANUAL" and res["version"] == 1 and res["n_rows"] == 35
+    assert res["mode"] == "MANUAL" and res["version"] == 1 and res["n_rows"] == 100
     sha = res["sha256"]
     r = client.get("/api/sel2/export/2026-11-02")
     assert r.status_code == 200 and hashlib.sha256(r.content).hexdigest() == sha
     assert "du_bao_20261102.xlsx" in r.headers["content-disposition"] and r.headers["x-df-export-version"] == "1"
-    assert load_workbook(io.BytesIO(r.content)).sheetnames == ["DU_BAO", "TOM_TAT", "CONFIG"]
+    assert load_workbook(io.BytesIO(r.content)).sheetnames == ["DU_BAO_F1", "TOM_TAT", "CONFIG"]
     runs = client.get("/api/sel2/export/2026-11-02/runs").json()
     assert runs["forecast_date"] == "2026-11-02" and [x["version"] for x in runs["items"]] == [1]
     assert runs["items"][0]["summary"]["refresh_run_id"] == "R1"
@@ -338,5 +355,5 @@ def test_cli_plan_without_yes_then_write(sel2_on, capsys):
     # --yes: the test database has no active data scope -> stale export from AVG_DEMAND only
     assert cli.main(["sel2-export", "--date", "2026-11-02", "--yes"]) == 0
     out = json.loads(capsys.readouterr().out)
-    assert out["result"]["version"] == 1 and out["result"]["n_rows"] == 7 and out["result"]["is_stale"] is True
+    assert out["result"]["version"] == 1 and out["result"]["n_rows"] == 20 and out["result"]["is_stale"] is True
     assert out["result"]["summary"]["stale_reason"].startswith("SCOPE_UNRESOLVED")
