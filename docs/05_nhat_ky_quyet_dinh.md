@@ -353,3 +353,8 @@ mục này làm lịch sử batch; mục nào đã có quyết định mới hơ
   (G) Báo cáo tổng hợp 07:00 ngày 07/11. (H) Danh sách cải tiến (tháng 12: dữ liệu từ 01/2025 + Tết; FALLBACK a + b; báo
   hằng tuần SKU×kho có lightgbm_forecast mà config AVG; test frontend chập chờn; tối ưu lưu trữ open_hours_daily; chuẩn
   bị tắt lịch tự động trên máy này khi máy chủ công ty chạy thật).
+* **02:20 – ĐÃ TỰ DUYỆT (mục B1): file 06/11 đạt** – căn cứ: `du_bao_20261106.xlsx` (nguồn v1, xuất 01:52 bằng 1.4.3;
+  file 20 ngày tạo 02:07): TOM_TAT data_cutoff_date 2026-11-05, is_stale 0, không cờ cấp file; DU_BAO_BD 640.360 dòng =
+  32.018 SKU×kho × 20, DU_BAO_HN 534.020 = 26.701 × 20, mọi SKU×kho đủ 20 dòng; 0 dòng sai quy tắc forecast_used; 0 dòng
+  tách sai seller_code / product_code (kiểm độc lập toàn bộ 1.174.380 dòng). Làm mới SEL2 tự đọc giờ mở bán (304.926 dòng,
+  đến 05/11). → chạy backtest ngày 8–20 và kiểm chứng học lại mỗi ngày (mục F), không cài / không bật trên production.
