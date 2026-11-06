@@ -369,12 +369,69 @@ def inside(sec, w):
     return a0 <= sec < b0 if a0 <= b0 else sec >= a0 or sec < b0
 
 
+WINDOW_LATCH = {}  # (window start, end, day of the window start) -> "blocked" / "released" until the window ends
+
+
+def _window_day(t, w):
+    """date of the start of the window instance that contains t (a window across midnight started the day before)"""
+    a0, b0 = secs(w[0]), secs(w[1])
+    sec = t.hour * 3600 + t.minute * 60 + t.second
+    return (t - dt.timedelta(days=1)).date() if a0 > b0 and sec < b0 else t.date()
+
+
+def window_options_block(step, w, t):
+    """None = the window does not block now; else the reason. Options (owner 06/11, heavy jobs that do not write
+    production): low_memory_only, release_command (see the module header)"""
+    o = w[2] if len(w) > 2 and isinstance(w[2], dict) else {}
+    if not o:
+        return f"window {w[0]}-{w[1]}"
+    key = (w[0], w[1], _window_day(t, w).isoformat())
+    for k in [k for k in WINDOW_LATCH if k[:2] == key[:2] and k != key]:
+        WINDOW_LATCH.pop(k)                      # an older instance of the same window
+    latch = WINDOW_LATCH.get(key)
+    if "low_memory_only" in o:
+        if latch == "blocked":
+            return f"window {w[0]}-{w[1]} (low memory)"
+        lim = o["low_memory_only"]
+        ram, com = mem()
+        low = (ram < float(lim.get("free_ram_mb", 0))) or (com < float(lim.get("free_commit_mb", 0)))
+        if low:
+            WINDOW_LATCH[key] = "blocked"
+            append_log(LOG, f"window {w[0]}-{w[1]}: low memory (free RAM {ram:.0f} MB, commit {com:.0f} MB) -> "
+                            f"paused at the checkpoint until {w[1]}")
+            return f"window {w[0]}-{w[1]} (low memory)"
+        return None
+    if "release_command" in o:
+        if latch == "released":
+            return None
+        last = WINDOW_LATCH.get(key + ("checked",), 0.0)
+        if time.time() - last < 60:
+            return f"window {w[0]}-{w[1]} (waiting for its release check)"
+        WINDOW_LATCH[key + ("checked",)] = time.time()
+        try:
+            r = subprocess.run(o["release_command"], cwd=str(step.get("cwd") or RUN), capture_output=True, text=True,
+                               timeout=float(o.get("release_timeout_s", 120)), stdin=DEVNULL, creationflags=NO_WINDOW)
+            ok, det = r.returncode == 0, (r.stdout or r.stderr or "").strip().splitlines()[-1:] or [""]
+        except Exception as e:  # noqa: BLE001 - a failing check keeps the window blocked
+            ok, det = False, [type(e).__name__]
+        if ok:
+            WINDOW_LATCH[key] = "released"
+            append_log(LOG, f"window {w[0]}-{w[1]}: released ({det[0][:160]})")
+            if NOTIFY_ALL:
+                tell("CHAY LAI / window released", step, f"khung {w[0]}-{w[1]} mo som: {det[0][:120]}")
+            return None
+        return f"window {w[0]}-{w[1]} (not released: {det[0][:120]})"
+    return f"window {w[0]}-{w[1]}"
+
+
 def window_block(step):
     t = clock()
     sec = t.hour * 3600 + t.minute * 60 + t.second
     for w in opt(step, "blocked_windows"):
         if inside(sec, w):
-            return f"window {w[0]}-{w[1]}"
+            why = window_options_block(step, w, t)
+            if why:
+                return why
     aw = opt(step, "allowed_windows")
     if aw and not any(inside(sec, w) for w in aw):
         return "outside allowed windows"
