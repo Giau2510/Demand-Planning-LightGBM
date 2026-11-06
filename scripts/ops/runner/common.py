@@ -165,7 +165,15 @@ class SPS(ctypes.Structure):
 
 
 def power():
-    """(on AC: True / False / None unknown, battery percent or None)"""
+    """(on AC: True / False / None unknown, battery percent or None). Tests: DF_OPS_FAKE_POWER_FILE = a file
+    "<ac 1|0> <percent>" read at every call (missing / unreadable -> unknown)"""
+    fake = os.environ.get("DF_OPS_FAKE_POWER_FILE")
+    if fake:
+        try:
+            a, p = Path(fake).read_text(encoding="utf-8").split()[:2]
+            return a == "1", int(p)
+        except (OSError, ValueError):
+            return None, None
     s = SPS()
     if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(s)):
         return None, None
@@ -176,7 +184,8 @@ def power():
 def keep_awake(on=True):
     """SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) for THIS process only: no idle sleep while the runner
     lives; Windows drops the request when the process ends (no power setting is changed). Lid close / power button
-    still sleep the PC."""
+    still sleep the PC. on=False clears the request (ES_CONTINUOUS only). The runner asks for it only on AC power
+    (owner 06/11: on battery a closed lid must sleep normally)."""
     return bool(ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | (0x00000001 if on else 0)))
 
 

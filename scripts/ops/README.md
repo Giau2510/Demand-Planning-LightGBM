@@ -16,7 +16,9 @@ documents itself in its header; this file is the overview.
   once into `runner\notify_config.json` (local, kept out of Git, never logged). Messages failed offline are queued
   (`notify_queue*.json`) and sent later as one summary. Texts hold status only: no data values, SKU / customer ids or
   credentials.
-* Memory guard (runner: start at free commit >= 3 GB, stop < 1.5 GB), keep-awake while a run is active, battery alert.
+* Memory guard (runner: start at free commit >= 3 GB, stop < 1.5 GB), keep-awake while a run is active ONLY on AC power
+  (owner 06/11: on battery the request is dropped so a closed lid sleeps; a step that stops the app still requires AC),
+  battery alert.
 
 ## Scripts
 
@@ -28,7 +30,7 @@ documents itself in its header; this file is the overview.
 | `runner\register-runner.ps1`, `runner\register-watchdog.ps1` | Register the tasks `DemandForecastRunner` / `DemandForecastRunnerWatchdog` (logon + every 5 min). |
 | `excel20.py`, `register-excel20.ps1` | Task `DemandForecastExcel20` (every 5 min): rewrites only the latest copy of the daily Excel into the 20-day layout. Read-only on the DB. |
 | `night_catchup.py`, `register-night-catchup.ps1` | Task `DemandForecastNightCatchup` (every 10 min): app watch + one manual D-1 / refresh / export catch-up after a failed night D-1. Fail-closed. |
-| `cai_141.py`, `cai_142.py`, `cai_143.py` | Install chains of 1.4.1-1.4.3 run through the runner (release, backup, restore test, deploy, postcheck, export). Kept as the template of the next chain; version, day and run name are fixed in each file. |
+| `cai_141.py` .. `cai_144.py` | Install chains of 1.4.1-1.4.4 run through the runner (release, backup, restore test, deploy, postcheck, export). Kept as the template of the next chain; version, day and run name are fixed in each file. |
 | `e1_backup.py`, `e1_restore.py`, `fs_restore_verify.py` | Online backup with the installed code + restore test in an isolated temporary copy (used by the cai_14x chains). |
 | `status_monitor.py` | Read-only STATUS.md / toast monitor of the 03/11 E2 / E3 runs (historical). |
 | `toast.ps1` | Windows toast (built-in WinRT API). |
@@ -81,6 +83,7 @@ cd scripts\ops\tests
 ..\..\..\.venv\Scripts\python.exe -X utf8 -B test_night_catchup.py
 ..\..\..\.venv\Scripts\python.exe -X utf8 -B test_x20.py      # needs openpyxl; uses backend\app\ml\sel2\xlsx_stream.py
 ..\..\..\.venv\Scripts\python.exe -X utf8 -B test_resA.py     # runner / notify / cai_143 / night_catchup, several minutes
+..\..\..\.venv\Scripts\python.exe -X utf8 -B test_awake.py    # keep-awake on AC only (fake power file)
 ```
 
 `tests\ops_test_env.py` points every `DF_OPS_*` path into a fresh temporary folder before the scripts are imported

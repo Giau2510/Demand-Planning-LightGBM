@@ -19,8 +19,10 @@
     "orphan_wait": true: after a runner restart a still-running child of the step is waited for, never killed;
   * operations lock (owner 05/11): a step starts only when <repo>\\run\\OPS_LOCK does not exist or names this run
     ("run": plan name); otherwise it waits (common.ops_lock_block);
-  * the runner process keeps the PC awake (SetThreadExecutionState, this process only, no power setting changed) and
-    notifies (high) when the PC runs on battery and when the charger is back;
+  * the runner process keeps the PC awake (SetThreadExecutionState, this process only, no power setting changed)
+    ONLY while it is on AC power (owner 06/11: on battery the request is dropped, so a closed lid sleeps normally - no
+    heat / empty battery in a bag; a step that stops the app still requires AC before it starts, cai_14x not_ready);
+    it notifies (high) when the PC runs on battery and when the charger is back;
   * "notify_all": true (plan level) also notifies every step start, every new waiting reason, every window / memory
     kill, every temporary-error retry and every resume after sleep (default: only step done and the final states);
   * sleep / hibernate (owner 05/11, lid closed): a pause of the runner loop more than 2 minutes longer than its planned
@@ -134,7 +136,7 @@ def nap(seconds):
         return 0.0
     append_log(LOG, f"resumed after sleep (gap {gap / 60:.0f} min); continue from the checkpoint, windows checked "
                     f"again at {clock():%H:%M}")
-    keep_awake()  # the request of this process survives a sleep; set again to be sure
+    set_awake("resume")  # the request of this process survives a sleep; set again (AC only) to be sure
     if NOTIFY_ALL:
         tell("TIEP TUC SAU KHI NGU / resumed", STEPS[counts()[1]],
              f"may thuc lai sau {gap / 60:.0f} phut ngu; tiep tuc tu diem luu")
@@ -250,13 +252,26 @@ def expected_end():
     return None if S.get("state") in TERMINAL else stamp(time.time() + left)
 
 
+def set_awake(why):
+    """keep the PC awake on AC power (or power unknown: desktop), drop the request on battery (owner 06/11)"""
+    ac = power()[0]
+    on = ac is not False
+    res = keep_awake(on)
+    append_log(LOG, f"keep awake: {'on' if on else 'off'} "
+                    f"({'AC' if ac else 'battery' if ac is False else 'power unknown'}, {why}){'' if res else ' FAILED'}")
+    return on
+
+
 def check_power():
-    """notify (high) when the PC goes on battery and when the charger is back; the first check alerts only on battery"""
+    """notify (high) when the PC goes on battery and when the charger is back; the first check alerts only on battery.
+    Every change also sets the keep-awake request (on AC only)"""
     global ON_AC
     ac, pct = power()
     if ac is None or ac == ON_AC:
         return
     first, ON_AC = ON_AC is None, ac
+    if not first:
+        set_awake("power change")
     if not ac:
         append_log(LOG, f"power: on battery ({pct}%)")
         tell("CHAY PIN / on battery", STEPS[counts()[1]], f"may dang chay PIN ({pct}%): cam sac ngay", True)
@@ -580,7 +595,7 @@ if S.get("state") != "WAITING_APPROVAL":
     append_log(LOG, f"runner start pid {os.getpid()} ({S['run']}, state {S.get('state')})")
     if NOTIFY_ALL:
         tell("RUNNER CHAY / runner start", STEPS[counts()[1]], f"trang thai {S.get('state')}")
-append_log(LOG, f"keep awake: {'on' if keep_awake() else 'FAILED'}")
+set_awake("start")
 save()  # state.json writable? checked before any step process starts
 for idx, step in enumerate(STEPS):
     if S["steps"][step["id"]]["status"] != "DONE":

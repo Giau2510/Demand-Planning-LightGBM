@@ -269,11 +269,14 @@ def step_verifyoh():
                      "ORDER BY created_at, rowid", (inst,)).fetchall()
     last = c.execute("SELECT MAX(open_date) FROM open_hours_daily").fetchone()[0]
     c.close()
-    j = next((x for x in rows if (json.loads(x[3] or "{}").get("open_hours"))), None)
+    def res_of(x):          # job_runs.result_json = {"params", "result": {..., "open_hours"}} (1.4.x); older: flat
+        o = json.loads(x[3] or "{}")
+        return o["result"] if isinstance(o.get("result"), dict) else o
+    j = next((x for x in rows if res_of(x).get("open_hours")), None)
     if j is None:
         print("no finished FORECAST_REFRESH with an open-hours read since the install", inst, "-", len(rows), "attempts")
         return 3
-    r = json.loads(j[3] or "{}")
+    r = res_of(j)
     oh = r.get("open_hours") or {}
     d = date.fromisoformat(r.get("business_date") or str(today_vn()))
     res = {"business_date": str(d), "job_id": j[0], "job_status": j[1], "reason_code": j[2], "finished_at": j[4],
