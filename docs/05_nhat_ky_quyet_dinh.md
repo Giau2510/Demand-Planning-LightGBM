@@ -358,3 +358,8 @@ mục này làm lịch sử batch; mục nào đã có quyết định mới hơ
   32.018 SKU×kho × 20, DU_BAO_HN 534.020 = 26.701 × 20, mọi SKU×kho đủ 20 dòng; 0 dòng sai quy tắc forecast_used; 0 dòng
   tách sai seller_code / product_code (kiểm độc lập toàn bộ 1.174.380 dòng). Làm mới SEL2 tự đọc giờ mở bán (304.926 dòng,
   đến 05/11). → chạy backtest ngày 8–20 và kiểm chứng học lại mỗi ngày (mục F), không cài / không bật trên production.
+* **02:40 – 1.4.4, lịch sử Forecast & Thực tế: KHÔNG đổi schema DB** (quyết định kỹ thuật của phiên điều phối, theo quy
+  tắc giữ DB nhỏ của chủ dự án). Data-reviewer: bảng mới lưu số đã công bố sẽ làm DB tăng ~3,5–4,3 GB/năm và lần chạy
+  migration đầu tiên tự sao lưu toàn bộ DB 9,7 GB lúc cài. Thay bằng file kèm theo mỗi bản Excel đã xuất
+  (`exports\du_bao\<ngày>\.published\*.h2.json.gz`, ~1–2 MB/ngày, tạo lại được từ chính file Excel đã công bố). Lịch sử
+  dùng `forecast_used` horizon 2 (lần chạy ngày D-1 cho ngày đích D) – chờ chủ dự án xác nhận horizon 2 hay 1.
