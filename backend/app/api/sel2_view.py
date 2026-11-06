@@ -248,7 +248,7 @@ def clear_cache() -> None:
 def page(v: View, keys: list[tuple], horizon: int | None, offset: int, limit: int,
          date_from: str | None = None, date_to: str | None = None, h_max: int | None = None) -> tuple[int, list[dict]]:
     """(total rows, rows of one page) of these SKU x FC: horizon = one horizon, h_max = horizons 1..h_max, date_from /
-    date_to = target date range; order fc_code, sku_code, horizon."""
+    date_to = target date range; order = the order of `keys` (given by the caller), then horizon."""
     hs = [h for h in range(1, HORIZON + 1) if (horizon is None or h == horizon) and (h_max is None or h <= h_max)
           and (not date_from or v.days[h - 1] >= date_from) and (not date_to or v.days[h - 1] <= date_to)]
     per = len(hs)

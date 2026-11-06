@@ -274,13 +274,15 @@ def overview(scope_key: str | None = None):
     with db.read() as c:
         sk, src, scopes, active = _scope(c, scope_key)
         dl = fh.days(c, sk) if sk else []
-        backup = fh.fallback_days(c, sk) if dl else []
+        sel2_days = _sel2_days(c, sk)
+        # 1.4.4: a run date with a SEL2 publication uses those numbers, not the end-of-day backup snapshot
+        sel2_set = {d["run_date"] for d in sel2_days}
+        backup = [d for d in fh.fallback_days(c, sk) if d["run_date"] not in sel2_set] if dl else []
         fcs = fh.Query(c, sk).fcs() if dl else []
         bq = ss.get("bigquery", c)
         today = str(fh.today_vn())
         from .. import actual_final
         final_summary = actual_final.summary(c, sk)
-        sel2_days = _sel2_days(c, sk)
         forecast_info = sel2_view.info(c, (active or {}).get("scope_key"))   # the info line of the page
     return {"scope_key": sk, "data_source": src, "active_scope_key": (active or {}).get("scope_key"),
             "active_data_source": (active or {}).get("data_source"),
@@ -293,7 +295,9 @@ def overview(scope_key: str | None = None):
             # 1.2.9 (seventh batch): finalized (frozen) actual days of the scope; only the D-1 source finalizes
             "finalization": {**final_summary, "applicable": src == "BIGQUERY"},
             # 1.4.4: run dates with a published SEL2 run (>= sel2_from); the run dates before keep their 1.3.x source
-            "sel2_days": sel2_days, "sel2_from": SEL2_FROM, "forecast_info": forecast_info}
+            "sel2_days": sel2_days, "sel2_from": SEL2_FROM, "forecast_info": forecast_info,
+            "today_sel2": next(({k: v for k, v in d.items() if k != "_export"} for d in sel2_days
+                                if d["run_date"] == today), None)}
 
 
 def _query(c, scope_key, run_from, run_to, fc_id, q, actual_status, forecast_source=None):
@@ -394,9 +398,11 @@ def summary(scope_key: str | None = None, run_from: str | None = None, run_to: s
                     "actual_context": [], "filters": {}}
         daily = m.daily()
         sp = m._sp
+        # 1.4.4: the run dates with a SEL2 publication are not listed as days using the backup snapshot
+        sel2_set = {d["run_date"] for d in _sel2_days(c, m.scope_key, m.run_from, m.run_to)}
         return {"scope_key": m.scope_key, "data_source": m.data_source, "filters": m.filters, "today": str(m.today),
                 "kpi": m.kpi(daily), "daily": daily, "sessions": fh.sessions(c, m.scope_key, m.run_from, m.run_to),
-                "backup_days": m.backup_in_range,
+                "backup_days": [d for d in m.backup_in_range if d["run_date"] not in sel2_set],
                 "actual_context": list(m.ctx.values()) + (list(sp.ctx.values()) if sp else []),
                 "matching_skus": len(m.skus) if m.skus is not None else None, "sel2_from": SEL2_FROM}
 

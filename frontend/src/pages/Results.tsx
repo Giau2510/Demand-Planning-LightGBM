@@ -172,11 +172,13 @@ export default function Results() {
       {r?.lineage && (
         <p className="small muted" data-testid="lineage">
           {t("fc.lineage")}: <SourceBadge source={r.lineage.data_source} /> {r.lineage.table ?? r.lineage.batch_id ?? r.scope_key}
-          {" · "}{fmtDate(r.lineage.train_start)} → {fmtDate(r.lineage.train_end)}
+          {(!r.sel2 || r.lineage.train_start || r.lineage.train_end) && <>{" · "}{fmtDate(r.lineage.train_start)} → {fmtDate(r.lineage.train_end)}</>}
           {r.lineage.last_sync?.synced_at ? ` · ${t("fc.lineage_sync")} ${fmtTime(r.lineage.last_sync.synced_at)}` : ""}
         </p>
       )}
       {r?.assessment && <AssessmentBox a={r.assessment} />}
+      {/* 1.4.4: a SEL2 run has no WAPE assessment of this kind - the box keeps its place with a neutral text (no number) */}
+      {r?.sel2 && <div className="alert info small" data-testid="assessment-sel2">{t("fc.sel2_no_quality")}</div>}
 
       {s && (
         <Card icon="chart" title={t("dash.trend")}>
@@ -213,7 +215,7 @@ export default function Results() {
             </>
           )}
         </FilterBar>
-        {r && !sel2 && (
+        {r && (
           <p className="small muted" data-testid="names-source">
             {r.data_source !== "BIGQUERY" ? t("fc.names_not_bq")
               : r.product_names?.fetched_at ? t("fc.names_source").replace("{src}", r.product_names.source).replace("{at}", fmtTime(r.product_names.fetched_at))
@@ -236,7 +238,7 @@ export default function Results() {
                   <tr key={x.sku_id + x.fc_id}><td className="sku">{x.sku_id}</td><td className="pname"><ProductName name={x.product_name} /></td><td className="nowrap">{x.fc_id}</td><td className="num">{fmtNum(x.total)}</td>
                     <td className="num"><ActualCell value={x.actual_today} actual={actual} /></td>
                     <td className="small method-c"><MethodLabel code={x.method} /></td>
-                    <td className="nowrap">{!sel2 && <button className="link" onClick={() => setExplain({ sku: x.sku_id, fc: x.fc_id, date: s.start_date })}>{t("ex.open")}</button>}</td></tr>
+                    <td className="nowrap">{sel2 ? <span className="muted small" data-testid="explain-na">—</span> : <button className="link" onClick={() => setExplain({ sku: x.sku_id, fc: x.fc_id, date: s.start_date })}>{t("ex.open")}</button>}</td></tr>
                 ))}
               </tbody>
             </table>
@@ -256,7 +258,7 @@ export default function Results() {
                     <td className="num">{fmtNum(x.forecast_qty)}</td>
                     <td className="num"><ActualCell value={x.actual_today} actual={daily.data.actual} /></td>
                     <td className="small method-c"><MethodLabel code={x.method} /></td>
-                    <td className="nowrap">{!sel2 && <button className="link" onClick={() => setExplain({ sku: x.sku_id, fc: x.fc_id, date: x.target_date })}>{t("ex.open")}</button>}</td></tr>
+                    <td className="nowrap">{sel2 ? <span className="muted small" data-testid="explain-na">—</span> : <button className="link" onClick={() => setExplain({ sku: x.sku_id, fc: x.fc_id, date: x.target_date })}>{t("ex.open")}</button>}</td></tr>
                 ))}
               </tbody>
             </table>

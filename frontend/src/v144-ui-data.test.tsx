@@ -116,3 +116,74 @@ describe("1.4.4 Results page in SEL2 mode", () => {
     expect(row.textContent).not.toContain("KHONG_CO_AVG_DUNG_LIGHTGBM");
   });
 });
+
+// 144-T2-fix6: the 1.4.3 blocks of the Results page are back in SEL2 mode with SEL2-true content (no invented number)
+describe("1.4.4 Results page in SEL2 mode keeps the 1.4.3 blocks", () => {
+  const RUN2 = { ...SRUN, horizon_coverage: { run_horizons: [1, 2, 3, 4, 5, 6, 7], max_horizon: 7, configured: [7, 15], configured_missing_in_run: [],
+      can_extend_without_retraining: false, cannot_extend_reason: null },
+    lineage: { data_source: "BIGQUERY", scope_key: "BIGQUERY:p.d.t", table: "p.d.t", batch_id: null, train_start: "2025-01-01", train_end: "2026-11-04", last_sync: null },
+    product_names: { source: "p.d.dim_sku", fetched_at: "2026-11-05T01:00:00+00:00", skus_named: 9, skus_local: 10 } };
+  const ACTUAL = { date: "2026-11-05", status: "PARTIAL_DAY", as_of: "2026-11-05T03:00:00+00:00", source_updated_max: null, is_demo: false,
+    in_horizon: true, total: 4, n_series: 1 };
+  function backend2() {
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const u = String(url);
+      if (u.startsWith("/api/system/status")) return json(SYS);
+      if (u.startsWith("/api/methods")) return json({ methods: {}, reasons: {} });
+      if (u.startsWith("/api/forecast-info")) return json(INFO);
+      if (u.startsWith("/api/forecast-runs")) return json([]);
+      if (u.startsWith("/api/daily-forecast/sel2-runs")) return json([RUN]);
+      if (u.startsWith("/api/daily-forecast/sel2-summary")) return json({ ...SUMMARY, run: RUN2, actual: ACTUAL,
+        series: SUMMARY.series.map((x) => ({ ...x, actual_today: 4 })) });
+      if (u.startsWith("/api/daily-forecast/sel2-values")) return json({ ...VALUES, run: RUN2 });
+      if (u.startsWith("/api/jobs/active")) return json({});
+      return json({ code: "TEST_UNAVAILABLE" }, 503);
+    }) as any;
+  }
+
+  it("shows horizons, data used, the neutral quality box, today's actual, the names source and '—' for the explainer", async () => {
+    backend2();
+    const r = await act(async () => render(wrap(<App />, "/results")));
+    await waitFor(() => expect(screen.getByText("MEDX.A")).toBeTruthy());
+    expect(r.container.textContent).toContain("Khoảng có trong lần chạy này: 1, 2, 3, 4, 5, 6, 7 ngày · Khoảng đang cấu hình: 7, 15 ngày");
+    expect(screen.queryByTestId("horizon-missing")).toBeNull();                      // a SEL2 run has nothing to extend
+    const lin = screen.getByTestId("lineage").textContent!;
+    expect(lin).toContain("Dữ liệu đã dùng");
+    expect(lin).toContain("p.d.t · 01/01/2025 → 04/11/2026");
+    expect(lin).not.toContain("đồng bộ lúc");                                        // not recorded with a SEL2 run
+    const q = screen.getByTestId("assessment-sel2").textContent!;
+    expect(q).toContain("Lần chạy SEL2: chưa có đánh giá chất lượng kiểu WAPE");
+    expect(q.replace(/SEL2/g, "")).not.toMatch(/\d/);                                  // no number
+    expect(screen.queryByTestId("assessment")).toBeNull();
+    expect(r.container.textContent).toContain("Thực tế hôm nay đến hiện tại");
+    expect(screen.getByTestId("names-source").textContent).toContain("p.d.dim_sku");
+    const row = screen.getByText("MEDX.A").closest("tr")!;
+    const cells = Array.from(row.querySelectorAll("td")).map((td) => td.textContent);
+    expect(cells[4]).toBe("4");                                                        // actual so far today (D0)
+    expect(cells[6]).toBe("—");
+    expect(row.querySelector("button")).toBeNull();
+  });
+
+  it("history banner names today's SEL2 publication instead of the backup snapshot", async () => {
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const u = String(url);
+      if (u.startsWith("/api/system/status")) return json(SYS);
+      if (u.startsWith("/api/methods")) return json({ methods: {}, reasons: {} });
+      if (u.startsWith("/api/history/overview")) return json({ scope_key: "BIGQUERY:p.d.t", data_source: "BIGQUERY", active_scope_key: "BIGQUERY:p.d.t",
+        scopes: [], today: "2026-11-05", days: [], backup_days: [], sel2_from: "2026-11-04", forecast_info: INFO, today_session: null, today_backup: null,
+        today_sel2: { run_date: "2026-11-05", target_date: "2026-11-06", forecast_run_id: "FRR-44", published_at: "2026-11-05T00:10:00+00:00" },
+        sel2_days: [{ run_date: "2026-11-05", target_date: "2026-11-06", forecast_run_id: "FRR-44", source: "SEL2" }],
+        finalization: { applicable: true }, fcs: [] });
+      if (u.startsWith("/api/history/summary")) return json({ kpi: null, daily: [], sessions: [], backup_days: [], actual_context: [] });
+      if (u.startsWith("/api/history/rows")) return json({ total: 0, rows: [] });
+      if (u.startsWith("/api/jobs/active")) return json({});
+      return json({ code: "TEST_UNAVAILABLE" }, 503);
+    }) as any;
+    await act(async () => render(wrap(<App />, "/forecast-history")));
+    const el = await screen.findByTestId("fh-today-sel2");
+    expect(el.textContent).toContain("Hôm nay (05/11/2026): dùng số SEL2 đã công bố");
+    expect(el.textContent).toContain("FRR-44");
+    expect(screen.getByTestId("fh-today").textContent).not.toContain("snapshot dự phòng");
+    expect(screen.queryByTestId("fh-backups")).toBeNull();
+  });
+});

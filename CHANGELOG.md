@@ -60,6 +60,15 @@ Owner decision 05/11/2026 evening (docs/05_nhat_ky_quyet_dinh.md), until now app
   LightGBM cũ (1.3.x) | Avg> - làm mới lúc <giờ VN> - dữ liệu đến <ngày>` (`GET /api/forecast-info`; the history page
   gets it from `/api/history/overview`): the run the Daily Forecast page shows (newest published refresh run; a 1.3.1
   refresh run after the emergency switch-off is labelled LightGBM cũ), else the newest 1.3.x run, else Avg.
+* **Kết quả dự báo in SEL2 mode keeps the 1.4.3 blocks and order** (QA before/after screenshots 06/11/2026): the
+  "Tổng theo SKU x FC" table is sorted as in 1.4.3 (total DESC, then SKU, FC) and the daily detail by SKU, FC, date;
+  "Khoảng có trong lần chạy này" = horizons 1..7 the page offers vs the configured ones (no extension: a SEL2 run is
+  always 1..7); "Dữ liệu đã dùng" = source + table of the scope + the input window recorded with the run
+  (`detail_json.inputs`; no sync time: not recorded with a SEL2 run); the quality box shows a neutral text (no WAPE
+  of this kind for a SEL2 run, no number); "Thực tế hôm nay đến hiện tại" and its column/chart point = the same
+  read-only D0 snapshot as 1.4.3; the product-name source line is shown; the explainer cell shows "—" (the explainer
+  is for 1.3.x models). *Lịch sử Forecast & Thực tế*: a run date with a SEL2 publication is no longer listed as a day
+  using the backup snapshot (overview, summary), and today's banner names the SEL2 publication (`today_sel2`).
 * Page view cache (`sel2_view.py`): at most one view (about 115 MiB at 58k SKU x FC, 10 minutes); its signature
   includes the newest id of `forecast_source_config_history` and the export used, so two source changes in the same
   second or a new export are seen.

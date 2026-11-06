@@ -1744,6 +1744,10 @@ export const DICT: Record<string, [string, string]> = {
     "the source configuration at export time cannot be fully rebuilt (change history missing): page numbers may differ from the Excel file"],
   "fh.src.SEL2": ["SEL2", "SEL2"],
   "fh.src.LIGHTGBM_CU": ["LightGBM cũ (1.3.x)", "Old LightGBM (1.3.x)"],
+  "fh.today_sel2": ["Hôm nay ({d}): dùng số SEL2 đã công bố lúc {t} (lần chạy {run}) cho ngày {target}.",
+    "Today ({d}): using the published SEL2 numbers of {t} (run {run}) for {target}."],
+  "fc.sel2_no_quality": ["Lần chạy SEL2: chưa có đánh giá chất lượng kiểu WAPE cho lần chạy này – xem trang Chất lượng mô hình.",
+    "SEL2 run: no WAPE-type quality assessment for this run – see the Model quality page."],
 };
 
 type Ctx = { lang: Lang; setLang: (l: Lang) => void; t: (k: string) => string; pick: (o?: { vi?: string; en?: string } | null) => string };

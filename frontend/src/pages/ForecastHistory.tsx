@@ -121,7 +121,11 @@ export default function ForecastHistory() {
       <ForecastInfoLine info={o?.forecast_info ?? null} />
       <ErrorBox error={summary.error || rows.error} />
       <div className="alert info small" data-testid="fh-today">
-        {o.today_session
+        {/* 1.4.4: today has a SEL2 publication -> its numbers (never the backup snapshot of that day) */}
+        {o.today_sel2
+          ? <span data-testid="fh-today-sel2">{t("fh.today_sel2").replace("{d}", fmtDate(o.today)).replace("{t}", fmtTime(o.today_sel2.published_at))
+              .replace("{run}", o.today_sel2.forecast_run_id).replace("{target}", fmtDateWd(o.today_sel2.target_date, lang))}</span>
+          : o.today_session
           ? t("fh.today_session").replace("{d}", fmtDate(o.today)).replace("{t}", fmtTime(o.today_session.session_started_at))
             .replace("{target}", fmtDateWd(o.today_session.target_date, lang))
           : tb ? <span data-testid="fh-today-backup">{t("fh.no_valid_today").replace("{d}", fmtDate(o.today))} {t("fh.today_backup")

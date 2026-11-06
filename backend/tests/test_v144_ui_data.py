@@ -744,3 +744,92 @@ def test_refresh_flags_actual_failure_and_still_runs_the_day(sel2_on, monkeypatc
     with db.read() as c:
         al = db.rows(c, "SELECT level, code, entity_id FROM alerts WHERE code=?", (daily_refresh.ACTUAL_DAILY_ALERT,))
     assert [(a["level"], a["entity_id"]) for a in al] == [("WARNING", SCOPE)]
+
+
+# ------------------------------------------------------------------ 144-T2-fix6: Results page as 1.4.3 (QA findings)
+def test_results_sel2_order_as_1_4_3_and_stable_pages(scenario, client):
+    """Totals: total DESC, sku, fc (the 1.3.x summary order), consistent paging; daily detail: sku, fc, date."""
+    full = client.get("/api/daily-forecast/sel2-summary?run_id=R1&horizon=7&limit=1000").json()["series"]
+    order = [(x["sku_id"], x["fc_id"]) for x in full]
+    assert order == [(x["sku_id"], x["fc_id"]) for x in sorted(full, key=lambda x: (-x["total"], x["sku_id"], x["fc_id"]))]
+    assert full[0]["total"] > 0 and full[-1]["total"] <= full[0]["total"]
+    paged = []
+    for off in range(0, len(full), 2):
+        paged += client.get(f"/api/daily-forecast/sel2-summary?run_id=R1&horizon=7&limit=2&offset={off}").json()["series"]
+    assert [(x["sku_id"], x["fc_id"]) for x in paged] == order
+    h3 = client.get("/api/daily-forecast/sel2-summary?run_id=R1&horizon=3&limit=1000").json()["series"]
+    assert [x["total"] for x in h3] == sorted((x["total"] for x in h3), reverse=True)
+    rows = client.get("/api/daily-forecast/sel2-values?run_id=R1&horizon=7&limit=1000").json()["rows"]
+    got = [(x["sku_id"], x["fc_id"], x["target_date"]) for x in rows]
+    assert got == sorted(got) and len(got) == len(full) * 7
+    pages = []
+    for off in range(0, len(got), 5):
+        pages += [(x["sku_id"], x["fc_id"], x["target_date"]) for x in client.get(
+            f"/api/daily-forecast/sel2-values?run_id=R1&horizon=7&limit=5&offset={off}").json()["rows"]]
+    assert pages == got
+
+
+def test_results_sel2_run_blocks(scenario, client):
+    """The blocks of the 1.4.3 page carry SEL2-true content: horizons offered vs configured (nothing to extend), data
+    used as recorded with the run (no invented window / sync time), product-name source."""
+    run = client.get("/api/daily-forecast/sel2-summary?run_id=R1").json()["run"]
+    cov = run["horizon_coverage"]
+    assert cov["run_horizons"] == list(range(1, 8)) == run["horizons"]
+    assert cov["configured"] == sorted(set(ss.get("horizons").enabled)) and cov["configured_missing_in_run"] == []
+    lin = run["lineage"]
+    assert lin["data_source"] == "BIGQUERY" and lin["batch_id"] == SCOPE and lin["table"] is None
+    assert lin["train_start"] is None and lin["train_end"] is None and lin["last_sync"] is None   # detail_json '{}'
+    assert "product_names" in run
+    rec = {"scope_key": "BIGQUERY:p.d.t", "detail_json": '{"inputs": {"window_start": "2025-01-01", "end": "2026-11-04"}}'}
+    assert daily_routes._sel2_lineage(rec, "BIGQUERY") == {
+        "data_source": "BIGQUERY", "scope_key": "BIGQUERY:p.d.t", "table": "p.d.t", "batch_id": None,
+        "train_start": "2025-01-01", "train_end": "2026-11-04", "last_sync": None}
+    assert daily_routes._sel2_lineage({"scope_key": "X", "detail_json": "not json"}, "DEMO")["train_start"] is None
+
+
+def test_results_sel2_actual_so_far_today(scenario, client, monkeypatch):
+    """The actual so far today of the 1.3.x page (D0 snapshot, read only) on the SEL2 summary and detail."""
+    from app.data import intraday
+    s = client.get("/api/daily-forecast/sel2-summary?run_id=R1").json()
+    assert s["actual"]["status"] == "NO_DATA_TODAY" and s["actual"]["total"] is None
+    monkeypatch.setattr(intraday, "today_vn", lambda: D)
+    with db.tx() as c:
+        c.execute("INSERT INTO d0_snapshots(id, data_source, scope_key, order_date, snapshot_at, sync_status, rows_read, "
+                  "rows_valid, rows_error, created_at) VALUES ('SNP1', 'BIGQUERY', ?, ?, '2026-11-05T03:00:00+00:00', "
+                  "'SUCCEEDED', 2, 2, 0, '2026-11-05T03:00:00+00:00')", (SCOPE, D.isoformat()))
+        c.executemany("INSERT INTO d0_snapshot_values(snapshot_id, sku_id, fc_id, cumulative_qty) VALUES ('SNP1',?,?,?)",
+                      [("S1", "F1", 4.0), ("S6", "BD", 2.0), ("S99", "F1", 9.0)])
+    s = client.get("/api/daily-forecast/sel2-summary?run_id=R1&limit=1000").json()
+    a = s["actual"]
+    assert a["date"] == D.isoformat() and a["in_horizon"] is True and a["total"] == 6.0 and a["n_series"] == 6
+    by = {(x["sku_id"], x["fc_id"]): x["actual_today"] for x in s["series"]}
+    assert by[("S1", "F1")] == 4.0 and by[("S2", "F1")] == 0.0        # a read day without a row = 0 (D0 rule)
+    assert [d["actual_today"] for d in s["daily"]] == [6.0] + [None] * 6
+    assert client.get("/api/daily-forecast/sel2-summary?run_id=R1&fc_id=BD").json()["actual"]["total"] == 2.0
+    v = client.get("/api/daily-forecast/sel2-values?run_id=R1&sku_id=S1&limit=10").json()
+    assert v["actual"]["status"] in ("PARTIAL_DAY", "STALE") and "values" not in v["actual"]
+    assert [x["actual_today"] for x in v["rows"]] == [4.0] + [None] * 6
+
+
+def test_history_fallback_days_exclude_sel2_days(scenario, client, monkeypatch):
+    """A run date with a SEL2 publication is never listed as a day using the backup snapshot (overview, summary)
+    and today's banner names the SEL2 publication."""
+    from app import forecast_history as fh
+    _publish(D)
+
+    def fake_backup(c, sk, today=None):
+        return [{"run_date": d, "target_date": str(date.fromisoformat(d) + timedelta(days=1)), "snapshot_id": "EOD-" + d,
+                 "snapshot_business_date": "2026-11-02", "snapshot_created_at": "2026-11-02T16:55:00+00:00",
+                 "forecast_run_id": "FR-OLD", "source_run_date": "2026-11-02", "session_started_at": None,
+                 "published_at": None, "model_version": "MV-OLD"} for d in ("2026-11-05", "2026-11-03")]
+    day = {"run_date": "2026-11-02", "target_date": "2026-11-03", "forecast_run_id": "FR-OLD"}
+    monkeypatch.setattr(fh, "fallback_days", fake_backup)
+    monkeypatch.setattr(fh, "days", lambda c, sk: [dict(day)])
+    monkeypatch.setattr(fh, "today_vn", lambda: D)
+    monkeypatch.setattr(fh, "scopes", lambda c: [{"scope_key": SCOPE, "data_source": "BIGQUERY", "n_days": 1}])
+    ov = client.get("/api/history/overview").json()
+    assert [d["run_date"] for d in ov["backup_days"]] == ["2026-11-03"] and ov["today_backup"] is None
+    assert ov["today_sel2"]["run_date"] == D.isoformat() and ov["today_sel2"]["forecast_run_id"] == "R1"
+    assert "_export" not in ov["today_sel2"]
+    s = client.get("/api/history/summary?run_from=2026-11-01&run_to=2026-11-05").json()
+    assert [d["run_date"] for d in s["backup_days"]] == ["2026-11-03"]
