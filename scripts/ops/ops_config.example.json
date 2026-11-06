@@ -1,0 +1,18 @@
+{
+  "_comment": "Copy to ops_config.json (same folder, kept out of Git) and keep only the keys to change. Every key can also be set as env DF_OPS_<KEY>. Without this file the defaults apply (see README.md).",
+  "project_root": "X:\\work\\demand-forecast",
+  "localappdata": "C:\\Users\\<user>\\AppData\\Local",
+  "storage_json": "C:\\Users\\<user>\\AppData\\Local\\DemandForecast\\storage.json",
+  "progs": "C:\\Users\\<user>\\AppData\\Local\\Programs\\DemandForecast",
+  "remote_dir": "C:\\Users\\<user>\\AppData\\Local\\DemandForecastRemote",
+  "venv": "X:\\work\\demand-forecast\\.venv\\Scripts\\python.exe",
+  "reports": "X:\\work\\demand-forecast\\reports",
+  "status_md": "X:\\work\\demand-forecast\\STATUS.md",
+  "tmp": "X:\\work\\tmp",
+  "worktrees": "X:\\work",
+  "ban": "X:\\work\\ban-1.4.4",
+  "ops_lock": "X:\\work\\demand-forecast\\run\\OPS_LOCK",
+  "data_dir": "X:\\work\\demand-forecast\\data\\runtime",
+  "backups": "X:\\work\\demand-forecast\\backups",
+  "live_db": "X:\\work\\demand-forecast\\data\\runtime\\db\\app.db"
+}

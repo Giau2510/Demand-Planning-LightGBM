@@ -1,14 +1,19 @@
 """Shared helpers of the step runner and its watchdog (owner 03/11): free memory (GlobalMemoryStatusEx), process alive
 check by pid + creation time (a reused pid is not taken for the old process), the named mutex of one plan, atomic +
-fsync'd JSON files, process tree kill."""
+fsync'd JSON files, process tree kill; (05/11) operations lock, power state, keep awake, network check (net_up)."""
 import ctypes
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # scripts\ops: ops_config
+import ops_config  # noqa: E402
 
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.CreateMutexW.restype = K32.OpenMutexW.restype = ctypes.c_void_p
@@ -132,6 +137,65 @@ def write_json(p, obj, backup=False):
 
 def stamp(t=None):
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t))
+
+
+# ------------------------------------------------------------------ operations lock, power (owner 05/11)
+# one operation on production at a time: <project root>\run\OPS_LOCK (JSON: session, job, started_at, run) is
+# created by the session that owns the operation; every runner / ops script checks it before it writes the DB, installs
+# or stops the app, and goes on only when there is no lock or the lock names its own run
+OPS_LOCK = ops_config.OPS_LOCK  # env DF_OPS_LOCK (tests) / ops_config.json "ops_lock" / <project root>\run\OPS_LOCK
+
+
+def ops_lock_block(run_name):
+    """None when this run may operate on production, else the reason (lock held by another session / run)"""
+    if not OPS_LOCK.exists():
+        return None
+    lk = read_json(OPS_LOCK)
+    lk = lk if isinstance(lk, dict) else {}  # valid JSON but not an object: a lock of an unknown holder
+    runs = lk.get("runs") if isinstance(lk.get("runs"), list) else []   # one session, several runs in sequence
+    if lk.get("run") == run_name or run_name in runs:
+        return None
+    return f"OPS_LOCK held by {lk.get('session') or '?'} ({lk.get('job') or '?'}, since {lk.get('started_at') or '?'})"
+
+
+class SPS(ctypes.Structure):
+    _fields_ = [("ACLineStatus", ctypes.c_ubyte), ("BatteryFlag", ctypes.c_ubyte), ("BatteryLifePercent", ctypes.c_ubyte),
+                ("SystemStatusFlag", ctypes.c_ubyte), ("BatteryLifeTime", ctypes.c_ulong),
+                ("BatteryFullLifeTime", ctypes.c_ulong)]
+
+
+def power():
+    """(on AC: True / False / None unknown, battery percent or None)"""
+    s = SPS()
+    if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(s)):
+        return None, None
+    ac = {0: False, 1: True}.get(s.ACLineStatus)
+    return ac, (None if s.BatteryLifePercent == 255 else s.BatteryLifePercent)
+
+
+def keep_awake(on=True):
+    """SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) for THIS process only: no idle sleep while the runner
+    lives; Windows drops the request when the process ends (no power setting is changed). Lid close / power button
+    still sleep the PC."""
+    return bool(ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | (0x00000001 if on else 0)))
+
+
+NET_TARGETS = (("1.1.1.1", 443), ("ntfy.sh", 443))
+
+
+def net_up(timeout=5):
+    """(owner 05/11) True when one TCP connect to NET_TARGETS succeeds within timeout seconds; env DF_NET_CHECK_OVERRIDE
+    = up / down replaces the check (tests only)"""
+    o = (os.environ.get("DF_NET_CHECK_OVERRIDE") or "").strip().lower()
+    if o in ("up", "down"):
+        return o == "up"
+    for host, port in NET_TARGETS:
+        try:
+            socket.create_connection((host, port), timeout=timeout).close()
+            return True
+        except OSError:
+            continue
+    return False
 
 
 def append_log(p, msg):

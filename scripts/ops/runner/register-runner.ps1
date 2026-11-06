@@ -3,7 +3,7 @@
            user: at logon + every 5 minutes, only when the user is logged on (toasts, Credential Manager). The task
            starts pythonw (no window); a start while a runner is alive ends at once (named mutex per plan name), a
            finished or stopped run does nothing. ASCII only (Windows PowerShell 5.1).
-.EXAMPLE   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ops\runner\register-runner.ps1 -Plan D:\x\plan.json -RunDir D:\x\run -StatusCopy "D:\Buymed\Lightgbm AI\STATUS.md"
+.EXAMPLE   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ops\runner\register-runner.ps1 -Plan D:\x\plan.json -RunDir D:\x\run -StatusCopy "<project root>\STATUS.md"
 .EXAMPLE   ... register-runner.ps1 -Plan D:\x\plan.json -RunDir D:\x\run -PlanOnly     (prints the definition only)
 .EXAMPLE   ... register-runner.ps1 -Unregister
 #>

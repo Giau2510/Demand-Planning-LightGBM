@@ -11,3 +11,6 @@ Owner rule 2026-10-31:
   hàng'.
 * Bổ sung 2026-10-31: dữ liệu mức dòng SO gồm customer_id, mã đơn, ngày đặt, sku_code, fc_code, số lượng; customer_id
   giống nhau là cùng một khách. Mọi đánh dấu (đột biến, ôm hàng, chu kỳ) làm theo TỪNG KHÁCH và TỪNG DÒNG ĐƠN.
+
+* Bổ sung 2026-11-05 (chủ dự án): dữ liệu từ **01/2025** trở đi **KHÔNG BAO GIỜ bị dọn** (mọi quy tắc thời hạn lưu /
+  dọn dữ liệu phải chừa giai đoạn này). Các bảng dùng để học mô hình không thuộc diện dọn.

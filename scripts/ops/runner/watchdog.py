@@ -4,6 +4,9 @@ dir (watchdog_state.json, watchdog.log). Notifies (notify.py, same title / chann
   * the runner is dead (its named mutex is free) while the run is RUNNING / WAITING; one grace check when the runner
     task (--runner-task) starts again within 6 minutes (it restarts the runner), the next check alerts;
   * status.json has not changed for more than --stale-minutes (15);
+  * (owner 05/11) while a step RUNS, no progress for more than --progress-minutes (15): no file changed in the run dir
+    logs, runner.log or the top level of the run dir's parent folder (the step outputs: deploy.log, *.json) or a
+    --progress-path;
   * while the run is RUNNING / WAITING, production shows another job: GET <api>/api/jobs?limit=20 with status PENDING /
     RUNNING / RETRY_WAIT and trigger MANUAL or a heavy type (--heavy), unless the type is in the current step's
     "expected_jobs";
@@ -11,7 +14,8 @@ dir (watchdog_state.json, watchdog.log). Notifies (notify.py, same title / chann
     of the runner and whose command line is not under an --ignore-path (default: the runner test folder).
 The same alert is sent at most once per --debounce-minutes (30). Final alerts of the runner whose ntfy send failed
 (status.json "pending_alerts") are resent once per check, also for a finished run, until ntfy accepts them (only while
-no runner holds the mutex: then only this watchdog writes status.json).
+no runner holds the mutex: then only this watchdog writes status.json). (05/11) Each check first sends the queued
+offline notifications as one summary (notify.flush_queue), when notify_queue.json exists and ntfy answers.
 usage: watchdog.py --run-dir <dir> [--stale-minutes 15] [--debounce-minutes 30] [--api http://127.0.0.1:8765]
                    [--heavy TRAIN_PUBLISH,FORECAST_EXTEND,FORECAST_REFRESH] [--runner-task DemandForecastRunner]
                    [--ignore-path <dir> ...] [--no-prod]"""
@@ -26,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import ACTIVE, NO_WINDOW, alive, append_log, mutex_held, read_json, stamp, write_json  # noqa: E402
 import notify  # noqa: E402
+import ops_config  # noqa: E402  (scripts\ops, put on sys.path by common)
 
 PATTERNS = ("app.cli sel2-", "pytest", "sel2-replay")
 JOB_ACTIVE = ("PENDING", "RUNNING", "RETRY_WAIT")  # job_runs.status (QUEUED is a stage, not a status)
@@ -33,6 +38,8 @@ JOB_ACTIVE = ("PENDING", "RUNNING", "RETRY_WAIT")  # job_runs.status (QUEUED is 
 a = argparse.ArgumentParser()
 a.add_argument("--run-dir", required=True)
 a.add_argument("--stale-minutes", type=float, default=15)
+a.add_argument("--progress-minutes", type=float, default=15, help="0 = no progress check")
+a.add_argument("--progress-path", action="append", default=[])
 a.add_argument("--debounce-minutes", type=float, default=30)
 a.add_argument("--api", default="http://127.0.0.1:8765")
 a.add_argument("--heavy", default="TRAIN_PUBLISH,FORECAST_EXTEND,FORECAST_REFRESH")
@@ -42,7 +49,7 @@ a.add_argument("--no-prod", action="store_true", help="skip the production API /
 A = a.parse_args()
 RUN = Path(A.run_dir).resolve()
 LOG, WST = RUN / "watchdog.log", RUN / "watchdog_state.json"
-IGNORE = [x.lower() for x in (A.ignore_path or [r"D:\Buymed\tmp\runner_test"])]
+IGNORE = [x.lower() for x in (A.ignore_path or [str(ops_config.TMP / "runner_test")])]
 
 
 def ps(cmd):
@@ -81,6 +88,7 @@ def descendants(root, procs):
     return kids
 
 
+notify.flush_queue(LOG)  # offline messages of the runner / ops scripts: one summary once ntfy answers again
 st = read_json(RUN / "status.json")
 if not st:
     sys.exit(0)  # no run in this dir yet
@@ -93,7 +101,7 @@ if pend and not runner_up:
     left = []
     for p in pend:
         r = notify.send(p.get("title", "Demand Forecast"), f"{p.get('text', '')} (gui lai / resent {stamp()})",
-                        p.get("priority", "high"), LOG, toast=False, ntfy=True)
+                        p.get("priority", "high"), LOG, toast=False, ntfy=True, queue=False)
         if not r.get("ntfy"):
             left.append({**p, "tries": int(p.get("tries", 0)) + 1})
     try:
@@ -115,6 +123,21 @@ if state in ACTIVE:
     age = (time.time() - float(st.get("updated_epoch", 0))) / 60
     if age > A.stale_minutes:
         alerts.append(("stale", "KHONG CAP NHAT / stuck", f"{where}: status.json khong doi {age:.0f} phut"))
+    if state == "RUNNING" and st.get("child_pid") and A.progress_minutes > 0:
+        files = [RUN / "runner.log", *(RUN / "logs").glob("*"), *(f for f in RUN.parent.glob("*") if f.is_file())]
+        for x in A.progress_path:
+            x = Path(x)
+            files += [f for f in x.glob("*") if f.is_file()] if x.is_dir() else [x]
+        times = []
+        for f in files:
+            try:
+                times.append(f.stat().st_mtime)
+            except OSError:  # gone since the listing: the other checks must still run
+                pass
+        idle = (time.time() - max(times)) / 60 if times else 0.0
+        if idle > A.progress_minutes:
+            alerts.append(("progress", "KHONG CO TIEN DO / no progress",
+                           f"{where}: {idle:.0f} phut khong co tien do moi (log / ket qua buoc khong doi)"))
     if not A.no_prod:
         heavy, expected = set(A.heavy.split(",")), set(st.get("expected_jobs") or [])
         try:

@@ -6,6 +6,29 @@
 
 @docs/01_quy_tac/quy_tac_du_lieu.md
 
+## QUY TẮC CỐ ĐỊNH forecast_used (quyết định cuối của chủ dự án 05/11/2026 – mọi phiên tuân theo, KHÔNG hỏi lại)
+
+Cột `forecast_used` của file Excel hằng ngày (số cuối cùng dùng để mua hàng):
+
+* Cấu hình LIGHTGBM và có `lightgbm_forecast` (kể cả = 0) -> dùng `lightgbm_forecast`. KHÔNG thay số 0 bằng Avg (kiểm
+  theo từng SKU tháng 10: thay bằng Avg làm 54,5 % SKU lệch nhiều hơn, chỉ 5 % đúng hơn; tổng lệch tăng từ 18.971 lên
+  81.439).
+* Cấu hình LIGHTGBM, SKU × FC ngoài phạm vi lần chạy (không có `lightgbm_forecast`) -> **0** với MỌI tiền tố mã (MEDX và
+  mã khác), `fallback_reason` = `NGOAI_PHAM_VI_GAN_0`.
+* Lần chạy SEL2 hôm nay lỗi / cũ (không có lần chạy của ngày D), hoặc SKU × FC trong phạm vi thiếu số (bổ sung của chủ
+  dự án 05/11/2026, thay quy tắc "-> Avg" trước đó): lấy `lightgbm_forecast` của LẦN CHẠY SEL2 THÀNH CÔNG GẦN NHẤT có số
+  cho đúng `target_date` đó, với điều kiện lần chạy đó cách `forecast_date` hôm nay KHÔNG QUÁ 3 NGÀY;
+  `fallback_reason` = `DUNG_SO_LAN_CHAY_TRUOC`, ngày của lần chạy đã dùng ghi trong `flags`. Không có lần chạy nào trong
+  3 ngày có số đó -> `avg_demand` (`STALE` / `KHONG_CO_SO`).
+* Ngày lần chạy hôm nay lỗi (chủ dự án sửa 05/11/2026): dùng PHẠM VI của lần chạy SEL2 thành công gần nhất trong 3 ngày
+  – mã TRONG phạm vi đó -> số của lần chạy đó (`DUNG_SO_LAN_CHAY_TRUOC`); mã NGOÀI phạm vi đó -> 0
+  (`NGOAI_PHAM_VI_GAN_0`), giống ngày bình thường. CHỈ khi KHÔNG có lần chạy thành công nào trong 3 ngày mới dùng Avg cho
+  toàn bộ (`STALE`).
+* Cấu hình AVG_DEMAND (mã mới mặc định Avg): dùng `avg_demand`; không có `avg_demand` nhưng có `lightgbm_forecast` ->
+  dùng `lightgbm_forecast`.
+* `forecast_used` LUÔN làm tròn: < 0,2 -> 0, còn lại làm tròn LÊN; KHÔNG BAO GIỜ trống (không có số nào -> 0,
+  `KHONG_CO_SO_NAO`). `lightgbm_forecast` và `avg_demand` giữ số gốc để đối chiếu.
+
 ## Claude Code specifics
 
 * Shared rules are in `AGENTS.md` (imported above); this file adds only what is specific to Claude Code.
@@ -67,3 +90,38 @@ retries).
   phiên đứng yên im lặng.
 * Việc nhiều bước chạy qua bộ chạy độc lập `scripts\ops\runner\` (Scheduled Task + watchdog + ntfy) khi đã test đạt;
   khi đã giao cho runner, phiên chat chỉ đọc STATUS.md và báo lại.
+
+## Khoá vận hành và tên phiên (chủ dự án 05/11/2026)
+
+* **Mọi báo cáo** (chat, file báo cáo, thông báo điện thoại) mở đầu bằng `[tên phiên]`.
+* **Khoá vận hành** `D:\Buymed\Lightgbm AI\run\OPS_LOCK` (JSON: `session`, `job`, `started_at`, `run`): phiên nhận một
+  thao tác production (ghi DB, cài, dừng app, sao lưu/khôi phục) tạo khoá TRƯỚC khi bắt đầu và xoá khi xong. Có khoá
+  của phiên khác: không thao tác production, chỉ đọc và báo lại; không xoá khoá của phiên khác.
+* Runner (`runner.py`, `common.ops_lock_block`) và mọi script vận hành (`scripts\ops\*.py`) kiểm tra khoá trước khi ghi
+  DB / cài / dừng app; chỉ chạy khi không có khoá hoặc khoá ghi đúng `run` của nó. Lệnh vận hành chạy tay cũng phải
+  kiểm tra khoá trước.
+* Khung giờ chặn của bước cài chỉ xét lúc BẮT ĐẦU (`"window_kills": false`): không bao giờ dừng giữa chừng một bước
+  cài. Runner giữ máy không ngủ trong lúc chạy (SetThreadExecutionState, không đổi cài đặt nguồn), báo điện thoại khi
+  máy chạy pin, và với `"notify_all": true` báo mọi thay đổi trạng thái (bắt đầu, xong, chờ, dừng vì khung giờ, lỗi);
+  watchdog báo khi 15 phút không có tiến độ.
+
+## Quy tắc vận hành cố định (chủ dự án 06/11/2026 – thay mọi quy định giờ làm việc trước đó)
+
+* **Bỏ giới hạn giờ làm việc:** mọi việc, kể cả việc nặng (test, backtest, cài đặt), chạy BẤT KỲ GIỜ NÀO, làm liền
+  không chờ. Mỗi lúc 1 việc nặng; RAM / commit dưới ngưỡng thì chờ, không chạy chồng.
+* Tránh khung lịch production **23:45–00:15** và **00:45–03:45**; cài đặt không trùng lượt D0 và làm mới dự báo.
+* Giữ khoá vận hành OPS_LOCK; mọi báo cáo mở đầu bằng [tên phiên]; báo điện thoại MỖI bước, báo NGAY khi trễ quá 30 phút
+  hoặc lỗi; giữ cơ chế chịu máy ngủ / mất mạng / chạy bù đêm. Quy tắc forecast_used cố định: KHÔNG thay đổi.
+* **Tự duyệt tới 07:00 ngày 07/11/2026** (mỗi lần tự duyệt: ghi `docs\05_nhat_ky_quyet_dinh.md` + báo điện thoại "đã tự
+  duyệt: …, căn cứ: …"), chỉ khi đạt đủ tiêu chí:
+  - File 06/11: TOM_TAT phiên bản 1.4.3, dữ liệu đến 05/11, is_stale = 0 (hoặc ghi rõ dùng số lần chạy trước); 2 sheet
+    BD/HN đủ SKU×kho × 20; 0 dòng sai quy tắc forecast_used; seller_code + product_code đúng 100 % → coi như chủ dự án đã
+    xác nhận (chạy backtest ngày 8–20 và kiểm chứng học lại mỗi ngày).
+  - Giao diện 1.4.4: bố cục, tên trang, menu giữ nguyên 100 % (so ảnh trước–sau); số trên trang khớp 100 % file Excel
+    cùng ngày (mẫu 50 SKU×kho mỗi trang + tổng theo ngày) → được cài.
+  - Cài 1.4.4: toàn bộ test đạt, reviewer không có lỗi nghiêm trọng, sao lưu + thử khôi phục đạt, kiểm tra sau cài đạt →
+    được cài và push github/1.4.4 + tag v1.4.4. Lỗi bất kỳ bước nào: quay về 1.4.3, bảo đảm app chạy, báo.
+  - Dọn thư mục: mục HỎI theo quy tắc chủ dự án 06/11 (worktree không có thay đổi cần giữ → nén vào archive\worktrees\
+    rồi xoá; có → giữ và báo; bản sao g1: GIỮ).
+* **KHÔNG tự duyệt** (chỉ chuẩn bị sẵn, chờ chủ dự án "đồng ý"): đổi cách dự báo ngày 8–20 trên production; bật học lại
+  mỗi ngày trên production; mọi thay đổi quy tắc forecast_used, config nguồn dự báo, hoặc xoá dữ liệu trong DB production.

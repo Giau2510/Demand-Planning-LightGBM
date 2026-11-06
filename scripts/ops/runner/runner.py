@@ -14,18 +14,36 @@
     further), with free commit >= min_free_commit_mb and its precondition OK (waits up to precondition_wait_minutes);
   * a running step is killed (taskkill /T /F) at the start of a blocked window or when free commit < stop_free_commit_mb
     and is started AGAIN later: STEPS MUST BE RESUMABLE (a second run continues or redoes the work without harm); the
-    same holds for a step interrupted by a restart of the PC or the runner;
+    same holds for a step interrupted by a restart of the PC or the runner. "window_kills": false (owner 05/11, the
+    install step) checks the windows only at the START of the step: a running step is never killed by a window;
+    "orphan_wait": true: after a runner restart a still-running child of the step is waited for, never killed;
+  * operations lock (owner 05/11): a step starts only when <repo>\\run\\OPS_LOCK does not exist or names this run
+    ("run": plan name); otherwise it waits (common.ops_lock_block);
+  * the runner process keeps the PC awake (SetThreadExecutionState, this process only, no power setting changed) and
+    notifies (high) when the PC runs on battery and when the charger is back;
+  * "notify_all": true (plan level) also notifies every step start, every new waiting reason, every window / memory
+    kill, every temporary-error retry and every resume after sleep (default: only step done and the final states);
+  * sleep / hibernate (owner 05/11, lid closed): a pause of the runner loop more than 2 minutes longer than its planned
+    wait is logged "resumed after sleep (gap N min)" (+ notified with notify_all) and the runner simply goes on from
+    the checkpoint; the time asleep never counts as precondition wait. Windows, power and memory are read again from
+    the real clock / system at every loop pass, so a blocked window that began during the sleep holds at resume;
+  * "needs_network": true (step, default false): before the start the network is checked (common.net_up, TCP 443,
+    5 s); offline -> WAITING "cho mang / waiting for network", checked again every 60 s, no time limit (not counted
+    in precondition_wait_minutes), never a failure. Steps without it run offline. ntfy messages that fail offline are
+    queued by notify.py and sent later as one summary (notify.flush_queue, at most once a minute from the loop);
   * exit code in temporary_exit_codes or a temporary_markers text in the output -> retried (retries, default 1);
   * stop for good (notified): a non-temporary failure after the retries (FAILED), a failed safety gate after the step
     (STOPPED); "needs_approval": true stops BEFORE the step (WAITING_APPROVAL) until <run dir>\\approve-<id>.txt exists;
   * STATUS.md + status.json in the run dir on every change and every status_every_s (300 s); STATUS.md is also copied to
-    --status-copy (real use: D:\\Buymed\\Lightgbm AI\\STATUS.md). --clear-stop re-arms a FAILED / STOPPED run (the
+    --status-copy (real use: <project root>\\STATUS.md, ops_config.STATUS_MD). --clear-stop re-arms a FAILED / STOPPED run (the
     failed step runs again at the next start).
 Precondition / gate: {"expr": "<python expression>"} over a small safe context (names: free_commit_mb, free_ram_mb,
 hour, minute, weekday (0 = Monday), today ("YYYY-MM-DD"); functions: exists(path), file_contains(path, text),
 step_done(id); only literals, comparisons, and/or/not, + - * / %; relative paths are taken from the step cwd), or
-{"command": [argv], "cwd": ..., "timeout_s": 600} whose exit code 0 = OK.
-Test clock: env RUNNER_CLOCK_OFFSET_S shifts the clock used for the windows (tests only).
+{"command": [argv], "cwd": ..., "timeout_s": 600} whose exit code 0 = OK. (05/11) expr name on_ac: True when the PC
+runs on AC power (common.power).
+Test clock: env RUNNER_CLOCK_OFFSET_S shifts the clock used for the windows; env RUNNER_CLOCK_OFFSET_FILE names a file
+whose number of seconds is added at every read (a jump simulates a sleep: windows + gap detection) (tests only).
 usage: runner.py --plan <plan.json> --run-dir <dir> [--status-copy <file>] [--clear-stop]"""
 import argparse
 import ast
@@ -39,8 +57,8 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import (NO_WINDOW, TERMINAL, alive, append_log, kill_tree, load_json, mem, mutex_name,  # noqa: E402
-                    proc_created, read_json, stamp, take_mutex, write_json)
+from common import (NO_WINDOW, TERMINAL, alive, append_log, keep_awake, kill_tree, load_json, mem,  # noqa: E402
+                    mutex_name, net_up, ops_lock_block, power, proc_created, read_json, stamp, take_mutex, write_json)
 import notify  # noqa: E402
 
 DEFAULTS = {"blocked_windows": [["23:45", "00:15"], ["00:45", "03:00"]], "allowed_windows": [],
@@ -49,7 +67,10 @@ DEFAULTS = {"blocked_windows": [["23:45", "00:15"], ["00:45", "03:00"]], "allowe
             "temporary_markers": ["SEL2_LOW_MEMORY", "URLError", "ConnectionError", "ConnectionResetError", "TimeoutError",
                                   "getaddrinfo failed", "WinError 10054", "WinError 10060"],
             "precondition_wait_minutes": 60, "wait_poll_s": 60, "poll_s": 5, "status_every_s": 300,
-            "eta_minutes": 10, "notify_done": True, "needs_approval": False, "expected_jobs": [], "env": {}}
+            "eta_minutes": 10, "notify_done": True, "needs_approval": False, "expected_jobs": [], "env": {},
+            "window_kills": True, "orphan_wait": False, "needs_network": False}
+NET_WAIT = "cho mang / waiting for network"
+SLEEP_GAP_S = 120  # a loop pause this much longer than planned = the PC slept
 
 a = argparse.ArgumentParser()
 a.add_argument("--plan", required=True)
@@ -79,14 +100,46 @@ CHILD = None  # the running step process (stopped cleanly when state.json cannot
 PENDING = []  # final alerts whose ntfy send failed (status.json "pending_alerts", resent by the watchdog)
 LAST_KEY = None  # state content of the last good write (the .bak copies rotate only on a real change)
 ALERTS = RUN / "runner_alerts.json"  # debounce of the state-write alerts (state.json itself cannot be written then)
+NOTIFY_ALL = bool(PLAN.get("notify_all"))
+ON_AC = None  # last power state seen (None = not checked yet)
+LAST_FLUSH = 0.0  # last notify.flush_queue try (at most once a minute)
 
 
 def opt(step, key):
     return step.get(key, PLAN.get("defaults", {}).get(key, DEFAULTS[key]))
 
 
+def offset():
+    o = float(os.environ.get("RUNNER_CLOCK_OFFSET_S", "0") or 0)
+    f = os.environ.get("RUNNER_CLOCK_OFFSET_FILE")
+    if f:
+        try:
+            o += float(Path(f).read_text(encoding="utf-8").strip() or 0)
+        except (OSError, ValueError):
+            pass
+    return o
+
+
 def clock():
-    return dt.datetime.now() + dt.timedelta(seconds=float(os.environ.get("RUNNER_CLOCK_OFFSET_S", "0") or 0))
+    return dt.datetime.now() + dt.timedelta(seconds=offset())
+
+
+def nap(seconds):
+    """time.sleep that notices a sleep / hibernate of the PC: returns the gap in seconds (0 = none). The runner goes on
+    from where it was (the checkpoint is state.json); every caller reads the windows from the real clock again"""
+    t0 = time.time() + offset()
+    time.sleep(seconds)
+    gap = time.time() + offset() - t0 - seconds
+    if gap <= SLEEP_GAP_S:
+        return 0.0
+    append_log(LOG, f"resumed after sleep (gap {gap / 60:.0f} min); continue from the checkpoint, windows checked "
+                    f"again at {clock():%H:%M}")
+    keep_awake()  # the request of this process survives a sleep; set again to be sure
+    if NOTIFY_ALL:
+        tell("TIEP TUC SAU KHI NGU / resumed", STEPS[counts()[1]],
+             f"may thuc lai sau {gap / 60:.0f} phut ngu; tiep tuc tu diem luu")
+    status(force=True)
+    return gap
 
 
 # ------------------------------------------------------------------ state, status, notifications
@@ -151,7 +204,7 @@ def state_error(why):
         title = f"{TITLE}: LOI TRANG THAI / state error"
         text = (f"{RUN_NAME}: state.json {why}. Runner KHONG chay buoc nao; nguoi van hanh phai kiem tra state.json "
                 f"(state.json.bak / .bak2 = trang thai tot truoc do) ({stamp()})")
-        res = notify.send(title, text, "high", LOG, toast="toast" in CHANNELS, ntfy="ntfy" in CHANNELS)
+        res = notify.send(title, text, "high", LOG, toast="toast" in CHANNELS, ntfy="ntfy" in CHANNELS, queue=False)
         pend = old.get("pending_alerts") or []
         if "ntfy" in CHANNELS and not res.get("ntfy"):
             pend.append({"title": title, "text": text, "priority": "high", "at": stamp()})
@@ -197,8 +250,27 @@ def expected_end():
     return None if S.get("state") in TERMINAL else stamp(time.time() + left)
 
 
+def check_power():
+    """notify (high) when the PC goes on battery and when the charger is back; the first check alerts only on battery"""
+    global ON_AC
+    ac, pct = power()
+    if ac is None or ac == ON_AC:
+        return
+    first, ON_AC = ON_AC is None, ac
+    if not ac:
+        append_log(LOG, f"power: on battery ({pct}%)")
+        tell("CHAY PIN / on battery", STEPS[counts()[1]], f"may dang chay PIN ({pct}%): cam sac ngay", True)
+    elif not first:
+        append_log(LOG, f"power: charger connected ({pct}%)")
+        tell("DA CAM SAC / on AC", STEPS[counts()[1]], f"da cam sac lai ({pct}%)")
+
+
 def status(force=False):
-    global last_status
+    global last_status, LAST_FLUSH
+    check_power()
+    if time.time() - LAST_FLUSH >= 60 and notify.queued():  # offline messages: one summary when back online
+        LAST_FLUSH = time.time()
+        notify.flush_queue(LOG)
     if not force and time.time() - last_status < float(PLAN.get("status_every_s", DEFAULTS["status_every_s"])):
         return
     last_status = time.time()
@@ -244,8 +316,9 @@ def status(force=False):
 
 def tell(event, step, text, high=False, final=False):
     msg = f"{S['run']} {STEPS.index(step) + 1}/{len(STEPS)} {step['id']} {step.get('title', '')}: {text} ({stamp()})"
+    # a final alert whose ntfy send failed goes to PENDING (resent by the watchdog), not to the offline queue
     res = notify.send(f"{TITLE}: {event}", msg, "high" if high else "default", LOG, toast="toast" in CHANNELS,
-                      ntfy="ntfy" in CHANNELS)
+                      ntfy="ntfy" in CHANNELS, queue=not final)
     if final and "ntfy" in CHANNELS and not res.get("ntfy"):
         PENDING.append({"title": f"{TITLE}: {event}", "text": msg, "priority": "high" if high else "default",
                         "at": stamp()})
@@ -310,7 +383,7 @@ def check(step, spec, kind):
         ram, com = mem()
         t = clock()
         names = {"free_commit_mb": com, "free_ram_mb": ram, "hour": t.hour, "minute": t.minute, "weekday": t.weekday(),
-                 "today": t.date().isoformat(), "True": True, "False": False, **funcs}
+                 "today": t.date().isoformat(), "on_ac": power()[0] is True, "True": True, "False": False, **funcs}
         try:
             tree = ast.parse(spec["expr"], mode="eval")
             called = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
@@ -346,6 +419,17 @@ def run_step(i, step):
     if st["status"] in ("RUNNING", "STARTING"):
         old = st.get("child_pid"), st.get("child_created")
         orphan = alive(*old)
+        if orphan and opt(step, "orphan_wait"):
+            # owner 05/11 (install step): a leftover child is never killed; wait until it ends, then the step runs again
+            # (resumable: the install step sees the version already installed)
+            append_log(LOG, f"{sid}: interrupted run, leftover child pid {old[0]} still running -> wait for it")
+            set_run("WAITING", f"leftover child pid {old[0]} of {sid} still running")
+            if NOTIFY_ALL:
+                tell("CHO / waiting", step, f"buoc cu (pid {old[0]}) van chay: cho no ket thuc, khong dung")
+            while alive(*old):
+                status()
+                nap(float(opt(step, "poll_s")))
+            orphan = False
         krc = kill_tree(old[0]) if orphan else None  # child of a dead runner: stop it, the step runs again (resumable)
         append_log(LOG, f"{sid}: interrupted run (runner / PC restart) -> run again"
                         + (f"; leftover child pid {old[0]} killed (taskkill exit {krc})" if orphan else ""))
@@ -363,13 +447,17 @@ def run_step(i, step):
         why = window_block(step)
         if why:
             pre_last = None
+        elif opt(step, "needs_network") and not net_up():
+            why, pre_last = NET_WAIT, None  # no time limit, not counted as precondition wait
         elif step.get("precondition"):
             ok, det = check(step, step["precondition"], "precondition")
             if ok:
                 pre_waited, pre_last = 0.0, None
             else:
-                now = time.time()
-                pre_waited += now - pre_last if pre_last else 0.0
+                now = time.time() + offset()  # offset: test clock only (0 in real use)
+                # one pass counts at most wait_poll_s + 60 s: a sleep inside a precondition command / notification
+                # is not precondition wait
+                pre_waited += min(now - pre_last, float(opt(step, "wait_poll_s")) + 60) if pre_last else 0.0
                 pre_last = now
                 why = f"precondition not met ({det})"
                 if pre_waited > float(opt(step, "precondition_wait_minutes")) * 60:
@@ -377,12 +465,17 @@ def run_step(i, step):
                     end("FAILED", step, why, "LOI / error")
         if not why and mem()[1] < float(opt(step, "min_free_commit_mb")):
             why = f"free commit < {opt(step, 'min_free_commit_mb')} MB"
+        if not why:
+            why = ops_lock_block(RUN_NAME)
         if why:
             if S.get("reason") != why or S.get("state") != "WAITING":
                 append_log(LOG, f"{sid}: waiting - {why}")
                 set_run("WAITING", why)
+                if NOTIFY_ALL:
+                    tell("CHO / waiting", step, why)
             status()
-            time.sleep(float(opt(step, "wait_poll_s")))
+            if nap(60.0 if why == NET_WAIT else float(opt(step, "wait_poll_s"))):
+                pre_last = None  # the time asleep is not precondition wait
             continue
         # ---- run: the attempt is checkpointed BEFORE the launch (an unwritable state.json exits here, no child)
         st["attempts"] += 1
@@ -398,14 +491,16 @@ def run_step(i, step):
         S["child_pid"] = p.pid
         append_log(LOG, f"{sid}: start attempt {st['attempts']} (pid {p.pid})")
         set_run("RUNNING", "")
+        if NOTIFY_ALL:
+            tell("BAT DAU / step start", step, f"lan chay {st['attempts']}, du kien {opt(step, 'eta_minutes')} phut")
         stop = None
         while p.poll() is None:
-            stop = window_block(step) or (f"free commit < {opt(step, 'stop_free_commit_mb')} MB"
+            stop = (window_block(step) if opt(step, "window_kills") else None) or (f"free commit < {opt(step, 'stop_free_commit_mb')} MB"
                                           if mem()[1] < float(opt(step, "stop_free_commit_mb")) else None)
             if stop:
                 break
             status()
-            time.sleep(float(opt(step, "poll_s")))
+            nap(float(opt(step, "poll_s")))
         rc = stop_child(p) if stop else p.wait()
         if stop and rc is None:
             st["status"] = "FAILED"
@@ -417,6 +512,8 @@ def run_step(i, step):
             key = "memory_stops" if stop.startswith("free commit") else "window_stops"
             st[key] = st.get(key, 0) + 1
             append_log(LOG, f"{sid}: killed ({stop}); runs again later")
+            if NOTIFY_ALL:
+                tell("DUNG GIUA CHUNG / killed", step, f"bi dung ({stop}); se chay lai sau", True)
             if key == "memory_stops" and st[key] > int(opt(step, "max_memory_stops")):
                 st["status"] = "FAILED"
                 end("FAILED", step, f"{st[key]} memory stops", "LOI / error")
@@ -446,7 +543,10 @@ def run_step(i, step):
             st["status"] = "PENDING"
             append_log(LOG, f"{sid}: temporary error ({why}) -> retry {st['retries_used']}/{opt(step, 'retries')}")
             set_run("WAITING", f"retry after temporary error ({why})")
-            time.sleep(float(opt(step, "retry_delay_s")))
+            if NOTIFY_ALL:
+                tell("LOI TAM / retry", step, f"loi tam ({why}), thu lai {st['retries_used']}/{opt(step, 'retries')} "
+                     f"sau {int(float(opt(step, 'retry_delay_s')) / 60)} phut", True)
+            nap(float(opt(step, "retry_delay_s")))
             continue
         st["status"] = "FAILED"
         end("FAILED", step, f"failed: {why}" + (" (retries used)" if temp else ""), "LOI / error")
@@ -478,6 +578,9 @@ if S.get("state") in TERMINAL:
     sys.exit(0)  # finished or stopped for good: the 5-minute task start does nothing
 if S.get("state") != "WAITING_APPROVAL":
     append_log(LOG, f"runner start pid {os.getpid()} ({S['run']}, state {S.get('state')})")
+    if NOTIFY_ALL:
+        tell("RUNNER CHAY / runner start", STEPS[counts()[1]], f"trang thai {S.get('state')}")
+append_log(LOG, f"keep awake: {'on' if keep_awake() else 'FAILED'}")
 save()  # state.json writable? checked before any step process starts
 for idx, step in enumerate(STEPS):
     if S["steps"][step["id"]]["status"] != "DONE":

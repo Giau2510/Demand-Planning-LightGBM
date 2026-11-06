@@ -9,7 +9,7 @@
 #>
 param([string]$RunDir, [string]$TaskName = "DemandForecastRunnerWatchdog", [double]$StaleMinutes = 15,
       [double]$DebounceMinutes = 30, [string]$Python, [string]$RunnerTask = "DemandForecastRunner", [switch]$NoProd,
-      [string[]]$IgnorePath = @("D:\Buymed\tmp\runner_test"),
+      [string[]]$IgnorePath,
       [switch]$Unregister, [switch]$PlanOnly, [switch]$WhatIf, [switch]$Disabled)
 $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
@@ -22,6 +22,11 @@ if ($Unregister) {
     exit 0
 }
 if (-not $RunDir) { Write-Host "-RunDir is required" -ForegroundColor Red; exit 2 }
+# default as ops_config.TMP: env DF_OPS_TMP, else <folder above the project root>\tmp
+if (-not $IgnorePath) {
+    $tmpDir = if ($env:DF_OPS_TMP) { $env:DF_OPS_TMP } else { Join-Path (Split-Path (Split-Path (Split-Path (Split-Path $here)))) "tmp" }
+    $IgnorePath = @(Join-Path $tmpDir "runner_test")
+}
 if (-not $Python) { $Python = Join-Path (Split-Path (Split-Path (Split-Path $here))) ".venv\Scripts\pythonw.exe" }
 if (-not (Test-Path $Python)) { Write-Host "python not found: $Python" -ForegroundColor Red; exit 2 }
 $inv = [Globalization.CultureInfo]::InvariantCulture

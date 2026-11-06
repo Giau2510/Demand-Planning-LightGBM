@@ -60,3 +60,14 @@ client_secret*.json
 /backend/tests/test_v121_remote_proxy.py
 /backend/tests/test_remote_link.py
 /docs/03_van_hanh/link_tu_xa.md
+
+# operations tooling (scripts/ops): machine-specific configuration, the ntfy topic, offline queue, run outputs
+/scripts/ops/ops_config.json
+/scripts/ops/runner/notify_config.json
+notify_queue*.json
+notify_queue.lock
+/scripts/ops/**/__pycache__/
+/run/
+/scripts/ops/tests/t/
+/scripts/ops/tests/work/
+/scripts/ops/tests/t_small/
