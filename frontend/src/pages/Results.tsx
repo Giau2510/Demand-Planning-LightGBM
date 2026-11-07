@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { get, post, qs } from "../api";
 import { useSystem } from "../App";
 import { useI18n } from "../i18n";
-import { AssessmentBox, Card, DateInput, Empty, ErrorBox, Field, FilterBar, JobProgress, LineChart, Loading, MethodLabel, PageHeader, Pager, SearchInput, SourceBadge, Stat, Term, fmtDate, fmtNum, fmtPct, fmtSignedPct, fmtTime, isoWeekday, useAction, useAsync, weekdayLabel } from "../components/ui";
+import { AssessmentBox, Card, DateInput, Empty, ErrorBox, Field, FilterBar, JobProgress, LineChart, Loading, MethodLabel, PageHeader, Pager, Pill, SearchInput, SourceBadge, Stat, Term, fmtDate, fmtNum, fmtPct, fmtSignedPct, fmtTime, isoWeekday, useAction, useAsync, weekdayLabel } from "../components/ui";
 import { Icon } from "../components/icons";
 import { HorizonPicker } from "./Dashboard";
 import ExplainPanel from "./ExplainPanel";
@@ -24,6 +24,14 @@ export function ActualCell({ value, actual }: { value: number | null | undefined
 export function ProductName({ name }: { name?: string | null }) {
   const { t } = useI18n();
   return name ? <span data-testid="product-name">{name}</span> : <span className="muted small" data-testid="product-name-missing">{t("fc.no_product_name")}</span>;
+}
+
+/** 1.4.6: column cach_tinh of the daily Excel - SEL2 (days 1..7) or the weekly estimate (days 8..20, marked). */
+export function CachTinh({ code }: { code?: string | null }) {
+  const { t } = useI18n();
+  if (!code) return <span className="muted small">—</span>;
+  return code === "SEL2" ? <span className="small muted" data-testid="cach-tinh">{t("fc.cach.SEL2")}</span>
+    : <span title={code} data-testid="cach-tinh-estimate"><Pill status="WARNING" label={t(`fc.cach.${code}`)} /></span>;
 }
 
 export function ActualNotice({ actual, run }: { actual: any; run?: any }) {
@@ -85,9 +93,9 @@ export default function Results() {
 
   const filters = { horizon: h, sku_id: sku, fc_id: fc, q: qd };
   const summary = useAsync(() => (!runId ? Promise.resolve(null)
-    : sel2 ? get(`/api/daily-forecast/sel2-summary${qs({ run_id: runId, ...filters, limit: PAGE, offset: page * PAGE })}`)
+    : sel2 ? get(`/api/daily-forecast/sel2-summary${qs({ run_id: runId, ...filters, date_from: from, date_to: to, limit: PAGE, offset: page * PAGE })}`)
     : get(`/api/forecast-runs/${runId}/summary${qs({ ...filters, limit: PAGE, offset: page * PAGE })}`)),
-    [runId, sel2, h, sku, fc, qd, page]);
+    [runId, sel2, h, sku, fc, qd, page, sel2 ? from : "", sel2 ? to : ""]);
   const daily = useAsync(() => (!runId || tab !== "daily" ? Promise.resolve(null)
     : sel2 ? get(`/api/daily-forecast/sel2-values${qs({ run_id: runId, ...filters, date_from: from, date_to: to, limit: PAGE, offset: page * PAGE })}`)
     : get(`/api/forecast-runs/${runId}/values${qs({ ...filters, date_from: from, date_to: to, limit: PAGE, offset: page * PAGE })}`)),
@@ -114,7 +122,10 @@ export default function Results() {
   const total = tab === "totals" ? s?.n_series ?? 0 : daily.data?.total ?? 0;
   const actual = s?.actual;
   const today = actual?.date;
-  const nFilters = [q.trim(), sku, fc, tab === "daily" ? from : "", tab === "daily" ? to : ""].filter(Boolean).length;
+  // 1.4.6: a SEL2 run filters the target dates on both tabs (the totals too); a 1.3.x run on the daily tab only
+  const dateFilter = tab === "daily" || sel2;
+  const estFrom: number | undefined = r?.sel2 ? r.estimate_from : undefined;
+  const nFilters = [q.trim(), sku, fc, dateFilter ? from : "", dateFilter ? to : ""].filter(Boolean).length;
   const clearFilters = () => { setQ(""); setQd(""); setSku(""); setFc(""); setFrom(""); setTo(""); };
 
   return (
@@ -140,11 +151,12 @@ export default function Results() {
               ))}
             </select>
           </Field>
-          {r && <HorizonPicker value={h} onChange={setH} options={horizonOptions} />}
+          {r && <HorizonPicker value={h} onChange={setH} options={horizonOptions} estimateFrom={estFrom} />}
           {r && <a className="btn" href={sel2 ? `/api/sel2/export/${r.forecast_date}` : `/api/forecast-runs/${runId}/export.xlsx?horizon=${h}&lang=${lang}`} title={t("fc.export_scope")}>
             <Icon name="export" />{t("fc.export")} ({lang.toUpperCase()})</a>}
         </div>
         <p className="small muted">{t("fc.horizon_help")}</p>
+        {estFrom && <p className="small" data-testid="estimate-note"><Pill status="WARNING" label={t("fc.cach.UOC_TINH_THEO_TUAN")} /> {t("fc.estimate_note")}</p>}
         {cov && (
           <div className="small">
             {t("hz.in_run")}: <b>{cov.run_horizons.join(", ")} {t("common.days")}</b> · {t("hz.configured")}: <b>{cov.configured.join(", ")} {t("common.days")}</b>
@@ -163,7 +175,7 @@ export default function Results() {
 
       {r && s && (
         <div className="grid4">
-          <Stat icon="chart" label={`${t("fc.total")} (${h} ${t("common.days")})${nFilters ? ` · ${t("fc.filtered")}` : ""}`} value={fmtNum(s.grand_total)} sub={`${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}`} />
+          <Stat icon="chart" label={`${t("fc.total")} (${h} ${t("common.days")}${estFrom && h >= estFrom ? ` · ${t("fc.estimate_tag")}` : ""})${nFilters ? ` · ${t("fc.filtered")}` : ""}`} value={fmtNum(s.grand_total)} sub={`${fmtDate(s.start_date)} → ${fmtDate(s.end_date)}`} />
           <Stat icon="model" label={<Term id="model_version">{t("fc.model_version")}</Term>} value={<span className="mono small">{r.model_version}</span>} sub={`${t("fc.run_id")}: ${r.id}`} />
           <Stat icon="bigquery" label={t("common.source")} value={<SourceBadge source={r.data_source} />} sub={<span className="mono small">{r.scope_key}</span>} />
           <Stat icon="clock" label={<Term id="origin">{t("fc.origin")}</Term>} value={fmtDate(r.forecast_origin)} sub={`${t("fc.data_as_of")}: ${fmtDate(r.data_as_of)} · ${t("fc.run_at")}: ${fmtTime(r.created_at)}`} />
@@ -208,7 +220,7 @@ export default function Results() {
               {r?.fcs?.map((x: string) => <option key={x} value={x}>{x}</option>)}
             </select>
           </Field>
-          {tab === "daily" && (
+          {dateFilter && (
             <>
               <Field label={t("common.from")}><DateInput value={from} onChange={setFrom} ariaLabel={t("common.from")} /></Field>
               <Field label={t("common.to")}><DateInput value={to} onChange={setTo} ariaLabel={t("common.to")} /></Field>
@@ -248,7 +260,7 @@ export default function Results() {
           <div className="scroll">
             <table className="tbl">
               <thead><tr><th>{t("fc.sku")}</th><th>{t("fc.product_name")}</th><th>{t("fc.fc")}</th><th>{t("fc.date")}</th><th title={t("fc.weekday_help")}>{t("fc.weekday")}</th><th className="num">{t("fc.qty")}</th>
-                <th className="num" title={t("actual.col_help")}>{t("actual.col_so_far")}</th><th>{t("fc.method")}</th><th></th></tr></thead>
+                <th className="num" title={t("actual.col_help")}>{t("actual.col_so_far")}</th><th>{t("fc.method")}</th>{sel2 && <th>{t("fc.cach_tinh")}</th>}<th></th></tr></thead>
               <tbody>
                 {daily.data.rows.map((x: any) => (
                   <tr key={x.sku_id + x.fc_id + x.target_date}><td className="sku">{x.sku_id}</td><td className="pname"><ProductName name={x.product_name} /></td><td className="nowrap">{x.fc_id}</td><td className="nowrap">{fmtDate(x.target_date)}</td>
@@ -258,6 +270,7 @@ export default function Results() {
                     <td className="num">{fmtNum(x.forecast_qty)}</td>
                     <td className="num"><ActualCell value={x.actual_today} actual={daily.data.actual} /></td>
                     <td className="small method-c"><MethodLabel code={x.method} /></td>
+                    {sel2 && <td className="nowrap"><CachTinh code={x.cach_tinh} /></td>}
                     <td className="nowrap">{sel2 ? <span className="muted small" data-testid="explain-na">—</span> : <button className="link" onClick={() => setExplain({ sku: x.sku_id, fc: x.fc_id, date: x.target_date })}>{t("ex.open")}</button>}</td></tr>
                 ))}
               </tbody>

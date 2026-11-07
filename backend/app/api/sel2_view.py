@@ -4,12 +4,14 @@ The rows are built by export._rows - the owner's fixed rule (forecast_used / fal
 here - from the same inputs as export.write_daily_export: the numbers of the run (export._run_values), the previous-run
 numbers of D-3 .. D-1 (R3'), the AVG_DEMAND values of day D (seller rule of the settings), the forecast source per
 SKU x FC and the product names. The run shown is "today's run" of its forecast day: for the newest run of that day the
-rows equal those of the Excel of the day (horizon 1..7, sheets DU_BAO_<fc_code>); horizons 8..20 of the Excel are a
-weekly estimate (cach_tinh UOC_TINH_THEO_TUAN) and are not shown on the pages.
+rows equal those of the Excel of the day (sheets DU_BAO_<fc_code>). 1.4.6 (C4): the pages show the 20 days of the Excel
+(H_ALL): horizon 1..7 SEL2 and horizon 8..20 the weekly estimate (cach_tinh UOC_TINH_THEO_TUAN), both built by
+export._rows20 from the rows of export._rows (the generator of the file, column cach_tinh included).
 
 One view (inputs + forecast_used per SKU x FC x horizon) is kept in memory for VIEW_TTL_SECONDS, keyed by the run,
 the AVG_DEMAND read, the seller rule and the source configuration (a change of either builds a new view); at most ONE
-view is cached (about 115 MiB at 58k SKU x FC, given back at the next build / expiry) and one build runs at a time.
+view is cached (about 125 MiB at 58k SKU x FC with 20 days, given back at the next build / expiry) and one build runs
+at a time.
 
 Forecast source configuration of a run that HAS a daily Excel (export_runs.refresh_run_id = the run): the configuration
 AS OF the newest such export (config_as_of: today's table with every later change of the append-only
@@ -38,9 +40,10 @@ from ..ml.sel2 import avg_demand, export
 from ..timeutil import VN_TZ, parse_iso
 
 SEL2_PREFIX = "SEL2:"
-HORIZON = export.HORIZON                 # the pages show horizon 1..7 (the SEL2 rows of the Excel)
+HORIZON = export.HORIZON                 # horizon 1..7: the SEL2 rows of the Excel
+H_ALL = export.H_ALL                     # 1.4.6: the pages show horizon 1..20 (8..20 = weekly estimate, cach_tinh)
 VIEW_TTL_SECONDS = 600
-COLS = export.COLUMNS
+COLS = export.COLUMNS20
 AVG_FLAG = "AVG_READ_NOT_PINNED"
 _I = {c: i for i, c in enumerate(COLS)}
 _lock = threading.Lock()
@@ -57,13 +60,14 @@ def vn_time(ts: str | None) -> str | None:
 
 
 class View:
-    """Inputs of export._rows for one run + forecast_used per SKU x FC (7 horizons) for totals."""
+    """Inputs of export._rows for one run + forecast_used per SKU x FC (20 horizons, as the Excel) for totals."""
 
     def __init__(self, c, run: dict):
         cfg = ss.get("sel2_pipeline", c)
         self.run = run
         self.d = d = date.fromisoformat(str(run["forecast_date"])[:10])
-        self.days = days = [(d + timedelta(days=i)).isoformat() for i in range(HORIZON)]
+        self.days = [(d + timedelta(days=i)).isoformat() for i in range(H_ALL)]   # target dates of horizon 1..20
+        days = self.days[:HORIZON]                          # the numbers of the runs: horizon 1..7
         # as export.write_daily_export with the run as today's run (not stale, reference run = the run)
         self.run_keys, self.vals = export._run_values(c, run, days)
         prev_runs = export._previous_runs(c, run["scope_key"], d)
@@ -89,12 +93,12 @@ class View:
         self.used: dict[tuple, tuple] = {}
         self.model: dict[tuple, str | None] = {}
         self.source: dict[tuple, str | None] = {}
-        rows = self.rows(self.keys)
+        rows = self.rows20(self.keys)
         i_used, i_m, i_s = _I["forecast_used"], _I["model_used"], _I["forecast_source"]
         for k in self.keys:
-            g = [next(rows) for _ in range(HORIZON)]
+            g = [next(rows) for _ in range(H_ALL)]
             self.used[k] = tuple(r[i_used] for r in g)
-            self.model[k] = next((r[i_m] for r in g if r[i_m]), None)
+            self.model[k] = next((r[i_m] for r in g[:HORIZON] if r[i_m]), None)
             self.source[k] = g[0][i_s]
         self.built_at = time.monotonic()
 
@@ -103,6 +107,10 @@ class View:
         stats = {"rows_by_fallback_reason": {}, "flag_rows": {}}
         return export._rows(self.d, keys, self.run, self.run_keys, self.vals, self.avg, self.conf, self.names, False,
                             stats, self.prev, True)
+
+    def rows20(self, keys):
+        """export._rows20 of these SKU x FC (20 rows each, horizon 1..20, COLUMNS20 order): the rows of the Excel."""
+        return export._rows20(self.rows(keys), self.d)
 
     def filter(self, sku: str | None = None, fc: str | None = None, q: str | None = None,
                group: str | None = None) -> list[tuple]:
@@ -121,7 +129,7 @@ class View:
 
 
 def row_dict(r: list) -> dict:
-    """An export row as a JSON object (dates as ISO strings)."""
+    """An export row (COLUMNS20) as a JSON object (dates as ISO strings)."""
     out = dict(zip(COLS, r))
     for c in ("forecast_date", "target_date", "data_cutoff_date"):
         if isinstance(out[c], date):
@@ -249,7 +257,7 @@ def page(v: View, keys: list[tuple], horizon: int | None, offset: int, limit: in
          date_from: str | None = None, date_to: str | None = None, h_max: int | None = None) -> tuple[int, list[dict]]:
     """(total rows, rows of one page) of these SKU x FC: horizon = one horizon, h_max = horizons 1..h_max, date_from /
     date_to = target date range; order = the order of `keys` (given by the caller), then horizon."""
-    hs = [h for h in range(1, HORIZON + 1) if (horizon is None or h == horizon) and (h_max is None or h <= h_max)
+    hs = [h for h in range(1, H_ALL + 1) if (horizon is None or h == horizon) and (h_max is None or h <= h_max)
           and (not date_from or v.days[h - 1] >= date_from) and (not date_to or v.days[h - 1] <= date_to)]
     per = len(hs)
     total = per * len(keys)
@@ -257,7 +265,7 @@ def page(v: View, keys: list[tuple], horizon: int | None, offset: int, limit: in
         return total, []
     k0, k1 = offset // per, -(-(offset + limit) // per)
     sel = set(hs)
-    rows = [r for r in v.rows(keys[k0:k1]) if r[_I["horizon"]] in sel]
+    rows = [r for r in v.rows20(keys[k0:k1]) if r[_I["horizon"]] in sel]
     start = offset - k0 * per
     return total, [row_dict(r) for r in rows[start:start + limit]]
 

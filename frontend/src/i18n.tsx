@@ -1748,6 +1748,15 @@ export const DICT: Record<string, [string, string]> = {
     "Today ({d}): using the published SEL2 numbers of {t} (run {run}) for {target}."],
   "fc.sel2_no_quality": ["Lần chạy SEL2: chưa có đánh giá chất lượng kiểu WAPE cho lần chạy này – xem trang Chất lượng mô hình.",
     "SEL2 run: no WAPE-type quality assessment for this run – see the Model quality page."],
+  // 1.4.6 C4: the 20 days of the daily Excel on the forecast pages (8..20 = weekly estimate, column cach_tinh)
+  "fc.cach_tinh": ["Cách tính", "Calculation"],
+  "fc.cach.SEL2": ["SEL2", "SEL2"],
+  "fc.cach.UOC_TINH_THEO_TUAN": ["Ước tính theo tuần", "Weekly estimate"],
+  "fc.estimate_tag": ["có ngày ước tính", "with estimated days"],
+  "fc.estimate_note": ["Ngày 1–7: số SEL2. Ngày 8–20: ƯỚC TÍNH theo tuần (cach_tinh UOC_TINH_THEO_TUAN – lấy số của cùng thứ trong tuần ở ngày 1–7), không phải SEL2; số giống hệt file Excel 20 ngày.",
+    "Days 1–7: SEL2 numbers. Days 8–20: weekly ESTIMATE (cach_tinh UOC_TINH_THEO_TUAN – the number of the same weekday in days 1–7), not SEL2; the numbers equal the 20-day Excel file."],
+  "fc.target_from": ["Từ ngày dự báo", "Target date from"],
+  "fc.target_to": ["Đến ngày dự báo", "Target date to"],
 };
 
 type Ctx = { lang: Lang; setLang: (l: Lang) => void; t: (k: string) => string; pick: (o?: { vi?: string; en?: string } | null) => string };

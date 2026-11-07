@@ -82,9 +82,9 @@ describe("1.4.4 info line and unchanged titles on every forecast page", () => {
     const cell = await screen.findByText("MEDX.A");
     const row = cell.closest("tr")!;
     const head = Array.from(row.closest("table")!.querySelectorAll("thead th")).map((th) => th.textContent);
-    // exactly the header of 1.4.3 (the source column needs the LIGHTGBM key list, unavailable in this mock)
+    // the header of 1.4.3 (the source column needs the LIGHTGBM key list, unavailable in this mock) + 1.4.6 Cách tính
     expect(head).toEqual(["Ngày lập", "Ngày", "Ngày thứ", "FC/kho", "SKU", "Tên sản phẩm", "Nhóm", "LightGBM gốc", "Số công bố",
-      "Phương pháp", "Cờ"]);
+      "Phương pháp", "Cách tính", "Cờ"]);
     const cells = Array.from(row.querySelectorAll("td")).map((td) => td.textContent);
     expect(cells.length).toBe(head.length);                                       // header and row stay aligned
     expect(cells[head.indexOf("Số công bố")]).toBe(String(ROW.forecast_used));    // page number = forecast_used
