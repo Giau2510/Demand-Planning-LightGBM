@@ -98,8 +98,9 @@ def _history_parts(day, idx, candidates, history, history_start, W=WINDOW_DAYS):
 
 
 def _scores(day, idx, candidates, history, actuals, open_days, groups, history_start, history_scope,
-            W=WINDOW_DAYS):
-    """rate[C, S], shortage[C, S] (float32 sums like ct_select), nday[S]; one candidate at a time."""
+            W=WINDOW_DAYS, counts: dict | None = None):
+    """rate[C, S], shortage[C, S] (float32 sums like ct_select), nday[S]; one candidate at a time. counts (1.4.6): when
+    given, receives n_cells[C, S] and n_dung[C, S] (the cells and the DUNG cells behind rate)."""
     C, S = len(candidates), len(idx)
     # day grids of the window D-28 .. D-1 (index 0 .. 27)
     is_open = np.zeros((S, W), dtype=bool)
@@ -144,13 +145,15 @@ def _scores(day, idx, candidates, history, actuals, open_days, groups, history_s
         nday = np.minimum(nday, np.bincount(np.unique(k * W + t) // W, minlength=S))
     with np.errstate(all="ignore"):
         rate = np.where(n_cells > 0, n_dung / n_cells, -1.0)
+    if counts is not None:
+        counts.update(n_cells=n_cells, n_dung=n_dung.astype(np.int64))
     return rate, under.astype(np.float64), nday
 
 
 def select_day(day: date, scope_keys: pd.DataFrame, cand_today: dict, history, actuals: pd.DataFrame,
                open_days: pd.DataFrame, groups, history_start: date | None = None,
                history_scope: pd.DataFrame | None = None, candidates=CANDIDATES, best: str = BEST,
-               window_days: int = WINDOW_DAYS, min_days: int = MIN_DAYS) -> pd.DataFrame:
+               window_days: int = WINDOW_DAYS, min_days: int = MIN_DAYS, detail: dict | None = None) -> pd.DataFrame:
     """SEL2 forecast of D for the series of scope_keys (sku_code, fc_code; the scope of D).
 
     cand_today: candidate -> frame (sku_code, fc_code, horizon, value) of its forecast of D (horizons 1..7);
@@ -163,7 +166,11 @@ def select_day(day: date, scope_keys: pd.DataFrame, cand_today: dict, history, a
     series in scope of each forecast day (None = every history row counts); window_days / min_days: the selection
     window (target days D-window_days .. D-1) and the days needed for ok (sel2_pipeline; defaults 28 / 14).
     Returns OUT_COLS, one row per series x horizon (series in the order of scope_keys); raises ValueError when the
-    chosen value is missing (a missing forecast is never published as a number)."""
+    chosen value is missing (a missing forecast is never published as a number).
+    detail (1.4.6, sheet GIAI_THICH): when given, receives the arrays of this selection (series in the order of
+    scope_keys): candidates, keys (MultiIndex), value_h1[C, S] (forecast of D at horizon 1, NaN = none), n_cells /
+    n_dung / rate / shortage[C, S], nday, ok, first / second (candidate index), second_ok[S]. The selection is
+    unchanged."""
     day = pd.Timestamp(day).date()
     candidates = list(candidates)
     C, H = len(candidates), HORIZONS
@@ -183,8 +190,9 @@ def select_day(day: date, scope_keys: pd.DataFrame, cand_today: dict, history, a
         if pd.Series(k[m] * H + hz[m]).duplicated().any():
             raise ValueError(f"{c}: more than one forecast row of D for a series and horizon")
         val[candidates.index(c), k[m], hz[m] - 1] = fr["value"].to_numpy(dtype=float)[m]
+    counts = {} if detail is not None else None
     rate, under, nday = _scores(day, idx, candidates, history, actuals, open_days, groups, history_start, history_scope,
-                                window_days)
+                                window_days, counts)
 
     have = ~np.isnan(val[:, :, 0])                   # candidate has a forecast of D for the series (horizon 1)
     score = np.where(have, rate, -2.0)
@@ -200,6 +208,9 @@ def select_day(day: date, scope_keys: pd.DataFrame, cand_today: dict, history, a
         raise ValueError(f"{day}: {n} series in scope without a forecast of the chosen candidates")
     names = np.array(candidates, dtype=object)
     model = np.where(second_ok, names[first] + "+" + names[second], "FALLBACK:" + best)
+    if detail is not None:
+        detail.update(candidates=list(candidates), keys=idx, value_h1=val[:, :, 0].copy(), rate=rate, shortage=under,
+                      nday=nday, ok=ok, first=first, second=second, second_ok=second_ok, **counts)
     out = pd.DataFrame({
         "sku_code": np.repeat(idx.get_level_values(0).to_numpy(dtype=object), H),
         "fc_code": np.repeat(idx.get_level_values(1).to_numpy(dtype=object), H),

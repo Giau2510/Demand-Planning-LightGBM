@@ -5,6 +5,28 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.4.6 (unreleased) (daily Excel: sheet GIAI_THICH explaining the number of day D)
+
+Owner decision 06/11/2026 21:20 (C3). No schema change (schema 12). The fixed forecast_used rule (CLAUDE.md) and every
+cell of the sheets `DU_BAO_<fc_code>` / `CONFIG` are unchanged; TOM_TAT only gets lines at its end when the new sheet
+is written.
+
+* **Sheet `GIAI_THICH`** (`ml/sel2/giai_thich.py`, `export.py`), after the `DU_BAO_*` sheets: one row per SKU x FC with
+  a `lightgbm_forecast` at horizon 1 - model used, the raw forecast of D of each of the 6 SEL2 candidates (the stored
+  `candidate_forecasts`), their DUNG / scored cells in the selection window (the scoring of `select.py`), the FALLBACK
+  reason, history (D-1, mean 7 / 28 days, median 28 days, open / selling days, last sale), the 3 strongest TreeSHAP
+  factors of the LightGBM model (Vietnamese feature names, multipliers) and `ly_do` when `forecast_used` = 0. How to
+  read it: the `giai_thich*` lines of TOM_TAT. Docs: `docs/06_ban_giao/09_file_xuat.md` 2.4.
+  / Sheet GIAI_THICH: giải thích số dự báo ngày D cho từng SKU × kho.
+* **Explanation sidecar** `<models>\sel2\<scope hash>\giai_thich\<D>_<run id>.json.gz` written by `pipeline.run_day`
+  after the publication, in a **child process** (inputs freed first; free commit < 3,072 MB -> skipped; killed after
+  20 minutes). Skipped / failed / timed out -> `<D>_<run id>.status.json`, the file is written without the sheet and
+  with the file flag `GIAI_THICH_SKIPPED`; the run and its export never fail because of it. Runs published before 1.4.6
+  have no sidecar: no sheet, no flag. `select.select_day(detail=...)` / `_scores(counts=...)` expose the selection
+  arrays without changing the selection.
+* **Retention / backups**: sidecars are derived files, deleted with the candidate forecasts (forecast days before D -
+  `sel2_pipeline.retention_days`, 120 by default) and **excluded from the database backups** (`backup.py`).
+
 ## 1.4.5 (07/11/2026) (daily Excel: rounded LightGBM column, one final file per day, FALLBACK shares; history horizon 1)
 
 Owner decisions 06/11/2026 21:20 and 07/11/2026 00:55 / 01:10. No schema change (schema 12). The fixed forecast_used

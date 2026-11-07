@@ -10,9 +10,12 @@ or writes, every entry point raises / returns SEL2_DISABLED).
   candidates_for_day(D)     the 6 candidates of D for the series in scope(D): the 3 LightGBM with the models of D's week
                             (or the week before, flag MODEL_PREV_WEEK) + TSB / DOW4 / AVG7; one stored day
   select_and_publish(D)     SEL2 (select.select_day) on the stored candidates of D and of D-34 .. D-1; publication into
-                            forecast_refresh_runs / values (config_version 'SEL2:...')
+                            forecast_refresh_runs / values (config_version 'SEL2:...'); 1.4.6: run_day then builds
+                            the explanation sidecar of the run in a child process (giai_thich.py, sheet GIAI_THICH;
+                            memory gate + timeout, a failure never fails the run or its export)
   run_day(D)                free commit >= DAY_MIN_COMMIT_MB (else SEL2_LOW_MEMORY, retryable) -> inputs (open-hours lag
-                            rule, data.py) -> candidates -> selection -> publication -> retention
+                            rule, data.py) -> candidates -> selection -> publication -> (1.4.6) GIAI_THICH sidecar
+                            (child process) -> retention (+ the GIAI_THICH sidecars of the same window)
                             -> export hook (app.ml.sel2.export.write_daily_export when that module exists)
   replay(...)               reproduction on a DB COPY: trains the needed origins, candidates + SEL2 of every day, parquet
                             files (candidates.parquet read and written in row groups), nothing published
@@ -53,6 +56,8 @@ MODELS = select.CANDIDATES
 FLAG_MODEL_PREV_WEEK = "MODEL_PREV_WEEK"
 MIN_COMMIT_MB = 3072            # free commit (RAM + page file) needed before each training
 DAY_MIN_COMMIT_MB = 1500        # free commit needed to start a day's run (candidates + SEL2 + publication)
+GIAI_THICH_MIN_COMMIT_MB = MIN_COMMIT_MB   # 1.4.6: free commit needed to start the GIAI_THICH child (else skipped)
+GIAI_THICH_TIMEOUT_S = 1200                # 1.4.6: the GIAI_THICH child is killed after 20 minutes
 TRAIN_BUSY = "SEL2_TRAIN_BUSY"  # another process trains the same scope (retryable; = jobs.TRAIN_BUSY)
 OPEN_HOURS_READ_DAYS = 15
 BACKTEST_HISTORY_FLOOR = date(2026, 6, 1)
@@ -295,10 +300,12 @@ def select_and_publish(d: date, publish: bool = True, history_start: date | None
             raise Sel2Error(MISSING_FORECAST, detail=f"{d}: {', '.join(sorted(missing))}")
         today = store.read_day(c, scope_key, d)
         hist = store.History(c, scope_key, d, s.window_days)
+        det = {} if publish else None           # 1.4.6: arrays of the selection for the GIAI_THICH sidecar
         with mapped(HISTORY_INVALID):
             sel = select.select_day(d, sk, today, hist, inputs.actuals(d, s.window_days),
                                     inputs.open_days(d, s.window_days), groups, history_start=history_start,
-                                    best=s.fallback_model, window_days=s.window_days, min_days=s.min_days)
+                                    best=s.fallback_model, window_days=s.window_days, min_days=s.min_days,
+                                    detail=det)
     step("select", rows=len(sel))
     run_flags = sorted(set(flags) | set(inputs.flags) | {x for r in runs for x in (r["flags"] or "").split(",") if x})
     out = {"forecast_date": str(d), "series": len(sk), "rows": len(sel), "flags": run_flags,
@@ -314,7 +321,62 @@ def select_and_publish(d: date, publish: bool = True, history_start: date | None
                                                      store.config_version(s), trigger, job_id, detail)
         out["model_version"] = mv
         step("publish", values=out["values"])
+        out["giai_thich_detail"] = det         # 1.4.6: for run_day's GIAI_THICH child (popped there)
     return out
+
+
+def _giai_thich_cmd(args: list[str]) -> list[str]:
+    import sys
+    return [sys.executable, "-m", f"{__package__}.giai_thich", *args]
+
+
+def _giai_thich_hook(d: date, scope_key: str, run_id: str, det: dict | None) -> dict:
+    """1.4.6: sidecar of the explanation sheet GIAI_THICH of the published run, built in a CHILD PROCESS
+    (giai_thich.child_main: a native LightGBM failure, a long pred_contrib or its matrices never touch this process)
+    after the day's inputs are freed: free commit below GIAI_THICH_MIN_COMMIT_MB -> skipped; the child is killed after
+    GIAI_THICH_TIMEOUT_S. Anything but a written sidecar -> <D>_<run id>.status.json (the export flags
+    GIAI_THICH_SKIPPED); never fails the published run or its export."""
+    from . import giai_thich, jobs
+    t = time.monotonic()
+    res: dict = {"ok": False}
+    det_path = None
+    try:
+        avail = resources.snapshot().get("commit_avail")
+        if det is None:
+            res.update(status="SKIPPED", reason="NO_SELECTION_DETAIL")
+        elif avail is not None and avail / resources.MB < GIAI_THICH_MIN_COMMIT_MB:
+            res.update(status="SKIPPED_LOW_MEMORY",
+                       reason=f"free commit {avail / resources.MB:.0f} MB < {GIAI_THICH_MIN_COMMIT_MB} MB")
+        else:
+            det_path = giai_thich.sidecar_path(scope_key, d, run_id).with_suffix(".detail.npz")
+            det_path.parent.mkdir(parents=True, exist_ok=True)
+            giai_thich.save_detail(det_path, det)
+            args = [scope_key, str(d), run_id, str(det_path)]
+            child = jobs.run_child(args, GIAI_THICH_TIMEOUT_S, cmd=_giai_thich_cmd(args))
+            res.update({k: v for k, v in child.items() if k != "ok"})
+            if child.get("ok") and child.get("exit_code") == 0 and giai_thich.exists(scope_key, d, run_id):
+                res.update(ok=True, status=giai_thich.STATUS_OK)
+            else:
+                res.update(status="FAILED", reason=child.get("error") or f"exit {child.get('exit_code')}")
+    except Exception as e:  # noqa: BLE001 - explanation only (timeout: jobs.ChildError SEL2_CHILD_TIMEOUT)
+        code = getattr(e, "code", None)
+        res.update(status="TIMEOUT" if code == jobs.CHILD_TIMEOUT else "FAILED", reason=f"{type(e).__name__}: {e}"[:300])
+    finally:
+        if det_path is not None:
+            try:
+                det_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+    res["seconds_total"] = round(time.monotonic() - t, 1)
+    if not res["ok"]:
+        log.warning("sel2 giai_thich sidecar not written", extra={"ctx": {"forecast_date": str(d), "run_id": run_id,
+                                                                         "status": res.get("status"),
+                                                                         "reason": res.get("reason")}})
+    try:
+        giai_thich.write_status(scope_key, d, run_id, {k: v for k, v in res.items()})
+    except Exception:  # noqa: BLE001 - the export then shows no flag, only the log above
+        log.warning("sel2 giai_thich status not written", exc_info=True)
+    return res
 
 
 def _export_hook(d: date, trigger: str, job_id) -> dict | None:
@@ -355,10 +417,21 @@ def run_day(d: date | None = None, trigger: str = "manual", job_id=None, scope_k
     step("candidates", status=cand["status"], rows=cand.get("rows"))
     res = select_and_publish(d, inputs=inputs, scope_key=scope_key, trigger=trigger, job_id=job_id)
     res.pop("selection")
+    det = res.pop("giai_thich_detail", None)
     step("select_and_publish", rows=res["rows"], values=res.get("values"))
     inputs = None               # not needed by retention / export: freed here when this run loaded it
     resources.release_memory()
     out = {"status": "PUBLISHED", **res, "candidates": cand}
+    # 1.4.6: GIAI_THICH sidecar (child process) before the export, which shows it; never fails the run
+    out["giai_thich"] = _giai_thich_hook(d, scope_key, res["run_id"], det)
+    del det
+    step("giai_thich", ok=out["giai_thich"].get("ok"), status=out["giai_thich"].get("status"),
+         child_seconds=out["giai_thich"].get("seconds"), child_peak_mb=out["giai_thich"].get("peak_private_mb"))
+    try:
+        from . import giai_thich
+        out["retention_giai_thich"] = giai_thich.apply_retention(d, s.retention_days)
+    except Exception as e:  # noqa: BLE001 - derived files; the next run deletes again
+        out["retention_giai_thich_error"] = f"{type(e).__name__}: {e}"[:300]
     try:
         out["retention"] = store.apply_retention(d, s.retention_days)
     except Exception as e:  # noqa: BLE001 - the run stays published; the next run deletes again

@@ -309,3 +309,123 @@ def history_labels(lang: str | None) -> tuple[str, dict]:
     L["fmt_date"] = lambda d: fmt_date(d, L)
     L["fmt_time"] = lambda t: fmt_vn_time(t, L)
     return lang, L
+
+
+# 1.4.6 (owner decision 06/11/2026 21:20, C3): sheet GIAI_THICH of the daily SEL2 Excel (ml/sel2/giai_thich.py). Column
+# codes stay ASCII like the other sheets of that file; the texts below are the cell texts and the TOM_TAT lines.
+GIAI_THICH = {
+    "vi": {
+        "ly_do": {
+            "out": "ngoài phạm vi lần chạy",
+            "no_number": "không có số nào (không có lightgbm_forecast, không có avg_demand)",
+            "avg": "cấu hình AVG_DEMAND: dùng avg_demand ({v})",
+            "avg_lgbm": "cấu hình AVG_DEMAND nhưng không có avg_demand: dùng số LightGBM",
+            "closed": "không mở bán {n} ngày gần đây",
+            "closed_long": "không mở bán từ {n} ngày trở lên",
+            "prob": "xác suất có đơn thấp (P = {p} < {t})",
+            "sparse": "bán lác đác: dự báo {v} < {t}",
+            "no_sale": "không có đơn trong {n} ngày gần đây",
+            "zero": "các mô hình được chọn đều dự báo 0",
+        },
+        "fallback": {
+            "NO_OPEN_DAY": "không có ngày mở bán trong {w} ngày nên không chấm được mô hình nào",
+            "FEW_DAYS": "chỉ {n} ngày được chấm (< {m} ngày cần có trong {w} ngày)",
+            "SECOND_MISSING": "mô hình hạng 2 ({c}) không có số cho ngày D",
+        },
+        "part": {"reg": "{m} (số lượng)", "clf": "{m} (xác suất có đơn)"},
+        "not_lgbm": "mô hình được chọn không phải LightGBM",
+        "no_model": "không đọc được file mô hình {m} của lần chạy (không tính được yếu tố)",
+        "no_detail": "chưa có dữ liệu giải thích của lần chạy {r}",
+        "empty": "trống",
+        "features": {
+            "med": "Trung vị nhu cầu {w} ngày", "p25": "Mức thấp (phân vị 25%) nhu cầu {w} ngày",
+            "p75": "Mức cao (phân vị 75%) nhu cầu {w} ngày", "tmean": "Trung bình bỏ ngày đột biến {w} ngày",
+            "dow_share_8w": "Tỷ trọng thứ trong tuần (8 tuần)", "dow_share_12w": "Tỷ trọng thứ trong tuần (12 tuần)",
+            "dom_share_12w": "Tỷ trọng khoảng ngày trong tháng (12 tuần)",
+            "same_dow_mean_4": "Trung bình 4 ngày cùng thứ gần nhất",
+            "dow_order_rate_12w": "Tỷ lệ ngày cùng thứ có đơn (12 tuần)",
+        },
+        "summary": [
+            ("giai_thich", "Sheet GIAI_THICH: 1 dòng cho mỗi SKU × kho có lightgbm_forecast, ngày dự báo D (horizon 1, "
+                           "ngày đích = D). Chỉ để đọc hiểu, không thay đổi số nào ở các sheet DU_BAO_*."),
+            ("giai_thich:ly_do", "Lý do khi forecast_used = 0 (ngoài phạm vi, không mở bán, xác suất có đơn thấp, bán "
+                                 "lác đác < 0,2, không có đơn ...). Trống khi forecast_used > 0."),
+            ("giai_thich:model_used", "Mô hình SEL2 đã dùng: 'A+B' = trung bình 2 mô hình tốt nhất; FALLBACK:V33_L112 "
+                                      "= không đủ dữ liệu chấm điểm, lý do ở cột ly_do_fallback."),
+            ("giai_thich:<mô hình>_du_bao", "Số dự báo gốc (chưa làm tròn) của từng mô hình ứng viên cho ngày D, "
+                                            "đúng số đã lưu khi chạy SEL2."),
+            ("giai_thich:<mô hình>_dung / _cham", "Trong {w} ngày gần nhất (D-{w} .. D-1, ngày mở bán): số lần dự báo "
+                                                  "của mô hình được xếp 'Đúng' / số lần được chấm (mỗi ngày đích chấm "
+                                                  "tối đa 7 lần dự báo, horizon 1..7). SEL2 chọn theo tỷ lệ này."),
+            ("giai_thich:so_ngay_cham", "Số ngày đích có chấm điểm (nhỏ nhất qua các mô hình); dưới {m} ngày -> FALLBACK."),
+            ("giai_thich:lich_su", "ban_hom_qua = số bán ngày D-1; tb_7_ngay / tb_28_ngay / trung_vi_28_ngay tính trên "
+                                   "ngày lịch (ngày không có đơn = 0); so_ngay_mo_ban_28 = ngày có giờ mở bán > 0; "
+                                   "so_ngay_co_ban_28 = ngày có đơn; ngay_ban_gan_nhat trong cửa sổ dữ liệu."),
+            ("giai_thich:yeu_to", "3 yếu tố ảnh hưởng mạnh nhất tới số LightGBM (TreeSHAP của chính mô hình, "
+                                  "mo_hinh_yeu_to = mô hình LightGBM hạng cao nhất trong model_used). tac_dong = hệ số "
+                                  "nhân: > 1 kéo số lên, < 1 kéo xuống. Mô hình số lượng: muc_nen × tích mọi hệ số = "
+                                  "dự báo; mô hình xác suất: hệ số nhân lên tỷ lệ cược có đơn."),
+            ("giai_thich:lan_chay_giai_thich", "Ngày và mã lần chạy SEL2 được giải thích (lần chạy trước khi số lấy từ "
+                                               "lần chạy trước)."),
+        ],
+    },
+    "en": {
+        "ly_do": {
+            "out": "outside the run scope",
+            "no_number": "no number at all (no lightgbm_forecast, no avg_demand)",
+            "avg": "configured AVG_DEMAND: avg_demand used ({v})",
+            "avg_lgbm": "configured AVG_DEMAND without avg_demand: the LightGBM number is used",
+            "closed": "not open for sale in the last {n} days",
+            "closed_long": "not open for sale for {n} days or more",
+            "prob": "low order probability (P = {p} < {t})",
+            "sparse": "sparse sales: forecast {v} < {t}",
+            "no_sale": "no order in the last {n} days",
+            "zero": "the chosen models all forecast 0",
+        },
+        "fallback": {
+            "NO_OPEN_DAY": "no open day in {w} days, no model could be scored",
+            "FEW_DAYS": "only {n} scored days (< {m} needed in {w} days)",
+            "SECOND_MISSING": "the second-ranked model ({c}) has no number for day D",
+        },
+        "part": {"reg": "{m} (quantity)", "clf": "{m} (order probability)"},
+        "not_lgbm": "the chosen models are not LightGBM",
+        "no_model": "the model file of {m} could not be read (no factors)",
+        "no_detail": "no explanation data stored for run {r}",
+        "empty": "empty",
+        "features": {
+            "med": "Median demand {w} days", "p25": "Low (25th percentile) demand {w} days",
+            "p75": "High (75th percentile) demand {w} days", "tmean": "Trimmed mean demand {w} days",
+            "dow_share_8w": "Weekday share (8 weeks)", "dow_share_12w": "Weekday share (12 weeks)",
+            "dom_share_12w": "Day-of-month bucket share (12 weeks)",
+            "same_dow_mean_4": "Mean of the last 4 same weekdays",
+            "dow_order_rate_12w": "Share of same weekdays with orders (12 weeks)",
+        },
+        "summary": [
+            ("giai_thich", "Sheet GIAI_THICH: one row per SKU x FC with a lightgbm_forecast, forecast day D (horizon 1, "
+                           "target = D). For reading only, no number of the DU_BAO_* sheets changes."),
+            ("giai_thich:ly_do", "Reason when forecast_used = 0 (outside the scope, closed, low order probability, sparse "
+                                 "< 0.2, no order ...). Empty when forecast_used > 0."),
+            ("giai_thich:model_used", "SEL2 model used: 'A+B' = mean of the two best; FALLBACK:V33_L112 = not enough "
+                                      "scored data, reason in ly_do_fallback."),
+            ("giai_thich:<model>_du_bao", "Raw (unrounded) forecast of each candidate for day D, as stored by SEL2."),
+            ("giai_thich:<model>_dung / _cham", "Last {w} days (D-{w} .. D-1, open days): forecasts of the model rated "
+                                                "'Dung' / forecasts scored (up to 7 per target day, horizons 1..7). "
+                                                "SEL2 ranks by this share."),
+            ("giai_thich:so_ngay_cham", "Target days with a score (smallest over the models); below {m} -> FALLBACK."),
+            ("giai_thich:lich_su", "ban_hom_qua = sold on D-1; tb_7_ngay / tb_28_ngay / trung_vi_28_ngay over calendar "
+                                   "days (no order = 0); so_ngay_mo_ban_28 = days open > 0 h; so_ngay_co_ban_28 = days "
+                                   "with orders; ngay_ban_gan_nhat within the data window."),
+            ("giai_thich:yeu_to", "3 strongest factors of the LightGBM number (TreeSHAP of the model itself; "
+                                  "mo_hinh_yeu_to = best-ranked LightGBM model of model_used). tac_dong = multiplier: > 1 "
+                                  "raises, < 1 lowers. Quantity model: muc_nen x all multipliers = forecast; probability "
+                                  "model: multiplier of the order odds."),
+            ("giai_thich:lan_chay_giai_thich", "Day and id of the SEL2 run explained (the previous run when the number "
+                                               "comes from it)."),
+        ],
+    },
+}
+
+
+def giai_thich_labels(lang: str | None) -> tuple[str, dict]:
+    lang = lang if lang in GIAI_THICH else "vi"
+    return lang, GIAI_THICH[lang]

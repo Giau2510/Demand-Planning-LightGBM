@@ -62,6 +62,10 @@ is flagged AVG_NO_READ (file level: TOM_TAT and export_runs.flags).
            tables as last read by the app (aux_source_reads.source_modified, demand_sync_runs.source_version of the
            newest D-1 load; no new BigQuery call), with which was built first ("khong ro" when a time is unknown).
   CONFIG   the SKU x FC configured LIGHTGBM at export time.
+  GIAI_THICH (1.4.6, C3) after the DU_BAO_* sheets, only when a run used by the file has an explanation sidecar
+           (giai_thich.py, written by the pipeline): one row per SKU x FC whose horizon-1 lightgbm_forecast is not empty;
+           its TOM_TAT lines (how to read it, counts) come last. Without a sidecar the file is the 1.4.5 file. No
+           number of the other sheets depends on it.
   seller_code / product_code (DU_BAO and CONFIG, right after ten_san_pham; owner decision 05/11/2026): sku_code split
            at its FIRST dot (MEDX.ABC-ABC-010 -> MEDX / ABC-ABC-010, A.B.C -> A / B.C). No dot: seller_code empty,
            product_code = sku_code; an empty part before the dot (".X") gives seller_code empty, an empty part after
@@ -168,6 +172,7 @@ FLAG_OPEN_HOURS_LAG = "OPEN_HOURS_LAG"    # = sel2.data.FLAG_OPEN_HOURS_LAG (run
 FALLBACK_PREFIX = "FALLBACK"              # model_used of a series without the two best candidates (select.py)
 UNKNOWN = "khong ro"
 FLAG_INFO_FAILED = "SUMMARY_INFO_FAILED"     # FALLBACK shares / source build times not read (file still written)
+FLAG_GIAI_THICH_SKIPPED = "GIAI_THICH_SKIPPED"   # 1.4.6 = giai_thich.FLAG_SKIPPED (status file, no sidecar)
 _I = {c: i for i, c in enumerate(COLUMNS)}
 _lock = threading.Lock()                 # one export at a time in this process (version numbers, file names)
 
@@ -804,13 +809,15 @@ def _layout_summary(plan: list) -> dict:
     return {"sheets": {nm: len(ks) * H_ALL for nm, ks in plan}, "sku_fc": {nm: len(ks) for nm, ks in plan}}
 
 
-def _write_book(target: Path, d: date, plan: list, rows_for, summary_rows, config_rows: list) -> None:
-    """Sheets DU_BAO_<fc> (plan order), TOM_TAT, CONFIG; bold header, frozen, autofilter on every sheet. rows_for(keys)
-    = the _rows generator of those SKU x FC. Streamed (xlsx_stream: openpyxl's writer took about 380 s for 420k rows);
-    summary_rows is read after every DU_BAO_* sheet is written."""
+def _write_book(target: Path, d: date, plan: list, rows_for, summary_rows, config_rows: list, extra=()) -> None:
+    """Sheets DU_BAO_<fc> (plan order), the extra sheets (1.4.6: GIAI_THICH), TOM_TAT, CONFIG; bold header, frozen,
+    autofilter on every sheet. rows_for(keys) = the _rows generator of those SKU x FC. Streamed (xlsx_stream: openpyxl's
+    writer took about 380 s for 420k rows); the extra sheets and summary_rows are read after every DU_BAO_* sheet is
+    written."""
     sheets = [Sheet(nm, COLUMNS20, _rows20(rows_for(ks), d), len(ks) * H_ALL, freeze_header=True, autofilter=True)
               for nm, ks in plan]
-    write_xlsx(target, sheets + [Sheet(SHEET_SUMMARY, SUMMARY_COLUMNS, summary_rows, freeze_header=True, autofilter=True),
+    write_xlsx(target, sheets + list(extra) + [
+                                 Sheet(SHEET_SUMMARY, SUMMARY_COLUMNS, summary_rows, freeze_header=True, autofilter=True),
                                  Sheet(SHEET_CONFIG, CONFIG_COLUMNS, config_rows, len(config_rows), freeze_header=True,
                                        autofilter=True)])
 
@@ -854,7 +861,77 @@ def _summary_rows(s: dict) -> list:
     out += [[f"rows:{nm}", n] for nm, n in lay["sheets"].items()]
     out += [[f"sku_fc:{nm}", n] for nm, n in lay["sku_fc"].items()]
     out += [["source", f"Demand Forecast {__version__} (ghi truc tiep)"], ["generated_at", s["created_at_vn"] + " (VN)"]]
+    gt = s.get("giai_thich")                                # 1.4.6 (C3): only when the sheet GIAI_THICH is written
+    if gt and gt.get("sheet"):
+        try:
+            from . import giai_thich
+            out += giai_thich.summary_rows(gt, giai_thich.labels())
+        except Exception as e:  # noqa: BLE001 - explanation only, never fails the file
+            out.append(["giai_thich", f"loi doc thong tin: {type(e).__name__}"])
     return out
+
+
+class _GiaiThich:
+    """1.4.6 (C3) sheet GIAI_THICH (giai_thich.py): the horizon-1 rows of the DU_BAO_* sheets are captured while they
+    are written (capture), the sheet rows are built when it is written (after every DU_BAO_* sheet)."""
+    def __init__(self, d: date, plan: list, run, is_stale: bool, prev_runs: list, scope_key, names: dict, info: dict):
+        from . import giai_thich
+        self.gt, self.d, self.names, self.info = giai_thich, d, names, info
+        self.keys = [k for _, ks in plan for k in ks]
+        self.today = (str(run["forecast_date"])[:10], run["id"]) if run is not None and not is_stale else (None, None)
+        self.prev = {r["forecast_date"]: r["id"] for r in prev_runs}
+        self.scope_key = scope_key
+        self.day_of = {rid: day for day, rid in ([self.today] if self.today[1] else [])
+                       + [(r["forecast_date"], r["id"]) for r in prev_runs]}
+        # sidecars are loaded on first use (doc); only their existence is checked here
+        have = [rid for rid, day in self.day_of.items() if giai_thich.exists(scope_key, day, rid)]
+        self.docs: dict = {}
+        self.enabled = bool(have)
+        info.update(sheet=self.enabled, runs=[f"{self.day_of[rid]}:{rid}" for rid in have])
+        if self.today[1] and self.today[1] not in have:     # today's run without a sidecar: why (status file)
+            st = giai_thich.read_status(scope_key, self.today[0], self.today[1])
+            if st and st.get("status") != giai_thich.STATUS_OK:
+                info.update(skipped=True, status=st.get("status"), reason=st.get("reason"))
+        self.h1: dict = {}
+
+    def doc(self, rid):
+        if rid not in self.docs:
+            try:
+                self.docs[rid] = self.gt.load(self.scope_key, self.day_of.get(rid), rid) if rid in self.day_of else None
+            except Exception as e:  # noqa: BLE001 - explanation only, never fails the file
+                log.warning("sel2 export: giai_thich sidecar not read", extra={"ctx": {"run_id": rid, "error": str(e)[:300]}})
+                self.docs[rid] = None
+            d = self.docs[rid]
+            if d and "window_days" not in self.info:
+                self.info.update(window_days=d.get("window_days"), min_days=d.get("min_days"))
+        return self.docs[rid]
+
+    def capture(self, rows):
+        h1 = self.h1
+        ih, isku, ifc = _I["horizon"], _I["sku_code"], _I["fc_code"]
+        sel = [_I[c] for c in ("lightgbm_forecast", "forecast_used", "fallback_reason", "forecast_source", "raw_value",
+                               "model_used", "flags", "avg_demand")]
+        for r in rows:
+            if r[ih] == 1:
+                h1[(r[isku], r[ifc])] = tuple(r[i] for i in sel)
+            yield r
+
+    def run_of(self, flags) -> tuple:
+        for x in (flags or "").split(","):
+            if x.startswith(FLAG_PREVIOUS + ":"):
+                day = x.split(":", 1)[1]
+                return day, self.prev.get(day)
+        return self.today
+
+    def sheet(self) -> Sheet:
+        gt = self.gt
+        outer = self
+
+        class _Rows:
+            def __iter__(self):
+                return gt.sheet_rows(outer.d, outer.keys, outer.h1, outer.doc, outer.run_of, outer.names, gt.labels(),
+                                     outer.info)
+        return Sheet(gt.SHEET, gt.columns(gt.select.CANDIDATES), _Rows(), freeze_header=True, autofilter=True)
 
 
 # ------------------------------------------------------------------ export
@@ -922,8 +999,19 @@ def write_daily_export(forecast_date, trigger: str = "SCHEDULE", job_id=None, sc
     stats = {"rows_by_fallback_reason": {}, "flag_rows": {}}
     plan = _plan_or_fail(keys, d)                           # before any version is reserved
     n_rows = len(keys) * H_ALL
+    gt_info: dict = {"sheet": False}                        # 1.4.6 (C3): sheet GIAI_THICH when a run has a sidecar
+    try:
+        gt = _GiaiThich(d, plan, run, is_stale, prev_runs, scope_key, names, gt_info)
+    except Exception as e:  # noqa: BLE001 - explanation only, never fails the file
+        log.warning("sel2 export: giai_thich not prepared", extra={"ctx": {"forecast_date": d.isoformat(),
+                                                                          "error": f"{type(e).__name__}: {e}"[:300]}})
+        gt, gt_info = None, {"sheet": False, "error": f"{type(e).__name__}"}
+    if gt is not None and not gt.enabled:
+        gt = None
     file_flags = ([STALE_NO_RUN if run is None else "STALE"] if is_stale else []) + \
         ([STALE_NO_RUN_3_DAYS] if no_run_3_days else []) + ([FLAG_AVG_NO_READ] if av["read_id"] is None else []) +         ([FLAG_INFO_FAILED] if info_failed else [])
+    if gt_info.get("skipped"):                              # today's run: the sidecar step was skipped / failed
+        file_flags.append(FLAG_GIAI_THICH_SKIPPED)
     ymd, latest_name = file_names(d)
     folder = root / ymd
     base = paths.data_dir().resolve()
@@ -956,18 +1044,19 @@ def write_daily_export(forecast_date, trigger: str = "SCHEDULE", job_id=None, sc
                        "avg": {"source_kind": av["source_kind"], "source_table": av["source_table"],
                                "source_modified": av["source_modified"], "completed_at": av["completed_at"],
                                "rule": av["rule"], "sku_fc_with_value": sum(1 for k in keys if not avg[k]["reason"]),
-                               "no_value_by_reason": no_value}}
+                               "no_value_by_reason": no_value}, "giai_thich": gt_info}
             kept: dict = {}                         # 1.4.4: rows of published.HISTORY_HORIZONS (history page)
 
             def rows_for(ks):
-                return published.keep(_rows(d, ks, run, run_keys, vals, avg, conf, names, is_stale, stats, prev,
-                                            scoped), kept, COLUMNS)
+                rows = _rows(d, ks, run, run_keys, vals, avg, conf, names, is_stale, stats, prev, scoped)
+                return published.keep(gt.capture(rows) if gt else rows, kept, COLUMNS)
             tmp = _tmp_name(folder, vpath.stem)
             config_rows = _config_book_rows(cfg_rows, names)
             try:
                 # TOM_TAT is written after DU_BAO_*: its counts are complete once the rows generators are consumed
                 with os.fdopen(_excl(tmp), "wb") as f:
-                    _write_book(f, d, plan, rows_for, _LazySummary(summary), config_rows)
+                    _write_book(f, d, plan, rows_for, _LazySummary(summary), config_rows,
+                                **({"extra": [gt.sheet()]} if gt else {}))   # call unchanged without the sheet
                 os.rename(tmp, vpath)                       # fails (never replaces) when the version file exists
             finally:
                 tmp.unlink(missing_ok=True)

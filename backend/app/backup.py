@@ -44,10 +44,12 @@ def backup_database(reason: str = "manual", dest_dir: Path | None = None) -> Pat
             # 1.4.2: the nested files too (SEL2 models: models/sel2/<scope hash>/<origin>/<file>), at their relative
             # path; not kept there: a .tmp file (a SEL2 model being written, store.finish_train: .tmp, then renamed) and
             # the train.lock of a scope (an OS lock while a training runs, sel2 pipeline.train_lock; recreated on use)
+            # 1.4.6: nor the GIAI_THICH sidecars models/sel2/<scope hash>/giai_thich/ (derived files, ml/sel2/giai_thich.py)
             root = paths.models_dir()
             for f in sorted(root.rglob("*")):
                 rel = f.relative_to(root)
-                if f.is_file() and not (len(rel.parts) > 1 and f.suffix in (".tmp", ".lock")):
+                derived = len(rel.parts) > 3 and rel.parts[0] == "sel2" and rel.parts[2] == "giai_thich"
+                if f.is_file() and not derived and not (len(rel.parts) > 1 and f.suffix in (".tmp", ".lock")):
                     z.write(f, f"models/{rel.as_posix()}")
         with zipfile.ZipFile(part) as z:
             bad = z.testzip()

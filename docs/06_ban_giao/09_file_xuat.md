@@ -183,6 +183,29 @@ SKU × FC không có trong bảng cấu hình = `AVG_DEMAND` (không liệt kê)
 (`/forecast-source`) hoặc tải lên `.xlsx` (`backend/app/ml/sel2/source_config.py:1-20`); có hiệu lực từ lần xuất sau,
 file đã ghi không bị sửa.
 
+### 2.4 Sheet `GIAI_THICH` (1.4.6) – giải thích số của ngày D
+
+Nằm sau các sheet `DU_BAO_<fc_code>`, trước `TOM_TAT`. Một dòng cho mỗi SKU × FC có `lightgbm_forecast` ở horizon 1
+(ngày đích = D), cùng thứ tự với các sheet `DU_BAO_*`. Chỉ để đọc hiểu: không số nào ở các sheet khác phụ thuộc vào nó
+(`backend/app/ml/sel2/giai_thich.py`, `export.py` `_GiaiThich`). Cách đọc từng nhóm cột cũng ghi ở cuối `TOM_TAT`
+(các dòng `giai_thich*`, kèm `giai_thich_rows`, `giai_thich_rows_without_detail`, `giai_thich_runs`).
+
+| Cột | Ý nghĩa |
+|---|---|
+| `sku_code` .. `model_used` | Như dòng horizon 1 của `DU_BAO_*` (`lightgbm_forecast`, `forecast_used`, `fallback_reason`, `forecast_source`, `raw_value`, `model_used`) |
+| `ly_do` | Chỉ khi `forecast_used` = 0: ngoài phạm vi lần chạy / không có số nào / cấu hình AVG_DEMAND / không mở bán N ngày (từ 7 ngày) / xác suất có đơn thấp (V36, P < 0,6) / bán lác đác (dự báo < 0,2) / không có đơn trong 28 ngày / các mô hình được chọn đều dự báo 0 (quy tắc đầu tiên khớp) |
+| `ly_do_fallback`, `so_ngay_cham` | Khi `model_used` = `FALLBACK:...`: không có ngày mở bán trong W ngày / chỉ N ngày được chấm (< `min_days`) / mô hình hạng 2 không có số ngày D; số ngày đích có chấm điểm |
+| `<mô hình>_du_bao`, `_dung`, `_cham` | 6 mô hình ứng viên SEL2: số gốc ngày D (horizon 1, đúng số trong `candidate_forecasts`), số lần "Đúng" / số lần được chấm trong W ngày (D-W .. D-1, ngày mở bán, tối đa 7 lần dự báo mỗi ngày đích; `select.py`) |
+| `ban_hom_qua` .. `ngay_ban_gan_nhat` | Số bán D-1, trung bình 7 / 28 ngày, trung vị 28 ngày (ngày lịch, không có đơn = 0), số ngày mở bán / có bán trong 28 ngày, ngày bán gần nhất |
+| `mo_hinh_yeu_to`, `muc_nen`, `yeu_to_1..3`, `tac_dong_1..3` | 3 yếu tố mạnh nhất (TreeSHAP của chính mô hình LightGBM hạng cao nhất trong `model_used`; V36: mô hình số lượng khi P >= 0,6, mô hình xác suất khi P < 0,6). `tac_dong` = hệ số nhân (> 1 kéo lên); mô hình số lượng: `muc_nen` × tích mọi hệ số = dự báo |
+| `lan_chay_giai_thich` | `ngày:mã lần chạy` được giải thích (lần chạy trước khi số lấy từ lần chạy trước) |
+
+Dữ liệu lấy từ file phụ `<models>\sel2\<scope hash>\giai_thich\<D>_<run id>.json.gz`, do lần chạy SEL2 ghi trong một
+tiến trình con sau khi công bố (kiểm tra bộ nhớ trước, dừng sau 20 phút). Không có file phụ (lần chạy trước 1.4.6, hoặc
+bước này bị bỏ qua / lỗi / quá giờ) → file Excel không có sheet `GIAI_THICH`; khi bước của lần chạy hôm nay bị bỏ qua /
+lỗi, file có thêm cờ `GIAI_THICH_SKIPPED`. File phụ không nằm trong bản sao lưu và bị xoá cùng hạn với
+`candidate_forecasts` (`sel2_pipeline.retention_days`, mặc định 120 ngày).
+
 ---
 
 ## 3. Lý do, cờ dòng và cờ file
