@@ -373,11 +373,12 @@ def test_run_day_logs_one_line_per_step(sel2_on, monkeypatch, steps_log):
     out = pipeline.run_day(date(2026, 11, 1), scope_key=SCOPE, trigger="test")
     assert out["status"] == "PUBLISHED"
     st = _steps(steps_log, "day")
-    assert [x["step"] for x in st] == ["load", "candidates", "select_and_publish", "retention", "export"]
+    # 1.4.6: the GIAI_THICH sidecar step (child process) runs between the publication and the retention
+    assert [x["step"] for x in st] == ["load", "candidates", "select_and_publish", "giai_thich", "retention", "export"]
     for x in st:
         _assert_step_fields(x)
         assert x["forecast_date"] == "2026-11-01" and x["trigger"] == "test"
-    assert (st[0]["rows"], st[0]["keys"], st[1]["rows"], st[2]["values"], st[3]["rows"], st[4]["ok"]) == \
+    assert (st[0]["rows"], st[0]["keys"], st[1]["rows"], st[2]["values"], st[4]["rows"], st[5]["ok"]) == \
         (3, 2, 42, 14, 3, True)
 
 
