@@ -13,7 +13,7 @@ dữ liệu, kiểm tra ở `export.py:82-90`). `YYYYMMDD` = ngày dự báo D (
 
 | File | Ý nghĩa | Code |
 |---|---|---|
-| `du_bao_YYYYMMDD_vN.xlsx` | Phiên bản N (1, 2, …). Mỗi lần xuất tạo **một phiên bản mới**; không bao giờ ghi đè hay sửa sau đó. Một dòng `export_runs` / phiên bản (đường dẫn tương đối, SHA-256, số dòng, `is_stale`, cờ, tóm tắt JSON). | `export.py:3-5`, `export.py:356-473` |
+| `du_bao_YYYYMMDD_vN.xlsx` | Phiên bản N (1, 2, …). Mỗi lần xuất tạo **một phiên bản mới**; không bao giờ ghi đè hay sửa sau đó. 1.4.5: khi có phiên bản mới, các phiên bản trước của cùng ngày được đổi tên `du_bao_YYYYMMDD_vK_bo.xlsx` (không xoá, nội dung giữ nguyên; `export_runs.path` cập nhật cùng giao dịch ghi phiên bản mới); file đang mở trong Excel thì giữ tên cũ, phiên bản mới có cờ `OLD_VERSION_RENAME_FAILED`. Một dòng `export_runs` / phiên bản (đường dẫn tương đối, SHA-256, số dòng, `is_stale`, cờ, tóm tắt JSON). | `export.py:3-5`, `export.py:356-473` |
 | `du_bao_YYYYMMDD.xlsx` | **Bản mới nhất**: bản sao của phiên bản cao nhất (ghi file tạm rồi thay thế). Người dùng mở file này. | `export.py:173-212` |
 | `du_bao_YYYYMMDD_TAM.xlsx` | **Bản tạm** chỉ của lần khởi động đầu (`sel2-bootstrap`): số LightGBM = ứng viên `V33_L112` cho mọi SKU × FC (chưa chọn mô hình), `model_used = V33_L112`. Không phải phiên bản, không phải bản mới nhất, không ghi `export_runs` (chỉ nhật ký `SEL2_EXPORT_TEMP_WRITTEN`); chạy lại bootstrap cùng ngày thì ghi đè. | `export.py:31-33`, `export.py:486-613` |
 | `.du_bao_YYYYMMDD_vN.reserved`, `.du_bao_*.tmp` | File khoá số phiên bản / file tạm (ẩn). Tạo độc quyền (O_EXCL); bản bỏ lại > 1 giờ được xoá trước lần xuất sau. | `export.py:7-11`, `export.py:130-170` |
@@ -101,7 +101,7 @@ trống; nếu cấu hình `LIGHTGBM` (production từ 04/11: mọi SKU × FC) t
 #### 2.1.1 Horizon 8..20 (`cach_tinh = UOC_TINH_THEO_TUAN`, 1.4.4)
 
 Mẫu = dòng cùng SKU × FC có horizon `((h − 1) % 7) + 1` (cùng thứ trong tuần: h 8 → mẫu h 1, h 14 → h 7, h 15 → h 1).
-`target_date` = D + h − 1, `horizon` = h, `lightgbm_forecast` = `raw_value` của mẫu (không làm tròn; trống khi mẫu không
+`target_date` = D + h − 1, `horizon` = h, `lightgbm_forecast` = `raw_value` của mẫu (1.4.5: làm tròn < 0,2 → 0, còn lại làm tròn lên; 1.4.4 không làm tròn; trống khi mẫu không
 có `raw_value`); các cột khác chép từ mẫu (kể cả `avg_demand`, `model_used`, `raw_value`, `model_version`, `flags`).
 `forecast_used` / `fallback_reason` tính lại theo quy tắc cố định (`export.derive_used`), luôn là số nguyên ≥ 0:
 
@@ -145,6 +145,9 @@ Các dòng theo đúng thứ tự (`export.py:332-352`); dòng có tiền tố l
 | `rows_flag:<cờ>` | Số dòng horizon 1..7 mang cờ đó | `rows_flag:AVG_NO_ROW` = 1050 |
 | `sku_fc_avg_reason:<lý do>` | Số SKU × FC không có giá trị AVG_DEMAND, theo lý do | `sku_fc_avg_reason:NO_ROW` = 150 |
 | `sku_fc_model_used:<mô hình>` | Số SKU × FC theo `model_used` (lấy theo horizon nhỏ nhất) | `sku_fc_model_used:FALLBACK:V33_L112` = 5428 |
+| `fallback_window`, `sku_fc_fallback`, `fallback_pct_all_sku_fc`, `sku_fc_open_in_window`, `fallback_pct_open_sku_fc` | (1.4.5) Tỷ lệ FALLBACK (%) của lần chạy tham chiếu với 2 mẫu số: mọi SKU × FC trong phạm vi / chỉ SKU × FC có ngày mở bán (giờ mở > 0) trong cửa sổ chọn D-28 .. D-1 | `fallback_pct_all_sku_fc` = 9.3 |
+| `sku_fc_fallback:khong_mo_ban_28_ngay`, `sku_fc_fallback:co_mo_ban_thieu_ngay` | (1.4.5) FALLBACK tách theo lý do: không mở bán ngày nào trong 28 ngày / có mở bán nhưng thiếu ngày (dưới `min_days` ngày có ô, hoặc ứng viên thứ hai không có số) | |
+| `open_hours_lag_note` | (1.4.5, chỉ khi file có cờ `OPEN_HOURS_LAG`) Ngày giờ mở bán mới nhất, giờ build bảng giờ mở bán và bảng demand (giờ VN, theo lần đọc gần nhất app đã ghi), bảng nào build trước; không rõ → `khong ro` | |
 | `avg_source_kind` | `CURRENT` hoặc `HISTORICAL` (trống nếu chưa đọc) | `CURRENT` |
 | `avg_source_table` | Bảng AVG_DEMAND đã đọc | `lakehouse-prod-394907.gold_buymed_vn2.fact_avg_demand_sku` |
 | `avg_source_modified`, `avg_read_completed_at` | Thời điểm bảng nguồn sửa lần cuối; lúc đọc xong | `2026-11-09T…Z` |

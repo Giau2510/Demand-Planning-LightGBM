@@ -3,6 +3,12 @@
 Every call writes a NEW version: du_bao_YYYYMMDD_vN.xlsx (never overwritten, never changed later) and the copy of the
 latest version du_bao_YYYYMMDD.xlsx (written to a temporary file, then replaced). export_runs keeps one record per
 version (path relative to the data folder, sha256, row count, stale flag, summary).
+1.4.5 (owner decision 06/11/2026, one final file per day): once the new version file is written, the earlier version
+files of the same day (recorded versions below it) are renamed du_bao_YYYYMMDD_vK_bo.xlsx (never deleted, content and
+sha256 unchanged) and their export_runs.path is updated in the SAME transaction as the record of the new version (a
+failed record renames them back). A file that cannot be renamed (open in Excel) keeps its name and record: logged, the
+new version is flagged OLD_VERSION_RENAME_FAILED, never failed. A record whose file is gone but whose _bo file exists
+(rename done, record not updated: crash in between) gets its path repaired by the next export of the day.
 
 Versions across processes (the scheduled export runs in the server, sel2-export in a CLI process): a version number is
 reserved by creating .du_bao_YYYYMMDD_vN.reserved exclusively (O_EXCL) in the day folder; a number whose file, record or
@@ -35,7 +41,10 @@ is flagged AVG_NO_READ (file level: TOM_TAT and export_runs.flags).
               KHONG_CO_AVG_DUNG_LIGHTGBM;
            R5 every source is rounded (below 0.2 -> 0, else rounded up; negative -> 0) and the column is never empty:
               without any number it is 0 with fallback_reason KHONG_CO_SO_NAO (in place of STALE / KHONG_CO_SO).
-           lightgbm_forecast and avg_demand keep the original values (unrounded, empty when missing); lightgbm_forecast,
+           avg_demand keeps the original value (unrounded, empty when missing); lightgbm_forecast (1.4.5, owner
+           decision 06/11/2026) is written rounded like R5 at every horizon (the SEL2 published quantity; empty when
+           missing) and raw_value keeps the original number; forecast_used is derived from the numbers exactly as
+           before (R1 .. R5 unchanged); lightgbm_forecast,
            raw_value and model_used come from today's run, else from the R3' run (flag LAN_CHAY_TRUOC, every source).
            Row provenance (model_version, data_cutoff_date): a row whose LightGBM number comes from a previous run
            (flag LAN_CHAY_TRUOC: R3', R4 with the R3' number, or shown next to an AVG_DEMAND value) carries the values of
@@ -43,7 +52,15 @@ is flagged AVG_NO_READ (file level: TOM_TAT and export_runs.flags).
            of D-3 .. D-1); without a reference run (no run within D-3 .. D-1, or no SEL2 run at all) both are empty.
            With a reference run of D-1 the target day D+6 is its horizon 8 (beyond H = 7) and older runs cover even
            less: on a failed day D+6 never has a previous-run number -> AVG + STALE (in the scope) or 0 by R2.
-  TOM_TAT  counts of the file (scope, fallback reasons, flags, model used, AVG_DEMAND read used).
+  TOM_TAT  counts of the file (scope, fallback reasons, flags, model used, AVG_DEMAND read used). 1.4.5: after the
+           model-used counts, the FALLBACK share of the reference run with two denominators (every SKU x FC in its
+           scope / only those with an open day - open hours > 0 - in the selection window D-W .. D-1 of the run,
+           W = sel2_pipeline.window_days) and the FALLBACK SKU x FC split into "no open day in the W days"
+           (khong_mo_ban_W_ngay) and the rest (co_mo_ban_thieu_ngay: fewer than min_days days with cells, or the
+           second candidate without a forecast); with the flag OPEN_HOURS_LAG one line open_hours_lag_note: the
+           newest open-hours day stored and the build (last-modified) times of the open-hours and demand source
+           tables as last read by the app (aux_source_reads.source_modified, demand_sync_runs.source_version of the
+           newest D-1 load; no new BigQuery call), with which was built first ("khong ro" when a time is unknown).
   CONFIG   the SKU x FC configured LIGHTGBM at export time.
   seller_code / product_code (DU_BAO and CONFIG, right after ten_san_pham; owner decision 05/11/2026): sku_code split
            at its FIRST dot (MEDX.ABC-ABC-010 -> MEDX / ABC-ABC-010, A.B.C -> A / B.C). No dot: seller_code empty,
@@ -56,8 +73,8 @@ scripts/ops/excel20.py that rewrote the latest copy of 1.4.3 from 06/11):
            CONFIG. Every SKU x FC of that warehouse (sorted by sku_code) x horizon 1..20 (target_date D .. D+19), the
            columns of DU_BAO + cach_tinh (last column). h 1..7: the rows above, cach_tinh SEL2. h 8..20: cach_tinh
            UOC_TINH_THEO_TUAN; template = the row of the same SKU x FC with horizon ((h - 1) % 7) + 1 (same weekday);
-           target_date D + h - 1, horizon h, lightgbm_forecast = the template's raw_value (unrounded, empty without
-           one), every other column copied from the template, forecast_used re-derived with the owner's fixed rule
+           target_date D + h - 1, horizon h, lightgbm_forecast = the template's raw_value rounded like R5 (1.4.5;
+           empty without one), every other column copied from the template (raw_value: the template's original), forecast_used re-derived with the owner's fixed rule
            (derive_used: outside the scope stays 0; LIGHTGBM with a raw_value -> that value rounded (R5); otherwise the
            template's forecast_used / reason; AVG_DEMAND without Avg -> the raw_value rounded).
   TOM_TAT  the rows of the 7-day file (rows_total and the rows_fallback_reason / rows_flag counts are those of horizon
@@ -102,7 +119,7 @@ from pathlib import Path, PureWindowsPath
 from ... import __version__, db, paths
 from ... import settings_service as ss
 from ...messages import AppError
-from ...timeutil import VN_TZ, now_utc, iso
+from ...timeutil import VN_TZ, now_utc, iso, parse_iso
 from . import avg_demand, published
 from .source_config import DEFAULT_SOURCE
 from .xlsx_stream import Sheet, write_xlsx
@@ -139,11 +156,18 @@ SHEET_PREFIX = "DU_BAO_"                  # one sheet per warehouse: DU_BAO_<fc_
 COLUMNS20 = COLUMNS + ("cach_tinh",)
 CACH_SEL2, CACH_WEEK = "SEL2", "UOC_TINH_THEO_TUAN"
 LAYOUT_20 = "20 ngay, tach sheet theo kho"
-NOTE_8_20 = ("UOC_TINH_THEO_TUAN: lightgbm_forecast = raw_value cung thu trong tuan o horizon 1-7 cua lan chay hom nay "
-             "(khong phai SEL2)")
+NOTE_8_20 = ("UOC_TINH_THEO_TUAN: lightgbm_forecast = raw_value cung thu trong tuan o horizon 1-7 cua lan chay hom nay, "
+             "lam tron (< 0,2 -> 0, con lai lam tron len) (khong phai SEL2)")
 MAX_SKU_FC = 50_000                       # per warehouse: 50,000 x 20 rows stays below Excel's 1,048,576
 WARN_SKU_FC = 45_000                      # per warehouse: warning in the log from here on (05/11: BD 31,955 / HN 26,636)
 FLAG_TOO_MANY_SKU_FC, FLAG_SHEET_CLASH = "TOO_MANY_SKU_FC", "SHEET_NAME_CLASH"
+# 1.4.5 (owner decisions 06/11/2026)
+RETIRED_SUFFIX = "_bo"                    # earlier version files of the day: du_bao_YYYYMMDD_vK_bo.xlsx
+FLAG_RENAME_FAILED = "OLD_VERSION_RENAME_FAILED"   # an earlier version file could not be renamed (open in Excel)
+FLAG_OPEN_HOURS_LAG = "OPEN_HOURS_LAG"    # = sel2.data.FLAG_OPEN_HOURS_LAG (run flag carried by the rows)
+FALLBACK_PREFIX = "FALLBACK"              # model_used of a series without the two best candidates (select.py)
+UNKNOWN = "khong ro"
+FLAG_INFO_FAILED = "SUMMARY_INFO_FAILED"     # FALLBACK shares / source build times not read (file still written)
 _I = {c: i for i, c in enumerate(COLUMNS)}
 _lock = threading.Lock()                 # one export at a time in this process (version numbers, file names)
 
@@ -170,12 +194,16 @@ def file_names(d) -> tuple[str, str]:
     return ymd, f"du_bao_{ymd}.xlsx"
 
 
-def resolve_file(rel_path: str, cfg=None) -> Path:
-    """Absolute path of a stored relative export path; refused when it leaves the export folder."""
+def resolve_file(rel_path: str, cfg=None, retired_fallback: bool = True) -> Path:
+    """Absolute path of a stored relative export path; refused when it leaves the export folder. 1.4.5: when the file
+    is gone but its _bo file exists (renamed by a newer export that was killed before its record committed), the _bo
+    file (same content; read-only fallback, the record is repaired by the next export of the day)."""
     root = export_root(cfg)
     p = paths.data_dir().resolve().joinpath(*[x for x in str(rel_path).replace("\\", "/").split("/") if x]).resolve()
     if not p.is_relative_to(root):
         raise AppError("SEL2_EXPORT_PATH_INVALID", 500, detail=str(rel_path))
+    if retired_fallback and not p.exists() and not p.stem.endswith(RETIRED_SUFFIX) and retired_path(p).is_file():
+        return retired_path(p)
     return p
 
 
@@ -256,6 +284,8 @@ def _latest_copy(folder: Path, vpath: Path, latest: Path, d: date, version: int)
     src_path, src_version = vpath, version
     for _ in range(MAX_LATEST_COPIES):
         ltmp = _tmp_name(folder, latest.name)
+        if not src_path.exists() and retired_path(src_path).exists():
+            src_path = retired_path(src_path)           # 1.4.5: renamed _bo by a newer export meanwhile (same content)
         try:
             with open(src_path, "rb") as src, os.fdopen(_excl(ltmp), "wb") as dst:
                 for chunk in iter(lambda: src.read(1 << 20), b""):
@@ -284,6 +314,57 @@ def _latest_copy(folder: Path, vpath: Path, latest: Path, d: date, version: int)
     log.warning("sel2 export latest copy not replaced", extra={"ctx": {
         "forecast_date": d.isoformat(), "version": version, "flag": flag, "error": f"{type(err).__name__}: {err}"[:300]}})
     return flag
+
+
+def retired_path(p: Path) -> Path:
+    """du_bao_YYYYMMDD_vK_bo.xlsx of a version file du_bao_YYYYMMDD_vK.xlsx (1.4.5)."""
+    return p.with_name(f"{p.stem}{RETIRED_SUFFIX}{p.suffix}")
+
+
+def _retire_earlier(d: date, version: int, base: Path, cfg) -> tuple[list[tuple], list[int]]:
+    """1.4.5: rename the files of the recorded versions of day d below `version` to their _bo name. Returns (moves
+    [(export_run id, old path, new path, new relative path)] whose record must take the new path, versions whose
+    file could not be renamed). A record already on a _bo name is left; a record whose file is gone while its _bo
+    file exists (renamed, record not updated) is repaired; a record whose file and _bo file are both gone is left
+    (data-check export_files_exist reports it). Never raises."""
+    moves, failed = [], []
+    with db.read() as c:
+        recs = db.rows(c, "SELECT id, version, path FROM export_runs WHERE forecast_date=? AND version<? "
+                          "ORDER BY version", (d.isoformat(), version))
+    for r in recs:
+        try:
+            p = resolve_file(r["path"], cfg, retired_fallback=False)   # the recorded name (repair below)
+        except AppError:
+            failed.append(r["version"])
+            continue
+        if p.stem.endswith(RETIRED_SUFFIX):
+            continue
+        bo = retired_path(p)
+        try:
+            if p.is_file():
+                if bo.exists():                         # never replaced (os.rename replaces on POSIX)
+                    raise FileExistsError(f"{bo.name} exists")
+                os.rename(p, bo)
+            elif not bo.is_file():
+                continue
+        except OSError as e:                            # PermissionError: open in Excel - the old name stays
+            log.warning("sel2 export: earlier version not renamed", extra={"ctx": {
+                "forecast_date": d.isoformat(), "version": r["version"], "error": f"{type(e).__name__}: {e}"[:300]}})
+            failed.append(r["version"])
+            continue
+        moves.append((r["id"], p, bo, bo.relative_to(base).as_posix()))
+    return moves, failed
+
+
+def _undo_retire(moves: list[tuple]) -> None:
+    """Rename the files of _retire_earlier back (the new version was not recorded). Never raises."""
+    for _rid, p, bo, _rel in reversed(moves):
+        try:
+            if bo.is_file() and not p.exists():
+                os.rename(bo, p)
+        except OSError as e:
+            log.warning("sel2 export: earlier version not renamed back", extra={"ctx": {
+                "file": bo.name, "error": f"{type(e).__name__}: {e}"[:300]}})
 
 
 # ------------------------------------------------------------------ inputs
@@ -402,6 +483,132 @@ def _config_rows(conn) -> list[dict]:
                          "WHERE forecast_source=? ORDER BY sku_code, fc_code", (LIGHTGBM,))
 
 
+def _ts(ts):
+    """datetime of a stored UTC ISO time; None when missing / unreadable (never raises)."""
+    try:
+        return parse_iso(str(ts)) if ts else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _vn(ts: str | None) -> str | None:
+    """'YYYY-MM-DD HH:MM:SS' (Vietnam time) of a stored UTC ISO time; None when missing / unreadable."""
+    dt = _ts(ts)
+    try:
+        return dt.astimezone(VN_TZ).strftime("%Y-%m-%d %H:%M:%S") if dt else None
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _source_build(conn, scope_key: str | None, d: date) -> dict:
+    """1.4.5 (C5): what the app last recorded about the two BigQuery source tables of day d - read from the database
+    only (no BigQuery call): newest open-hours day stored up to D-1 (open_hours_daily of the configured source), the
+    last-modified (build) time of the open-hours table seen by its newest completed read (aux_source_reads) and of the
+    demand table seen by the newest D-1 load (demand_sync_runs.source_version), which was built first, and the line
+    of TOM_TAT (text). A time not recorded -> None, and "khong ro" in the text."""
+    from ...bq import aux_sources
+    tbl, seller = aux_sources.open_hours_source()
+    last_day = conn.execute("SELECT MAX(open_date) FROM open_hours_daily WHERE source_table=? AND seller_code=? AND "
+                            "open_date <= ?", (tbl, seller, (d - timedelta(days=1)).isoformat())).fetchone()[0]
+    rd = aux_sources.last_completed_read(conn, aux_sources.KIND_OPEN_HOURS, tbl, seller)
+    oh_built = rd["source_modified"] if rd else None
+    dm = db.one(conn, "SELECT source_version FROM demand_sync_runs WHERE scope_key=? AND kind='D1_SYNC' AND "
+                      "source_version IS NOT NULL ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                (scope_key,)) if scope_key else None
+    dm_built = dm["source_version"] if dm else None
+    dm_table = ss.get("bigquery").source_table or None
+    a, b = _ts(oh_built), _ts(dm_built)
+    first = (UNKNOWN if a is None or b is None else "cung luc" if a == b else tbl if a < b else (dm_table or "demand"))
+    out = {"open_hours_table": tbl, "open_hours_last_day": str(last_day)[:10] if last_day else None,
+           "open_hours_built_at": oh_built, "demand_table": dm_table, "demand_built_at": dm_built, "built_first": first}
+    out["text"] = (f"{FLAG_OPEN_HOURS_LAG}: gio mo ban moi nhat {out['open_hours_last_day'] or UNKNOWN}; "
+                   f"{tbl} build {_vn(oh_built) or UNKNOWN}, {dm_table or 'bang demand'} build {_vn(dm_built) or UNKNOWN} "
+                   f"(gio VN); build truoc: {first}")
+    return out
+
+
+def _fallback_info(conn, ref: dict | None, run_keys: dict, cfg) -> dict:
+    """1.4.5 (C7): FALLBACK SKU x FC of the reference run (model_used FALLBACK:<model>, select.py) with two denominators:
+    every SKU x FC in its scope and only those with an open day (open hours > 0, open_hours_daily of the configured
+    source) in the selection window D-W .. D-1 of the run (W = sel2_pipeline.window_days); the FALLBACK split into
+    no open day in the window / the rest. Without a reference run: counts 0, shares None."""
+    from ...bq import aux_sources
+    W = int(cfg.window_days)
+    out = {"window_days": W, "window": None, "sku_fc_in_scope": 0, "sku_fc_open_in_window": 0, "sku_fc_fallback": 0,
+           "fallback_no_open_day": 0, "fallback_with_open_day": 0, "pct_all": None, "pct_open": None}
+    if ref is None or not run_keys:
+        return out
+    rd = _day(ref["forecast_date"])
+    lo, hi = (rd - timedelta(days=W)).isoformat(), (rd - timedelta(days=1)).isoformat()
+    tbl, seller = aux_sources.open_hours_source()
+    open_keys = {(r[0], r[1]) for r in conn.execute(
+        "SELECT DISTINCT sku_code, fc_code FROM open_hours_daily WHERE source_table=? AND seller_code=? AND "
+        "open_date BETWEEN ? AND ? AND total_open_hours > 0", (tbl, seller, lo, hi))}
+    fb = [k for k, (_g, m) in run_keys.items() if str(m or "").startswith(FALLBACK_PREFIX)]
+    n, n_open = len(run_keys), sum(1 for k in run_keys if k in open_keys)
+    fb_closed = sum(1 for k in fb if k not in open_keys)
+    out.update(window=f"{lo}..{hi}", sku_fc_in_scope=n, sku_fc_open_in_window=n_open, sku_fc_fallback=len(fb),
+               fallback_no_open_day=fb_closed, fallback_with_open_day=len(fb) - fb_closed,
+               pct_all=round(100.0 * len(fb) / n, 2),
+               pct_open=round(100.0 * (len(fb) - fb_closed) / n_open, 2) if n_open else None)
+    return out
+
+
+AUTO_BY, AUTO_REASON, AUTO_CHANNEL = "system", "AUTO_LIGHTGBM_KHI_CO_SO", "API"
+
+
+def _set_keys(conn) -> set:
+    """SKU x FC ever set (a configuration row or any history row): never switched automatically."""
+    return ({(r[0], r[1]) for r in conn.execute("SELECT sku_code, fc_code FROM forecast_source_config")}
+            | {(r[0], r[1]) for r in conn.execute("SELECT DISTINCT sku_code, fc_code FROM forecast_source_config_history")})
+
+
+def auto_switch_new_codes(d: date, scope_key: str | None) -> dict:
+    """1.4.5 C8 (owner decision 07/11/2026 01:10): a SKU x FC whose forecast source is AVG_DEMAND BY DEFAULT - no row in
+    forecast_source_config and no row in its append-only history, i.e. never set by a user - is switched to LIGHTGBM
+    when today's SEL2 run of D (forecast_refresh_runs, scope_key) has a number for it. Written like a user change
+    (source_config._write: config row + history row, old_source NULL) with changed_by "system", ghi_chu / reason
+    AUTO_LIGHTGBM_KHI_CO_SO, channel API (the history CHECK allows UI / UPLOAD / API only) and one batch_id per call,
+    plus one audit record. A code set by a user (AVG_DEMAND or LIGHTGBM, any history row) is never touched. Called by
+    the pipeline right after the publication of the day's run, before its export hook writes the Excel (pipeline
+    _export_hook), so the day's Excel already uses LIGHTGBM; never by write_daily_export itself (a manual / AVG
+    re-export does not change the configuration). scope_key None = the active scope. Idempotent."""
+    from . import source_config
+    if scope_key is None:
+        with db.read() as c:
+            scope_key = _scope_key(c)[0]
+    if scope_key is None:
+        return {"switched": 0, "batch_id": None}
+    with db.read() as c:
+        run = db.one(c, "SELECT id FROM forecast_refresh_runs WHERE scope_key=? AND forecast_date=? AND "
+                        "config_version LIKE 'SEL2:%' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                     (scope_key, d.isoformat()))
+    if run is None:
+        return {"switched": 0, "batch_id": None}
+    batch_id, by, at = db.new_id("SCA"), AUTO_BY, iso(now_utc())
+    # the keys of the run and the configured / history keys read once each (no per-row subquery: the history has no
+    # index on the key); the write transaction re-reads only the two small key sets (lock kept short)
+    with db.read() as c:
+        run_keys = {(r[0], r[1]) for r in c.execute("SELECT DISTINCT sku_code, fc_code FROM forecast_refresh_values "
+                                                    "WHERE run_id=? AND final_qty IS NOT NULL", (run["id"],))}
+        cand = run_keys - _set_keys(c)
+    if not cand:
+        return {"switched": 0, "batch_id": None}
+    with db.tx() as c:
+        keys = sorted(cand - _set_keys(c))
+        for sku, fc in keys:
+            source_config._write(c, sku, fc, source_config.get_effective(c, sku, fc), LIGHTGBM, AUTO_REASON, by, at,
+                                 AUTO_CHANNEL, batch_id)
+        if keys:
+            db.audit(c, "FORECAST_SOURCE_AUTO_LIGHTGBM", "forecast_source_config", batch_id,
+                     {"forecast_date": d.isoformat(), "run_id": run["id"], "switched": len(keys),
+                      "reason": AUTO_REASON})
+    if keys:
+        log.info("sel2 forecast source: default codes switched to LIGHTGBM", extra={"ctx": {
+            "forecast_date": d.isoformat(), "run_id": run["id"], "switched": len(keys), "batch_id": batch_id}})
+    return {"switched": len(keys), "batch_id": batch_id if keys else None}
+
+
 def split_sku(sku: str | None) -> tuple[str | None, str | None]:
     """(seller_code, product_code) of a sku_code, split at the FIRST dot (owner decision 05/11/2026). No dot ->
     (None, sku); an empty part on either side of the dot -> None for that part; None / '' -> (None, None)."""
@@ -482,7 +689,9 @@ def _rows(d: date, keys: list, run: dict | None, run_keys: dict, vals: dict, avg
             by_reason[reason or ""] = by_reason.get(reason or "", 0) + 1
             for x in fl:
                 flag_rows[x] = flag_rows.get(x, 0) + 1
-            yield [sku, name, seller, product, fc, grp, d, td, i + 1, qty, av, src, used, reason, v[2] if v else None,
+            # 1.4.5: lightgbm_forecast written rounded (R5); forecast_used above is derived from qty as before
+            yield [sku, name, seller, product, fc, grp, d, td, i + 1, round_lgbm(qty), av, src, used, reason,
+                   v[2] if v else None,
                    v[1] if v else None, v[5] if from_prev else mv, v[6] if from_prev else cutoff, st, flags]
 
 
@@ -501,6 +710,14 @@ def _num(v) -> float | None:
 def _roundup(x) -> int:
     x = round(float(x), 6)
     return 0 if x < USED_THRESHOLD else math.ceil(x)
+
+
+def round_lgbm(x) -> int | None:
+    """1.4.5 (owner decision 06/11/2026): the lightgbm_forecast column at every horizon = the number rounded like
+    forecast_used (6 decimals, below 0.2 -> 0, else rounded up; = the SEL2 published quantity); None (or a value that
+    is not a finite number) stays empty. raw_value keeps the original."""
+    f = _num(x)
+    return None if f is None else _roundup(f)
 
 
 def derive_used(src, t_used, t_reason, raw) -> tuple[int, str | None]:
@@ -577,7 +794,7 @@ def _rows20(rows7, d: date):
             t = g[(h - 1) % HORIZON]
             r = list(t)
             raw = _num(t[i_raw])
-            r[i_td], r[i_h], r[i_lg] = targets[h], h, raw
+            r[i_td], r[i_h], r[i_lg] = targets[h], h, round_lgbm(raw)   # 1.4.5: rounded; derive_used takes the raw
             r[i_used], r[i_reason] = derive_used(t[i_src], t[i_used], t[i_reason], raw)
             r.append(CACH_WEEK)
             yield r
@@ -616,6 +833,18 @@ def _summary_rows(s: dict) -> list:
     out += [[f"rows_flag:{k}", v] for k, v in sorted(s["flag_rows"].items())]
     out += [[f"sku_fc_avg_reason:{k}", v] for k, v in sorted(s["avg"]["no_value_by_reason"].items())]
     out += [[f"sku_fc_model_used:{k}", v] for k, v in sorted(s["model_used_by_sku_fc"].items())]
+    fb = s.get("fallback")                                  # 1.4.5 (C7): daily file only
+    if fb is not None:
+        w = fb["window_days"]
+        out += [["fallback_window", fb["window"]], ["sku_fc_fallback", fb["sku_fc_fallback"]],
+                ["fallback_pct_all_sku_fc", fb["pct_all"]],
+                ["sku_fc_open_in_window", fb["sku_fc_open_in_window"]],
+                ["fallback_pct_open_sku_fc", fb["pct_open"]],
+                [f"sku_fc_fallback:khong_mo_ban_{w}_ngay", fb["fallback_no_open_day"]],
+                ["sku_fc_fallback:co_mo_ban_thieu_ngay", fb["fallback_with_open_day"]]]
+    sb = s.get("source_build")                              # 1.4.5 (C5): one line with the flag OPEN_HOURS_LAG
+    if sb is not None and FLAG_OPEN_HOURS_LAG in s["flag_rows"]:
+        out.append(["open_hours_lag_note", sb["text"]])
     a = s["avg"]
     out += [["avg_source_kind", a["source_kind"]], ["avg_source_table", a["source_table"]],
             ["avg_source_modified", a["source_modified"]], ["avg_read_completed_at", a["completed_at"]],
@@ -631,7 +860,8 @@ def _summary_rows(s: dict) -> list:
 # ------------------------------------------------------------------ export
 def write_daily_export(forecast_date, trigger: str = "SCHEDULE", job_id=None, scope_key: str | None = None) -> dict:
     """Write a new version of the daily Excel of forecast day D (Vietnam day). Returns path (relative to the data
-    folder), version, n_rows, is_stale, summary. Earlier version files are never touched."""
+    folder), version, n_rows, is_stale, summary, retired (1.4.5: new relative paths of the earlier versions renamed
+    to _bo). Earlier version files are never changed or deleted (only renamed, module text)."""
     d = _day(forecast_date)
     cfg = ss.get("sel2_pipeline")
     if not cfg.enabled:
@@ -659,6 +889,22 @@ def write_daily_export(forecast_date, trigger: str = "SCHEDULE", job_id=None, sc
         conf = {(r[0], r[1]): r[2] for r in c.execute("SELECT sku_code, fc_code, forecast_source FROM forecast_source_config")}
         cfg_rows = _config_rows(c)
         names = _names(c, d.isoformat(), av["source_table"])
+        # 1.4.5 (C7 / C5): information only - an error never fails the file (flag SUMMARY_INFO_FAILED, "khong ro")
+        info_failed = []
+        try:
+            fallback = _fallback_info(c, ref, run_keys, cfg)
+        except Exception as e:  # noqa: BLE001
+            fallback = None
+            info_failed.append(("fallback", e))
+        try:
+            source_build = _source_build(c, scope_key, d)
+        except Exception as e:  # noqa: BLE001
+            source_build = {"text": f"{FLAG_OPEN_HOURS_LAG}: {UNKNOWN} (loi doc thong tin)", "built_first": UNKNOWN,
+                            "error": f"{type(e).__name__}"}
+            info_failed.append(("source_build", e))
+    for part, e in info_failed:
+        log.warning("sel2 export summary information not read", extra={"ctx": {
+            "forecast_date": d.isoformat(), "part": part, "error": f"{type(e).__name__}: {e}"[:300]}})
     avg_keys = set(av["values"])
     keys = sorted(set(run_keys) | avg_keys)
     avg = av["values"]
@@ -677,7 +923,7 @@ def write_daily_export(forecast_date, trigger: str = "SCHEDULE", job_id=None, sc
     plan = _plan_or_fail(keys, d)                           # before any version is reserved
     n_rows = len(keys) * H_ALL
     file_flags = ([STALE_NO_RUN if run is None else "STALE"] if is_stale else []) + \
-        ([STALE_NO_RUN_3_DAYS] if no_run_3_days else []) + ([FLAG_AVG_NO_READ] if av["read_id"] is None else [])
+        ([STALE_NO_RUN_3_DAYS] if no_run_3_days else []) + ([FLAG_AVG_NO_READ] if av["read_id"] is None else []) +         ([FLAG_INFO_FAILED] if info_failed else [])
     ymd, latest_name = file_names(d)
     folder = root / ymd
     base = paths.data_dir().resolve()
@@ -706,7 +952,7 @@ def write_daily_export(forecast_date, trigger: str = "SCHEDULE", job_id=None, sc
                                   "configured_lightgbm": len(lgbm_keys),
                                   "configured_lightgbm_not_in_file": len(lgbm_keys - set(keys))},
                        "rows_by_fallback_reason": stats["rows_by_fallback_reason"], "flag_rows": stats["flag_rows"],
-                       "model_used_by_sku_fc": model_used,
+                       "model_used_by_sku_fc": model_used, "fallback": fallback, "source_build": source_build,
                        "avg": {"source_kind": av["source_kind"], "source_table": av["source_table"],
                                "source_modified": av["source_modified"], "completed_at": av["completed_at"],
                                "rule": av["rule"], "sku_fc_with_value": sum(1 for k in keys if not avg[k]["reason"]),
@@ -729,15 +975,28 @@ def write_daily_export(forecast_date, trigger: str = "SCHEDULE", job_id=None, sc
             rel = vpath.relative_to(base).as_posix()
             flags = file_flags + sorted(stats["flag_rows"])
             rid = db.new_id("EXP")
-            with db.tx() as c:
-                c.execute("INSERT INTO export_runs(id, forecast_date, version, path, sha256, n_rows, is_stale, flags, "
-                          "refresh_run_id, trigger, job_id, created_at, summary_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                          (rid, d.isoformat(), version, rel, sha, n_rows, int(is_stale), ",".join(flags) or None,
-                           run["id"] if run else None, trigger, job_id, created_at,
-                           json.dumps(summary, ensure_ascii=False, default=str)))
-                db.audit(c, "SEL2_EXPORT_WRITTEN", "export_run", rid,
-                         {"forecast_date": d.isoformat(), "version": version, "rows": n_rows, "is_stale": is_stale,
-                          "trigger": trigger})
+            # 1.4.5: earlier versions of the day -> _bo files, their paths updated with the new record (one transaction)
+            moves, rename_failed = _retire_earlier(d, version, base, cfg)
+            if rename_failed:
+                flags.append(FLAG_RENAME_FAILED)
+                summary["rename_failed_versions"] = rename_failed
+            try:
+                with db.tx() as c:
+                    c.execute("INSERT INTO export_runs(id, forecast_date, version, path, sha256, n_rows, is_stale, "
+                              "flags, refresh_run_id, trigger, job_id, created_at, summary_json) "
+                              "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                              (rid, d.isoformat(), version, rel, sha, n_rows, int(is_stale), ",".join(flags) or None,
+                               run["id"] if run else None, trigger, job_id, created_at,
+                               json.dumps(summary, ensure_ascii=False, default=str)))
+                    for old_id, _p, _bo, old_rel in moves:
+                        c.execute("UPDATE export_runs SET path=? WHERE id=?", (old_rel, old_id))
+                    db.audit(c, "SEL2_EXPORT_WRITTEN", "export_run", rid,
+                             {"forecast_date": d.isoformat(), "version": version, "rows": n_rows, "is_stale": is_stale,
+                              "trigger": trigger, "retired": [m[3] for m in moves],
+                              "rename_failed_versions": rename_failed})
+            except BaseException:
+                _undo_retire(moves)
+                raise
             recorded = True
             # 1.4.4: sidecar of the history page (published.py) from the rows written; a failure is only a flag
             sflag = published.write_safe(vpath, rid, d, sha, kept)
@@ -770,7 +1029,7 @@ def write_daily_export(forecast_date, trigger: str = "SCHEDULE", job_id=None, sc
                                                    "is_stale": is_stale, "sha256": sha, "latest_copy": lflag or "OK"}})
     return {"id": rid, "path": rel, "latest_path": (folder / latest_name).relative_to(base).as_posix(),
             "version": version, "sha256": sha, "n_rows": n_rows, "is_stale": is_stale, "flags": flags,
-            "summary": summary}
+            "summary": summary, "retired": [m[3] for m in moves]}
 
 
 class _LazySummary:

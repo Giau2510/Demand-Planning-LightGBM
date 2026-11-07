@@ -69,9 +69,10 @@ def test_header_case_whitespace_and_column_order_are_accepted(previews):
                (None, " AVG_DEMAND ", "F1", "S3")],
               header=("  Ghi_Chu ", "FORECAST_SOURCE", "Fc_Code", " SKU_CODE "))
     p = sc.preview_upload(f)
-    assert p["has_ghi_chu"] is True and p["counts"] == {"rows": 3, "changed": 2, "unchanged": 1, "errors": 0}
+    # 1.4.5: S3 has no row, its explicit AVG_DEMAND is recorded (a change)
+    assert p["has_ghi_chu"] is True and p["counts"] == {"rows": 3, "changed": 3, "unchanged": 0, "errors": 0}
     assert [(c["sku_code"], c["fc_code"], c["new_source"], c["ghi_chu"]) for c in p["changes"]] == [
-        ("S1", "F1", "LIGHTGBM", "note 1"), ("S2", "F1", "LIGHTGBM", None)]
+        ("S1", "F1", "LIGHTGBM", "note 1"), ("S2", "F1", "LIGHTGBM", None), ("S3", "F1", "AVG_DEMAND", None)]
 
 
 def test_vietnamese_header_and_value_variants_are_pinned(previews):

@@ -104,7 +104,7 @@ def _excel_rows(d: date) -> dict:
 
 
 def _publish(*days):
-    """1.4.4: the daily Excel of each day (the publication the history page reads: its horizon-2 sidecar file,
+    """1.4.4: the daily Excel of each day (the publication the history page reads: its horizon-1 (1.4.5) sidecar file,
     ml/sel2/published.py)."""
     for d in days:
         export.write_daily_export(d, scope_key=SCOPE)
@@ -186,11 +186,11 @@ def test_forecast_info_without_sel2(sel2_on, client, monkeypatch):
 
 
 def test_history_uses_sel2_from_0411(scenario, client):
-    """Run dates >= 04/11: forecast_used of horizon 2 (target run date + 1) of that day's SEL2 run vs the D-1 actual
+    """Run dates >= 04/11: forecast_used of horizon 1 (1.4.5: target = run date) of that day's SEL2 run vs the D-1 actual
     (an SKU x FC without a row on a read day = 0); before 04/11: no SEL2 (1.3.x source unchanged)."""
     _run("R03", date(2026, 11, 3), {("S1", "F1"): ("A", "M", {h: (50, 50.0) for h in range(1, 8)})},
          created="2026-11-02T23:30:00+00:00")             # before SEL2_FROM: never a SEL2 day
-    _demand([(D, "S3", "F1", 3.0), (D, "S9", "F1", 1.0), (D + timedelta(days=1), "S2", "F1", 7.0)])
+    _demand([(D - timedelta(days=1), "S3", "F1", 3.0), (D - timedelta(days=1), "S9", "F1", 1.0), (D, "S2", "F1", 7.0)])
     _publish(date(2026, 11, 3), D - timedelta(days=1), D)   # 03/11 is exported too: before SEL2_FROM, never SEL2
     ov = client.get("/api/history/overview").json()
     assert ov["sel2_from"] == "2026-11-04" and [d["run_date"] for d in ov["sel2_days"]] == ["2026-11-05", "2026-11-04"]
@@ -198,15 +198,15 @@ def test_history_uses_sel2_from_0411(scenario, client):
     by = {x["run_date"]: x for x in s["daily"]}
     assert by["2026-11-03"]["source_label"] is None and by["2026-11-03"]["has_history"] is False
     d4, d5 = by["2026-11-04"], by["2026-11-05"]
-    assert d4["source_label"] == "SEL2" and d4["forecast_run_id"] == "R0" and d4["target_date"] == "2026-11-05"
-    assert d5["forecast_run_id"] == "R1" and d5["target_date"] == "2026-11-06"
+    assert d4["source_label"] == "SEL2" and d4["forecast_run_id"] == "R0" and d4["target_date"] == "2026-11-04"
+    assert d5["forecast_run_id"] == "R1" and d5["target_date"] == "2026-11-05"
     xl5 = _excel_rows(D)                                   # the expected values come from the Excel of the day
-    assert d5["forecast"] == sum(x["forecast_used"] for k, x in xl5.items() if k[2] == 2)
+    assert d5["forecast"] == sum(x["forecast_used"] for k, x in xl5.items() if k[2] == 1)
     rows = client.get("/api/history/rows?run_from=2026-11-04&run_to=2026-11-05&limit=1000").json()
     r4 = {(x["sku_id"], x["fc_id"]): x for x in rows["rows"] if x["run_date"] == "2026-11-04"}
     assert all(x["source_label"] == "SEL2" for x in rows["rows"])
     assert set(r4) == {("S3", "F1"), ("S7", "F1")}         # the run of 04/11 (no AVG read that day)
-    assert r4[("S3", "F1")]["forecast_qty"] == 12              # horizon 2 of R0, LIGHTGBM (R1)
+    assert r4[("S3", "F1")]["forecast_qty"] == 11              # horizon 1 of R0, LIGHTGBM (R1)
     assert r4[("S3", "F1")]["actual"] == 3.0 and r4[("S3", "F1")]["actual_present"] == 1
     assert r4[("S7", "F1")]["actual"] == 0 and r4[("S7", "F1")]["actual_present"] == 0   # read day, no row -> 0
     assert d4["actual"] == sum(x["actual"] for x in r4.values()) and d4["n_rows"] == len(r4)

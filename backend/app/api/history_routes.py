@@ -5,7 +5,8 @@ recorded when a forecast is published, the actual is read from the D-1 / D0 data
 only added (forecast source / backup snapshot per day and row, the 23:59 close of the actual, filter `forecast_source`).
 
 1.4.4: from SEL2_FROM (04/11/2026, the first SEL2 run date) a run date shows the PUBLISHED SEL2 number of that day:
-forecast_used of the target day run date + 1 (horizon 2) as written in the newest daily Excel of that forecast day
+forecast_used of the target day = the run date itself (1.4.5, owner decision 06/11/2026: horizon 1, the run of day D
+for target D; 1.4.4: run date + 1 = horizon 2) as written in the newest daily Excel of that forecast day
 (sidecar file of ml/sel2/published.py) - never recomputed, so a later change of the forecast source configuration or of
 the AVG_DEMAND read never changes the history - compared with the actual of the same rule as before (D-1 / D0 / frozen
 copy, an SKU x FC without a row on a read day = 0); source label SEL2. The only file a request may write is a missing /
@@ -56,7 +57,7 @@ def _scope(c, scope_key: str | None) -> tuple[str | None, str | None, list[dict]
 
 SEL2_FROM = "2026-11-04"                 # 1.4.4: first run date of the SEL2 publication (owner 06/11/2026)
 SRC_SEL2, SRC_OLD = "SEL2", "LIGHTGBM_CU"
-SEL2_HORIZON = 2                         # target = run date + 1 = horizon 2 of the file of that day
+SEL2_HORIZON = published.HISTORY_HORIZONS[0]   # 1.4.5: 1 = target = run date (1.4.4: 2 = run date + 1)
 # sort (as fh.SORTS) -> length of the group prefix of _key: one day each (its last item is -day), "sku": one SKU
 SEL2_SORTS = {"date": 1, "forecast": 2, "abs_error": 3, "actual": 3, "sku": 1}
 
@@ -67,7 +68,7 @@ def _sel2_days(c, sk: str | None, run_from: str | None = None, run_to: str | Non
         return []
     lo = max(SEL2_FROM, run_from or SEL2_FROM)
     return [{"run_date": e["forecast_date"],
-             "target_date": str(date.fromisoformat(e["forecast_date"]) + timedelta(days=1)),
+             "target_date": str(date.fromisoformat(e["forecast_date"]) + timedelta(days=SEL2_HORIZON - 1)),
              "export_run_id": e["id"], "forecast_run_id": e["refresh_run_id"], "model_version": e["model_version"],
              "published_at": e["created_at"], "source": SRC_SEL2, "_export": e}
             for e in published.latest_exports(c, sk, lo, run_to or "9999-12-31")]

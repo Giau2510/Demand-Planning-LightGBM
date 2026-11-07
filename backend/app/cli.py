@@ -35,7 +35,7 @@
                                             du_bao_YYYYMMDD_TAM.xlsx with V33_L112, other trainings, past
                                             candidates, today)
   sel2-export --date D [--yes]              1.4.0: a new version of the daily Excel of forecast day D
-  sel2-published-backfill --start D --end D [--yes]   1.4.4: the history sidecar files (horizon 2) of days
+  sel2-published-backfill --start D --end D [--yes]   1.4.4: the history sidecar files (horizon 1) of days
                                             exported before 1.4.4, built from the newest recorded Excel of each
                                             day (xlsx only read, sha256 checked); without --yes only counted
                                             sel2-*: without --yes only the database path and the plan

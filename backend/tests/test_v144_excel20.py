@@ -144,14 +144,22 @@ def test_app_file_equals_the_ops_script_cell_by_cell(scenario, x20, monkeypatch,
     assert header == COLS20 and plan_names == ["DU_BAO_BD", "DU_BAO_HN"]
     a, b = _cells(app), _cells(ref)
     assert list(a) == list(b) == ["DU_BAO_BD", "DU_BAO_HN", "TOM_TAT", "CONFIG"]
+    # 1.4.5 (owner decision 06/11/2026): lightgbm_forecast is written rounded at every horizon; the 1.4.4 script wrote
+    # the raw value at h8..20. Every other cell equals the script's (forecast_used / fallback_reason included).
+    _round_ref(b)
     diffs = [(n, i, j) for n in a if n.startswith("DU_BAO_") for i, (ra, rb) in enumerate(zip(a[n], b[n]))
              for j in range(max(len(ra), len(rb))) if (ra + [None] * 30)[j] != (rb + [None] * 30)[j]]
     assert diffs == [] and [len(a[n]) for n in plan_names] == [len(b[n]) for n in plan_names] == [101, 121]
     xa, xb = _sheet_xml(app), _sheet_xml(ref)
-    assert all(xa[n] == xb[n] for n in ("DU_BAO_BD", "DU_BAO_HN", "CONFIG"))       # same bytes per sheet
-    # TOM_TAT differs only in the source rows (the app names itself; the script names its source file + sha256)
-    ta = [r for r in a["TOM_TAT"] if r[0][1] not in ("source", "generated_at")]
-    tb = [r for r in b["TOM_TAT"] if r[0][1] not in ("source_file", "source_sha256", "generated_at")]
+    assert xa["CONFIG"] == xb["CONFIG"]                                              # same bytes
+    # TOM_TAT differs only in the source rows (the app names itself; the script names its source file + sha256), the
+    # 1.4.5 note of horizon 8..20 and the 1.4.5 rows (FALLBACK shares, open_hours_lag_note)
+    new145 = ("fallback_window", "sku_fc_fallback", "fallback_pct_all_sku_fc", "sku_fc_open_in_window",
+              "fallback_pct_open_sku_fc", "open_hours_lag_note", "horizon_8_20")
+    ta = [r for r in a["TOM_TAT"] if r[0][1] not in ("source", "generated_at") + new145
+          and not str(r[0][1]).startswith("sku_fc_fallback:")]
+    tb = [r for r in b["TOM_TAT"] if r[0][1] not in ("source_file", "source_sha256", "generated_at") + new145
+          and not str(r[0][1]).startswith("sku_fc_fallback:")]       # the script copies the 1.4.5 rows of its source
     assert ta == tb
     s = {r[0][1]: r[1][1] for r in a["TOM_TAT"][1:]}
     assert s["source"] == f"Demand Forecast {__version__} (ghi truc tiep)" and s["generated_at"].endswith(" (VN)")
@@ -164,14 +172,14 @@ def test_rule_cases_of_horizon_8_to_20(scenario):
     by = {(r["sku_code"], r["fc_code"], r["horizon"]): r for rows in sheets.values() for r in rows}
     pick = lambda k: (by[k]["lightgbm_forecast"], by[k]["forecast_used"], by[k]["fallback_reason"], by[k]["cach_tinh"])
     # keep 0: h1 is 0 (R1); h8 = template h1, raw 0.1 rounds to 0, no reason
-    assert pick(("S1", "BD", 1)) == (0, 0, None, "SEL2") and pick(("S1", "BD", 8)) == (0.1, 0, None, "UOC_TINH_THEO_TUAN")
-    assert pick(("S1", "BD", 9)) == (pytest.approx(1.6), 2, None, "UOC_TINH_THEO_TUAN")
+    assert pick(("S1", "BD", 1)) == (0, 0, None, "SEL2") and pick(("S1", "BD", 8)) == (0, 0, None, "UOC_TINH_THEO_TUAN")
+    assert pick(("S1", "BD", 9)) == (2, 2, None, "UOC_TINH_THEO_TUAN")   # 1.4.5: raw 1.6 rounded
     assert by[("S1", "BD", 9)]["ten_san_pham"] == NAME_S1 and by[("S1", "BD", 9)]["avg_demand"] == 2.0
     # previous run (R3'): h5..7 from RP, h12..14 = raw of RP rounded up, reason kept
-    assert pick(("S2", "BD", 5)) == (56, 56, PREV, "SEL2") and pick(("S2", "BD", 12)) == (56.25, 57, PREV,
+    assert pick(("S2", "BD", 5)) == (56, 56, PREV, "SEL2") and pick(("S2", "BD", 12)) == (57, 57, PREV,
                                                                                             "UOC_TINH_THEO_TUAN")
     assert by[("S2", "BD", 12)]["flags"] == by[("S2", "BD", 5)]["flags"] == "LAN_CHAY_TRUOC:2026-11-01,AVG_NO_ROW"
-    assert by[("S2", "BD", 12)]["model_version"] == "MV-RP" and pick(("S2", "BD", 8)) == (10.7, 11, None,
+    assert by[("S2", "BD", 12)]["model_version"] == "MV-RP" and pick(("S2", "BD", 8)) == (11, 11, None,
                                                                                           "UOC_TINH_THEO_TUAN")
     # LIGHTGBM in the scope without any number -> 0 KHONG_CO_SO_NAO, kept at h8..20
     assert pick(("S6", "BD", 3)) == (None, 0, NONUM, "SEL2") and pick(("S6", "BD", 10)) == (None, 0, NONUM,
@@ -182,14 +190,14 @@ def test_rule_cases_of_horizon_8_to_20(scenario):
     assert all(by[("S10", "BD", h)]["forecast_used"] == 0 for h in range(1, 21))
     assert all(by[("S3", "HN", h)]["forecast_used"] == 3 and by[("S3", "HN", h)]["fallback_reason"] is None
                for h in range(1, 21))
-    assert by[("S3", "HN", 15)]["lightgbm_forecast"] == pytest.approx(0.6)            # raw of h1 (1 - 0.4)
+    assert by[("S3", "HN", 15)]["lightgbm_forecast"] == 1                             # raw of h1 (1 - 0.4) rounded
     # AVG_DEMAND without AVG -> the LightGBM number; h8..20 the raw rounded up
-    assert pick(("S4", "HN", 2)) == (2, 2, AVGL, "SEL2") and pick(("S4", "HN", 9)) == (2.05, 3, AVGL,
+    assert pick(("S4", "HN", 2)) == (2, 2, AVGL, "SEL2") and pick(("S4", "HN", 9)) == (3, 3, AVGL,
                                                                                       "UOC_TINH_THEO_TUAN")
     # Avg fallback in the scope (KHONG_CO_SO): no raw at the template -> the template's value and reason
     assert pick(("S5", "HN", 4)) == (None, 2, NONE, "SEL2") and pick(("S5", "HN", 11)) == (None, 2, NONE,
                                                                                           "UOC_TINH_THEO_TUAN")
-    assert pick(("S5", "HN", 8)) == (0.5, 1, None, "UOC_TINH_THEO_TUAN")
+    assert pick(("S5", "HN", 8)) == (1, 1, None, "UOC_TINH_THEO_TUAN")
     # numbers without raw_value: h8..20 keep the template's number
     assert all(pick(("S7", "HN", h))[:3] == (None, 4, None) for h in range(8, 21))
     assert pick(("S9", "HN", 20)) == (None, 0, NONUM, "UOC_TINH_THEO_TUAN")
@@ -287,7 +295,7 @@ def test_temp_export_uses_the_20_day_layout(sel2_on):
     sheets = _rows(paths.data_dir() / res["path"])
     assert list(sheets) == ["DU_BAO_BD", "DU_BAO_HN"] and res["n_rows"] == 40
     s1 = sheets["DU_BAO_HN"]
-    assert [r["forecast_used"] for r in s1] == [3] * 20 and s1[19]["lightgbm_forecast"] == pytest.approx(2.3)
+    assert [r["forecast_used"] for r in s1] == [3] * 20 and s1[19]["lightgbm_forecast"] == 3   # raw 2.3 rounded (1.4.5)
     assert [r["cach_tinh"] for r in s1].count("UOC_TINH_THEO_TUAN") == 13
     wb = load_workbook(paths.data_dir() / res["path"], read_only=True)
     s = {r[0]: r[1] for r in wb["TOM_TAT"].iter_rows(min_row=2, values_only=True)}
@@ -295,11 +303,22 @@ def test_temp_export_uses_the_20_day_layout(sel2_on):
     assert s["ghi_chu"] == export.TEMP_NOTE and s["rows_total"] == 14 and s["rows:DU_BAO_HN"] == 20
 
 
+def _round_ref(b: dict) -> None:
+    """1.4.5: the ops script (1.4.4 reference) writes lightgbm_forecast unrounded at h8..20; the app writes it rounded
+    (export.round_lgbm) at every horizon. Applied to the script's cells before the comparison (every other cell equal)."""
+    ilg = COLS20.index("lightgbm_forecast")
+    for n in b:
+        if n.startswith("DU_BAO_"):
+            for rb in b[n][1:]:
+                v = export.round_lgbm(rb[ilg][1])
+                rb[ilg] = (type(v).__name__, v)
+
+
 # ------------------------------------------------------------------ 144-T1-test (tester): stale days, Avg templates,
 # warehouse codes, empty input, n_rows, TOM_TAT order, latest copy, size sanity. Integration with fakes.
 def _compare_with_script(x20, monkeypatch, tmp_path) -> tuple[dict, Path]:
     """write_daily_export + the ops script on the 1.4.3 layout of the same input: every DU_BAO_* sheet equal cell by
-    cell and byte by byte; returns (result, app file)."""
+    cell (1.4.5: lightgbm_forecast rounded, _round_ref; no byte comparison any more); returns (result, app file)."""
     res, old = _export_with_old_layout(monkeypatch, tmp_path)
     app = paths.data_dir() / res["path"]
     ref = tmp_path / "x20.xlsx"
@@ -309,11 +328,10 @@ def _compare_with_script(x20, monkeypatch, tmp_path) -> tuple[dict, Path]:
     x20.verify(app, D, src, header, plan, n_summary - 1)
     a, b = _cells(app), _cells(ref)
     assert list(a) == list(b)
+    _round_ref(b)
     for n in a:
         if n.startswith("DU_BAO_"):
             assert a[n] == b[n], n
-    xa, xb = _sheet_xml(app), _sheet_xml(ref)
-    assert all(xa[n] == xb[n] for n in xa if n.startswith("DU_BAO_"))
     return res, app
 
 
@@ -344,8 +362,8 @@ def test_stale_day_previous_run_rows_keep_flag_and_reason_at_h8_20(stale_day):
     lan = "LAN_CHAY_TRUOC:2026-11-01"
     assert res["is_stale"] is True and len(rows) == 3 * 20 and all(r["is_stale"] == 1 for r in rows)
     # S1: h1 = RP h2 (R3'); h8 = template h1: raw of RP h2 rounded up, reason + run-day flag + provenance kept
-    assert pick(("S1", 1)) == (20, 20, PREV, "SEL2") and pick(("S1", 8)) == (19.7, 20, PREV, "UOC_TINH_THEO_TUAN")
-    assert pick(("S1", 13)) == (69.7, 70, PREV, "UOC_TINH_THEO_TUAN")
+    assert pick(("S1", 1)) == (20, 20, PREV, "SEL2") and pick(("S1", 8)) == (20, 20, PREV, "UOC_TINH_THEO_TUAN")
+    assert pick(("S1", 13)) == (70, 70, PREV, "UOC_TINH_THEO_TUAN")
     for h in (1, 8, 15):
         assert by[("S1", h)]["flags"] == f"OPEN_HOURS_LAG,{lan}" and by[("S1", h)]["model_version"] == "MV-RP"
         assert by[("S1", h)]["data_cutoff_date"] == _dt(D - timedelta(days=2))
@@ -353,10 +371,10 @@ def test_stale_day_previous_run_rows_keep_flag_and_reason_at_h8_20(stale_day):
     assert pick(("S1", 7)) == (None, 3, "STALE", "SEL2") and pick(("S1", 14)) == (None, 3, "STALE", "UOC_TINH_THEO_TUAN")
     assert by[("S1", 14)]["flags"] is None and by[("S1", 14)]["target_date"] == _dt(D + timedelta(days=13))
     # S2 AVG_DEMAND without AVG: the R3' number (KHONG_CO_AVG_DUNG_LIGHTGBM), h8..20 its raw rounded up
-    assert pick(("S2", 1)) == (2, 2, AVGL, "SEL2") and pick(("S2", 8)) == (2.25, 3, AVGL, "UOC_TINH_THEO_TUAN")
+    assert pick(("S2", 1)) == (2, 2, AVGL, "SEL2") and pick(("S2", 8)) == (3, 3, AVGL, "UOC_TINH_THEO_TUAN")
     assert by[("S2", 8)]["flags"] == f"OPEN_HOURS_LAG,{lan},AVG_NO_ROW"
     assert pick(("S2", 7)) == (None, 0, NONUM, "SEL2") and pick(("S2", 14)) == (None, 0, NONUM, "UOC_TINH_THEO_TUAN")
-    assert pick(("S2", 20)) == (7.25, 8, AVGL, "UOC_TINH_THEO_TUAN")                 # template h6 = RP h7
+    assert pick(("S2", 20)) == (8, 8, AVGL, "UOC_TINH_THEO_TUAN")                 # template h6 = RP h7
     # S3 outside the scope of the reference run: 0 at every horizon although AVG = 1
     assert all(pick(("S3", h))[1:3] == (0, OUT0) for h in range(1, 21))
     s = {r[0]: r[1] for r in _summary_of(p)[1:]}
@@ -427,12 +445,12 @@ def test_odd_warehouse_codes_sparse_horizons_and_avg_zero(odd_warehouses):
     assert sorted(k1) == list(range(1, 21))                                     # 20 rows despite missing horizons
     trio = lambda r: (r["lightgbm_forecast"], r["forecast_used"], r["fallback_reason"])
     assert trio(k1[2]) == (None, 2, NONE) and trio(k1[9]) == (None, 2, NONE)    # template h2: Avg 1.1 -> 2
-    assert trio(k1[10]) == (2.7, 3, None) and trio(k1[17]) == (2.7, 3, None)  # template h3: raw 2.7
-    assert trio(k1[8]) == (0.6, 1, None) and trio(k1[15]) == (0.6, 1, None)
+    assert trio(k1[10]) == (3, 3, None) and trio(k1[17]) == (3, 3, None)      # template h3: raw 2.7 (1.4.5 rounded)
+    assert trio(k1[8]) == (1, 1, None) and trio(k1[15]) == (1, 1, None)
     # AVG_DEMAND 0 with LightGBM numbers: 0 everywhere (zero is a value, the LightGBM number is not used)
     kh = sheets[kho]
     assert all(r["forecast_used"] == 0 and r["fallback_reason"] is None for r in kh)
-    assert kh[10]["lightgbm_forecast"] == 4.5
+    assert kh[10]["lightgbm_forecast"] == 5                                    # raw 4.5 rounded (1.4.5)
     # BD: AVG_DEMAND without AVG row and full numbers -> KHONG_CO_AVG_DUNG_LIGHTGBM, raw 1.5 -> 2 at h8..20
     assert all(trio(r)[1:] == (2, AVGL) for r in sheets["DU_BAO_BD"])
     s = {r[0]: r[1] for r in _summary_of(p)[1:]}
@@ -479,7 +497,7 @@ def test_empty_input_n_rows_zero_and_summary(sel2_on):
 def test_summary_key_order_versions_and_latest_copy(scenario):
     r1 = export.write_daily_export(D, scope_key=SCOPE)
     r2 = export.write_daily_export(D, scope_key=SCOPE, trigger="MANUAL")
-    p1, p2 = paths.data_dir() / r1["path"], paths.data_dir() / r2["path"]
+    p1, p2 = paths.data_dir() / r2["retired"][0], paths.data_dir() / r2["path"]      # 1.4.5: v1 renamed _bo
     latest = paths.data_dir() / r2["latest_path"]
     assert latest.read_bytes() == p2.read_bytes() and r2["version"] == 2
     keys = [r[0] for r in _summary_of(latest)]
@@ -519,7 +537,7 @@ def test_rows20_dates_across_year_end_and_bad_groups():
     td = [r[i_td] for r in out[:20]]
     assert td == [d + timedelta(days=i) for i in range(20)] and td[19] == date(2027, 1, 16)
     assert all(out[i][i_td].weekday() == out[i % 7][i_td].weekday() for i in range(7, 20))
-    assert out[7][export._I["lightgbm_forecast"]] == 1.5 and out[7][export._I["forecast_used"]] == 2
+    assert out[7][export._I["lightgbm_forecast"]] == 2 and out[7][export._I["forecast_used"]] == 2   # raw 1.5, 1.4.5
     assert list(export._rows20([], d)) == []
     with pytest.raises(RuntimeError):
         list(export._rows20(grp("S1", range(1, 7)), d))                        # an incomplete last group

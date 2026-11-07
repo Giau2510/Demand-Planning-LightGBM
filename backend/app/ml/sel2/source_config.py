@@ -14,7 +14,9 @@ append-only history (forecast_source_config_history).
                    and a note longer than 32,767 characters is not truncated.
 
 A row is "changed" when its source differs from the effective source, or when the file has a ghi_chu column and the
-note differs from the stored one (an empty cell = no note). Writing is refused while sel2_pipeline.enabled = False.
+note differs from the stored one (an empty cell = no note). 1.4.5: an explicit AVG_DEMAND for a SKU x FC WITHOUT a row
+(UI / API set_one, or an upload row) is a change too: it writes the row + a history row, so a code a user set to
+AVG_DEMAND is told apart from a default code (export.auto_switch_new_codes switches default codes only). Writing is refused while sel2_pipeline.enabled = False.
 An upload passes the safety checks of the Excel import (data/excel_io.check_xlsx: .xlsx only, workbook parts, no
 macro, bounded uncompressed size) before openpyxl reads it.
 """
@@ -136,7 +138,8 @@ def _write(c, sku: str, fc: str, old: dict, new_source: str, ghi_chu: str | None
 
 def set_one(sku_code: str, fc_code: str, forecast_source: str, ghi_chu: str | None = None, confirm: bool = False,
             changed_by: str | None = None, channel: str = "UI") -> dict:
-    """One change (confirm=True required). No change (same source and note) writes nothing."""
+    """One change (confirm=True required). No change (same source and note of a CONFIGURED row) writes nothing; an
+    explicit set of a SKU x FC without a row is always recorded (1.4.5, even AVG_DEMAND = the default)."""
     if confirm is not True:
         raise AppError("SOURCE_CONFIG_CONFIRM_REQUIRED", 409)
     sku, fc = _text(sku_code), _text(fc_code)
@@ -151,7 +154,7 @@ def set_one(sku_code: str, fc_code: str, forecast_source: str, ghi_chu: str | No
     with db.tx() as c:
         _require_enabled(c)
         old = get_effective(c, sku, fc)
-        if old["forecast_source"] == src and old["ghi_chu"] == note:
+        if old["configured"] and old["forecast_source"] == src and old["ghi_chu"] == note:
             return {"changed": False, "before": old, "after": old}
         by, at = changed_by or actor(), now_iso()
         _write(c, sku, fc, old, src, note, by, at, channel, None)
@@ -275,8 +278,8 @@ def preview_upload(fileobj, filename: str | None = None) -> dict:
         old_src = cur[0] if cur else DEFAULT_SOURCE
         old_note = cur[1] if cur else None
         new_note = r["ghi_chu"] if has_note else old_note
-        if old_src == r["forecast_source"] and old_note == new_note:
-            unchanged += 1
+        if cur is not None and old_src == r["forecast_source"] and old_note == new_note:
+            unchanged += 1                  # 1.4.5: a row for an unconfigured key is recorded (user-set)
             continue
         changes.append({"row": r["row"], "sku_code": r["sku_code"], "fc_code": r["fc_code"],
                         "old_source": cur[0] if cur else None, "effective_old_source": old_src,

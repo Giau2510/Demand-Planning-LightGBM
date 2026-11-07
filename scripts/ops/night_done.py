@@ -59,6 +59,8 @@ def check(d: date, db: Path, data: Path):
         if not ex:
             return False, f"daily Excel of {d} not exported yet"
         f = data / ex[1]
+        if not f.is_file() and f.with_name(f.stem + "_bo" + f.suffix).is_file():
+            f = f.with_name(f.stem + "_bo" + f.suffix)   # 1.4.5: renamed by a newer export killed before its record
         if not f.is_file():
             return False, f"Excel file v{ex[0]} missing"
         h = hashlib.sha256()

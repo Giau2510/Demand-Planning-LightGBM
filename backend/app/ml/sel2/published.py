@@ -3,9 +3,12 @@ database table: owner decision 06/11/2026, the database size).
 
 One sidecar per recorded export version (export_runs): <export root>\\.published\\YYYYMMDD\\du_bao_YYYYMMDD_vN.h2.json.gz
 (outside the day folder: its listing, which the purchasing team browses, stays the Excel files only), gzip JSON
-{"export_run_id", "forecast_date", "horizons": [2], "sha256_of_xlsx", "rows": [[sku, fc, target_date, forecast_used,
-forecast_source, fallback_reason], ...], "flags": {...}}: the rows of HISTORY_HORIZONS (horizon 2 = target day forecast
-day + 1, the history page's D+1) exactly as written in the file. export.write_daily_export writes it right after the
+{"export_run_id", "forecast_date", "horizons": [1], "sha256_of_xlsx", "rows": [[sku, fc, target_date, forecast_used,
+forecast_source, fallback_reason], ...], "flags": {...}}: the rows of HISTORY_HORIZONS exactly as written in the file.
+1.4.5 (owner decision 06/11/2026): horizon 1 = target day = forecast day (the run of day D for target D); up to 1.4.4
+horizon 2 (target D + 1). A sidecar of other horizons is stale (its "horizons" differ) and is rebuilt from the xlsx at
+the same path (the name keeps ".h2" for every horizon: a 1.4.4 sidecar is replaced, never left beside a new one). The
+sidecar of a version renamed to du_bao_YYYYMMDD_vN_bo.xlsx (1.4.5, export.py) keeps the name of du_bao_YYYYMMDD_vN. export.write_daily_export writes it right after the
 version file and its record, from the rows it already built (keep() wraps the rows generator); a failure is a warning
 (flag SIDECAR_WRITE_FAILED), never a failed export; the temporary _TAM file writes none. Written atomically (temporary
 file + os.replace).
@@ -37,13 +40,14 @@ from pathlib import Path
 from ... import db, paths
 
 log = logging.getLogger("df.sel2.published")
-HISTORY_HORIZONS = (2,)                   # horizons kept per SKU x FC (history: target = forecast day + 1)
+HISTORY_HORIZONS = (1,)                   # horizons kept per SKU x FC (1.4.5 history: target = forecast day)
 SIDECAR_DIR = ".published"
 FORMAT = 1
 COLS = ("sku_code", "fc_code", "target_date", "forecast_used", "forecast_source", "fallback_reason")
 SHEET_7, SHEET_PREFIX = "DU_BAO", "DU_BAO_"
 MAX_CACHED_ROWS = 600_000                 # about 10 days of 58k SKU x FC
 FLAG_WRITE_FAILED = "SIDECAR_WRITE_FAILED"
+RETIRED_SUFFIX = "_bo"                    # = export.RETIRED_SUFFIX (earlier versions of a day, 1.4.5)
 _lock = threading.Lock()
 _lru: OrderedDict = OrderedDict()         # (export_run_id, sha256) -> tuple of rows
 _lru_rows = 0
@@ -56,8 +60,12 @@ def _iso(v) -> str:
 
 
 def sidecar_path(version_file: Path) -> Path:
-    """<export root>/.published/YYYYMMDD/<version stem>.h2.json.gz for <export root>/YYYYMMDD/du_bao_YYYYMMDD_vN.xlsx."""
-    return version_file.parent.parent / SIDECAR_DIR / version_file.parent.name / f"{version_file.stem}.h2.json.gz"
+    """<export root>/.published/YYYYMMDD/<version stem>.h2.json.gz for <export root>/YYYYMMDD/du_bao_YYYYMMDD_vN.xlsx
+    (also for its renamed du_bao_YYYYMMDD_vN_bo.xlsx: the _bo suffix is not part of the sidecar name)."""
+    stem = version_file.stem
+    if stem.endswith(RETIRED_SUFFIX):
+        stem = stem[:-len(RETIRED_SUFFIX)]
+    return version_file.parent.parent / SIDECAR_DIR / version_file.parent.name / f"{stem}.h2.json.gz"
 
 
 def keep(rows, into: dict, columns):
@@ -174,6 +182,10 @@ def ensure(export_run: dict, create: bool = True) -> dict:
     vf = (base / export_run["path"]).resolve()
     if base not in vf.parents:
         return {"status": "FILE_MISSING"}
+    if not vf.exists() and not vf.stem.endswith(RETIRED_SUFFIX):
+        bo = vf.with_name(f"{vf.stem}{RETIRED_SUFFIX}{vf.suffix}")
+        if bo.is_file():                             # 1.4.5: renamed by a newer export killed before its record (read)
+            vf = bo
     sc = sidecar_path(vf)
     if sc.is_file() and (rows := _read_sidecar(sc, export_run)) is not None:
         return {"status": "PRESENT", "rows": len(rows), "_rows": rows}

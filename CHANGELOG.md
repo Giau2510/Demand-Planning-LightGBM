@@ -5,6 +5,51 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.4.5 (07/11/2026) (daily Excel: rounded LightGBM column, one final file per day, FALLBACK shares; history horizon 1)
+
+Owner decisions 06/11/2026 21:20 and 07/11/2026 00:55 / 01:10. No schema change (schema 12). The fixed forecast_used
+rule (CLAUDE.md) is unchanged: `forecast_used` / `fallback_reason` are derived from the same numbers as in 1.4.4.
+
+* **`lightgbm_forecast` rounded at every horizon 1..20** (`ml/sel2/export.py`, `round_lgbm`): below 0.2 -> 0, else
+  rounded up (6-decimal rounding first, the rule of the SEL2 published quantity); `raw_value` keeps the original number.
+  Horizon 1..7 showed the stored number of the run used (today's run or, with `DUNG_SO_LAN_CHAY_TRUOC`, a previous
+  run), normally the published integer; it is now written through the same rounding, so a stored non-integer number
+  can no longer appear. Horizon 8..20 (`UOC_TINH_THEO_TUAN`) showed the template's unrounded `raw_value` and now shows
+  it rounded. The forecast pages (`sel2_view`, `export._rows`) show the same numbers as the Excel.
+  / Cột `lightgbm_forecast` làm tròn ở mọi horizon (< 0,2 -> 0, còn lại làm tròn lên); `raw_value` giữ số gốc.
+* **History page: the run of day D for target D (horizon 1)** instead of horizon 2 (target D + 1)
+  (`ml/sel2/published.py` `HISTORY_HORIZONS = (1,)`, `api/history_routes.py`). The sidecar files keep their name; a
+  1.4.4 sidecar (`horizons` [2]) is stale and rebuilt from its xlsx when read or by
+  `python -m app.cli sel2-published-backfill --start D --end D --yes`.
+  / Trang Lịch sử: lần chạy ngày D cho chính ngày D (horizon 1).
+* **One final file per forecast day**: when a new version `du_bao_YYYYMMDD_vN.xlsx` is written, the earlier versions of
+  the day are renamed `du_bao_YYYYMMDD_vK_bo.xlsx` (never deleted, content unchanged) and their `export_runs.path` is
+  updated in the transaction of the new record (renamed back when that record fails); a file open in Excel keeps its
+  name, logged, flag `OLD_VERSION_RENAME_FAILED`, the export never fails; a record left on the old name after a crash is
+  repaired by the next export. The latest copy `du_bao_YYYYMMDD.xlsx` is unchanged.
+  / Mỗi ngày một file cuối: phiên bản cũ đổi tên `_bo`, không xoá.
+* **TOM_TAT: FALLBACK shares** (after `sku_fc_model_used:*`): `fallback_window`, `sku_fc_fallback`,
+  `fallback_pct_all_sku_fc` (denominator: every SKU x FC in the reference run's scope), `sku_fc_open_in_window`,
+  `fallback_pct_open_sku_fc` (denominator: only those with an open day, open hours > 0, in D-28 .. D-1),
+  `sku_fc_fallback:khong_mo_ban_28_ngay` (no open day in the window) and `sku_fc_fallback:co_mo_ban_thieu_ngay`.
+  Stored in `export_runs.summary_json.fallback`.
+* **OPEN_HOURS_LAG reminder**: with the flag `OPEN_HOURS_LAG` TOM_TAT gets `open_hours_lag_note`: newest open-hours day
+  stored, the build times (VN) of the open-hours table (`aux_source_reads.source_modified`) and of the demand table
+  (`demand_sync_runs.source_version` of the newest D-1 load) and which was built first (`khong ro` when unknown); no new
+  BigQuery call (`summary_json.source_build`). New ops script `scripts/ops/open_hours_notice.py` (read-only DB, one
+  phone notice per day when today's newest Excel has the flag) and `scripts/ops/register-open-hours-notice.ps1` (task
+  `DemandForecastOpenHoursNotice`, daily 07:30; not registered by the release).
+* **An explicit forecast source set is always recorded**: setting AVG_DEMAND (the default) on a SKU x FC without a
+  configuration row, by the UI / API or an upload row, now writes the row + a history row (was: no change), so a code a
+  user kept on Avg is never switched automatically (below).
+* **New codes switch to LIGHTGBM automatically** (owner decision 07/11/2026 01:10): a SKU x FC on AVG_DEMAND by default
+  (no configuration row and no history row: never set by a user) that has a number in the day's SEL2 run is switched
+  to LIGHTGBM right after the publication, before the day's Excel (`export.auto_switch_new_codes`, called by
+  `pipeline._export_hook`); written as a normal change with history (`changed_by` = `system`, `ghi_chu` =
+  `AUTO_LIGHTGBM_KHI_CO_SO`, channel `API`, one `batch_id`, audit `FORECAST_SOURCE_AUTO_LIGHTGBM`). A code set by a
+  user (any history row) is never touched; a manual / AVG re-export never changes the configuration.
+  / Mã mới (mặc định Avg, chưa ai cấu hình) có số LightGBM thì tự chuyển sang LIGHTGBM, có lịch sử.
+
 ## 1.4.4 (06/11/2026) (daily Excel in the 20-day layout, written by the app)
 
 Owner decision 05/11/2026 evening (docs/05_nhat_ky_quyet_dinh.md), until now applied by the ops script

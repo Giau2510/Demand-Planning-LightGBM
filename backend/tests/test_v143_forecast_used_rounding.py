@@ -173,9 +173,10 @@ def test_non_finite_avg_is_no_number(bad):
 
 @pytest.mark.parametrize("qty, used", [(0.5, 1), (0.1, 0), (2.0000001, 2), (-3, 0), (7.0, 7)])
 def test_lightgbm_number_rounded_and_original_kept(qty, used):
-    """LIGHTGBM number of the day is rounded too (fractional / negative); lightgbm_forecast keeps the original value."""
+    """LIGHTGBM number of the day is rounded too (fractional / negative); 1.4.5: lightgbm_forecast is written rounded
+    the same way (raw_value keeps the original)."""
     r = _one(("S1", "F1"), src="LIGHTGBM", avg=9.9, qty=qty)
-    assert (r["lightgbm_forecast"], r["avg_demand"], r["forecast_used"], r["fallback_reason"]) == (qty, 9.9, used, None)
+    assert (r["lightgbm_forecast"], r["avg_demand"], r["forecast_used"], r["fallback_reason"]) == (used, 9.9, used, None)
     assert type(r["forecast_used"]) is int
 
 
@@ -525,7 +526,7 @@ def test_previous_numbers_are_rounded_and_counts_match_the_rows(sel2_on):
                              {k: "LIGHTGBM"}, {}, True, stats, prev, True))
     used = [r[COL["forecast_used"]] for r in rows]
     assert used[:3] == [0, 2, 1] and all(type(x) is int for x in used)
-    assert [r[COL["lightgbm_forecast"]] for r in rows][:3] == [0.15, 2.0000001, 0.5]
+    assert [r[COL["lightgbm_forecast"]] for r in rows][:3] == [0, 2, 1]                  # 1.4.5: written rounded
     assert [r[COL["fallback_reason"]] for r in rows] == [PREV] * 3 + ["STALE"] * 4
     assert stats["rows_by_fallback_reason"] == {PREV: 3, "STALE": 4}
     assert stats["flag_rows"] == {f"LAN_CHAY_TRUOC:{_d(1)}": 2, f"LAN_CHAY_TRUOC:{_d(2)}": 1}

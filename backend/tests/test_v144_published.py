@@ -48,18 +48,18 @@ def _sidecar(export_run_id: str) -> dict | None:
         return json.load(f)
 
 
-def test_export_writes_one_horizon_2_sidecar_row_per_sku_fc(scenario):
+def test_export_writes_one_horizon_1_sidecar_row_per_sku_fc(scenario):
     res = export.write_daily_export(D, scope_key=SCOPE)
     doc = _sidecar(res["id"])
     xl = _excel_rows(D)                                     # writes v2 with its own sidecar; v1 unchanged
     keys = {(k[0], k[1]) for k in xl}
-    assert published.HISTORY_HORIZONS == (2,) and doc["horizons"] == [2]
+    assert published.HISTORY_HORIZONS == (1,) and doc["horizons"] == [1]          # 1.4.5: target = forecast day
     assert doc["export_run_id"] == res["id"] and doc["sha256_of_xlsx"] == res["sha256"]
     assert doc["forecast_date"] == D.isoformat()
     assert len(doc["rows"]) == len(keys) == res["n_rows"] // export.H_ALL
     assert {(r[0], r[1]) for r in doc["rows"]} == keys
     for sku, fc, td, used, src, reason in doc["rows"]:
-        x = xl[(sku, fc, 2)]
+        x = xl[(sku, fc, 1)]
         assert (td, used, src, reason) == (x["target_date"].date().isoformat(), x["forecast_used"],
                                            x["forecast_source"], x["fallback_reason"])
     assert _sidecar(res["id"]) == doc                       # a later version never changes the earlier sidecar
@@ -207,7 +207,7 @@ def big_history(sel2_on, monkeypatch):
     for n in range(N_DAYS):
         d = start + timedelta(days=n)
         eid, rel, sha = f"EXP-B{n}", f"exports/du_bao/{d:%Y%m%d}/du_bao_{d:%Y%m%d}_v1.xlsx", f"{n:064d}"
-        t = (d + timedelta(days=1)).isoformat()
+        t = d.isoformat()                                   # 1.4.5: horizon 1, target = run date
         published.write(paths.data_dir() / rel, eid, d, sha, ((s, f, t, i % 7, "LIGHTGBM", None)
                                                               for i, (s, f) in enumerate(keys)))
         with db.tx() as c:
@@ -331,8 +331,8 @@ def test_backfill_three_layouts_idempotent(sel2_on):
     assert not list(paths.data_dir().rglob("*.h2.json.gz"))  # dry run: nothing written
     res = published.backfill("2026-11-03", "2026-11-06", apply=True)
     assert [x["status"] for x in res["days"]] == ["NO_EXPORT", "CREATED", "CREATED", "CREATED"]
-    assert _sidecar(e2)["rows"] == [["A1", "BD", "2026-11-05", 21, "LIGHTGBM", "X"],
-                                    ["A2", "HN", "2026-11-05", 22.5, "LIGHTGBM", "X"]]   # never 0, kept as written
+    assert _sidecar(e2)["rows"] == [["A1", "BD", "2026-11-04", 11, "LIGHTGBM", None],
+                                    ["A2", "HN", "2026-11-04", 12.5, "LIGHTGBM", None]]  # never 0, kept as written (h1)
     assert len(_sidecar(e3)["rows"]) == 3 and len(_sidecar(e4)["rows"]) == 3
     snap = {e: _sidecar_file(e).read_bytes() for e in (e2, e3, e4)}
     again = published.backfill("2026-11-03", "2026-11-06", apply=True)

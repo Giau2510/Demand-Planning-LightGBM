@@ -80,17 +80,18 @@ def test_writes_refused_while_the_pipeline_is_off(sel2_off):
 def test_list_search_filter_paging(sel2_on):
     for i in range(5):
         sc.set_one(f"SKU{i}", "FC-A" if i % 2 else "FC-B", "LIGHTGBM", confirm=True)
-    # AVG_DEMAND on a key without a row is no change (missing = AVG_DEMAND): nothing stored
-    assert sc.set_one("SKU9", "FC-A", "AVG_DEMAND", confirm=True)["changed"] is False
+    # 1.4.5: an explicit AVG_DEMAND on a key without a row is recorded (user-set, never switched automatically)
+    assert sc.set_one("SKU9", "FC-A", "AVG_DEMAND", confirm=True)["changed"] is True
+    assert sc.set_one("SKU9", "FC-A", "AVG_DEMAND", confirm=True)["changed"] is False     # now configured: no change
     for i in (3, 4):
         sc.set_one(f"SKU{i}", "FC-A" if i % 2 else "FC-B", "AVG_DEMAND", confirm=True)
     with db.read() as c:
-        assert sc.list_config(c)["total"] == 5
-        assert sc.list_config(c, fc_code="fc-a")["total"] == 2
+        assert sc.list_config(c)["total"] == 6
+        assert sc.list_config(c, fc_code="fc-a")["total"] == 3
         assert sc.list_config(c, source="lightgbm")["total"] == 3
         page = sc.list_config(c, sku_code="sku", limit=2, offset=2)
-        assert page["total"] == 5 and len(page["items"]) == 2
-        assert sc.list_config(c)["configured_by_source"] == {"AVG_DEMAND": 2, "LIGHTGBM": 3}
+        assert page["total"] == 6 and len(page["items"]) == 2
+        assert sc.list_config(c)["configured_by_source"] == {"AVG_DEMAND": 3, "LIGHTGBM": 3}
         with pytest.raises(AppError):
             sc.list_config(c, source="X")
 
@@ -98,9 +99,9 @@ def test_list_search_filter_paging(sel2_on):
 def test_upload_preview_counts_errors_duplicates_and_writes_nothing(sel2_on):
     sc.set_one("S1", "F1", "LIGHTGBM", confirm=True)
     f = _xlsx([("S1", "F1", "lightgbm"),          # unchanged (case-insensitive)
-               ("S2", "F1", "AVG_DEMAND"),        # unchanged: missing row = AVG_DEMAND
+               ("S2", "F1", "AVG_DEMAND"),        # 1.4.5 changed: explicit AVG_DEMAND for a key without a row
                (" S3 ", " F1 ", "LightGBM"),      # changed (trimmed)
-               ("S1", "F2", "AVG_DEMAND "),       # unchanged
+               ("S1", "F2", "AVG_DEMAND "),       # 1.4.5 changed (no row for S1 x F2)
                ("", "F1", "LIGHTGBM"),            # error: missing sku
                ("S4", None, "LIGHTGBM"),          # error: missing fc
                ("S5", "F1", None),                # error: missing source
@@ -109,10 +110,11 @@ def test_upload_preview_counts_errors_duplicates_and_writes_nothing(sel2_on):
                (None, None, None)])               # empty row ignored
     before = (_config(), _history())
     p = sc.preview_upload(f, "x.xlsx")
-    assert p["counts"] == {"rows": 10, "changed": 1, "unchanged": 3, "errors": 6}
-    assert p["changes"] == [{"row": 4, "sku_code": "S3", "fc_code": "F1", "old_source": None,
-                             "effective_old_source": "AVG_DEMAND", "new_source": "LIGHTGBM", "old_ghi_chu": None,
-                             "ghi_chu": None}]
+    assert p["counts"] == {"rows": 10, "changed": 3, "unchanged": 1, "errors": 6}
+    assert p["changes"] == [{"row": r, "sku_code": s, "fc_code": f, "old_source": None,
+                             "effective_old_source": "AVG_DEMAND", "new_source": n, "old_ghi_chu": None,
+                             "ghi_chu": None} for r, s, f, n in ((3, "S2", "F1", "AVG_DEMAND"), (4, "S3", "F1", "LIGHTGBM"),
+                                                                 (5, "S1", "F2", "AVG_DEMAND"))]
     assert sorted(e["reason"] for e in p["errors"]) == ["DUPLICATE_IN_FILE", "DUPLICATE_IN_FILE", "MISSING_FC_CODE",
                                                          "MISSING_SKU_CODE", "MISSING_SOURCE", "UNKNOWN_SOURCE"]
     assert p["can_apply"] is False and (_config(), _history()) == before

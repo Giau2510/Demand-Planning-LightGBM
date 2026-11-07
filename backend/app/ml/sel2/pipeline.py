@@ -322,8 +322,14 @@ def _export_hook(d: date, trigger: str, job_id) -> dict | None:
         from . import export
     except ImportError:
         return None
+    try:                    # 1.4.5 C8 (owner 07/11/2026): default AVG_DEMAND codes with a number -> LIGHTGBM first
+        auto = export.auto_switch_new_codes(d, None)
+    except Exception as e:  # noqa: BLE001 - never blocks the export (the configuration stays as it was)
+        log.warning("sel2 auto LIGHTGBM switch failed", exc_info=True, extra={"ctx": {"forecast_date": str(d)}})
+        auto = {"error": f"{type(e).__name__}: {e}"[:300]}
     try:
-        return {"ok": True, "result": export.write_daily_export(d, trigger=trigger, job_id=job_id)}
+        return {"ok": True, "auto_lightgbm": auto,
+                "result": export.write_daily_export(d, trigger=trigger, job_id=job_id)}
     except Exception as e:  # noqa: BLE001 - the export never fails the published run
         log.warning("sel2 export failed", exc_info=True, extra={"ctx": {"forecast_date": str(d)}})
         return {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}

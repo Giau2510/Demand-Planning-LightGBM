@@ -191,17 +191,18 @@ def test_versions_latest_copy_relative_path_and_sha(scenario):
     _config([("S2", "F1", "LIGHTGBM", None)])
     r2 = export.write_daily_export(D, scope_key=SCOPE, trigger="MANUAL", job_id="J1")
     assert r2["version"] == 2 and r2["path"].endswith("du_bao_20261102_v2.xlsx")
-    assert p1.read_bytes() == first                                     # earlier version never changed
+    bo1 = p1.with_name("du_bao_20261102_v1_bo.xlsx")                     # 1.4.5: earlier version renamed _bo
+    assert not p1.exists() and bo1.read_bytes() == first and r2["retired"] == [bo1.relative_to(paths.data_dir()).as_posix()]
     latest = paths.data_dir() / "exports" / "du_bao" / "20261102" / "du_bao_20261102.xlsx"
     assert r2["latest_path"] == "exports/du_bao/20261102/du_bao_20261102.xlsx"
     assert hashlib.sha256(latest.read_bytes()).hexdigest() == r2["sha256"] != r1["sha256"]
-    assert sorted(x.name for x in latest.parent.iterdir()) == ["du_bao_20261102.xlsx", "du_bao_20261102_v1.xlsx",
+    assert sorted(x.name for x in latest.parent.iterdir()) == ["du_bao_20261102.xlsx", "du_bao_20261102_v1_bo.xlsx",
                                                                "du_bao_20261102_v2.xlsx"]
     with db.read() as c:
         recs = db.rows(c, "SELECT * FROM export_runs ORDER BY version")
     assert [(r["version"], r["path"], r["sha256"], r["n_rows"], r["is_stale"], r["trigger"], r["job_id"],
              r["refresh_run_id"]) for r in recs] == [
-        (1, r1["path"], r1["sha256"], 100, 0, "SCHEDULE", None, "R1"),
+        (1, r2["retired"][0], r1["sha256"], 100, 0, "SCHEDULE", None, "R1"),
         (2, r2["path"], r2["sha256"], 100, 0, "MANUAL", "J1", "R1")]
     assert not recs[0]["path"].startswith(("/", "\\")) and ":" not in recs[0]["path"]
     assert json.loads(recs[1]["summary_json"])["version"] == 2

@@ -628,6 +628,8 @@ def process_day(conn, data_dir, d, state, writer):
     vpath = base.joinpath(*[x for x in str(rel).replace("\\", "/").split("/") if x]).resolve()
     if not vpath.is_relative_to(base) or not re.fullmatch(rf"du_bao_{ymd}_v\d+\.xlsx", vpath.name):
         raise X20Error("SOURCE_PATH_INVALID", f"export_runs path {rel!r}")
+    if not vpath.exists() and vpath.with_name(vpath.stem + "_bo.xlsx").is_file():
+        vpath = vpath.with_name(vpath.stem + "_bo.xlsx")    # 1.4.5 app: renamed by a newer export (read-only)
     latest = vpath.with_name(f"du_bao_{ymd}.xlsx")
     tmp = vpath.with_name(f".x20_du_bao_{ymd}.tmp")
     shown = "/".join([x for x in str(rel).replace("\\", "/").split("/") if x][:-1] + [latest.name])
