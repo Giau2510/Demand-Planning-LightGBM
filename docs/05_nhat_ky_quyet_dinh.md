@@ -363,3 +363,293 @@ mục này làm lịch sử batch; mục nào đã có quyết định mới hơ
   migration đầu tiên tự sao lưu toàn bộ DB 9,7 GB lúc cài. Thay bằng file kèm theo mỗi bản Excel đã xuất
   (`exports\du_bao\<ngày>\.published\*.h2.json.gz`, ~1–2 MB/ngày, tạo lại được từ chính file Excel đã công bố). Lịch sử
   dùng `forecast_used` horizon 2 (lần chạy ngày D-1 cho ngày đích D) – chờ chủ dự án xác nhận horizon 2 hay 1.
+* **10:15 – sửa vị trí file lịch sử đã công bố** (quyết định kỹ thuật): chuyển sang `exports\du_bao\.published\<ngày>\`,
+  ngoài thư mục ngày (thư mục ngày chỉ còn file Excel). Script dọn định kỳ chỉ xoá thư mục tên 8 chữ số, nên không bao
+  giờ xoá thư mục này.
+
+## 06/11/2026 10:40 – Chủ dự án: THỨ TỰ BẮT BUỘC (thay thứ tự trước đó)
+
+1. Hoàn tất 1.4.4 (Excel 20 ngày trong app + sửa giao diện) → cài → kiểm tra sau cài → push github/1.4.4 + tag v1.4.4,
+   báo link.
+2. CHỈ SAU KHI push xong mới chạy backtest ngày 8–20 (4 cách: UOC_TINH_THEO_TUAN, LGBM_TAM_XA, TONG_TUAN, Avg) và kiểm
+   chứng học lại mỗi ngày (mục F).
+3. Chủ dự án ĐỒNG Ý đổi cách dự báo ngày 8–20 khi đạt quy tắc: LGBM_TAM_XA hoặc TONG_TUAN có Đúng (horizon 8–20) cao
+   hơn UOC_TINH_THEO_TUAN và thiếu không cao hơn quá 1 điểm → đưa cách tốt nhất vào bản 1.4.5 (học lại theo tuần cùng
+   các mô hình hiện có, ngày 1–7 GIỮ NGUYÊN, cột `cach_tinh` ghi tên cách mới; test + reviewer + sao lưu + cài
+   -VerifiedBackup; push v1.4.5). Không cách nào đạt → giữ UOC_TINH_THEO_TUAN và báo kết quả.
+4. Học lại mỗi ngày: chỉ báo kết quả kiểm chứng, KHÔNG tự bật.
+
+Thực hiện ngay: backtest F1 đang chạy được tạm dừng ở điểm lưu lúc 10:42 (đã lưu 4 mô hình gốc 31/08, 07/09, 14/09,
+21/09; không xoá gì). Task DemandForecastRunnerBT và DemandForecastRunnerWatchdogBT được tắt (Disabled), bật lại sau khi
+push v1.4.4 để chạy tiếp từ điểm lưu.
+
+## 06/11/2026 12:55 – ĐÃ TỰ DUYỆT (B2): giao diện 1.4.4 được cài
+
+Căn cứ (`reports\1.4.4\doi_chieu.md`, ảnh `reports\1.4.4\anh\truoc|sau`, 31 cặp):
+* Số trên trang khớp Excel 100 %:
+  - Kết quả dự báo và Dự báo hằng ngày: 50/50 SKU×kho, 411.033/411.033 dòng, tổng 7/7 ngày bằng nhau.
+  - Lịch sử: 100/100 dòng mẫu, tổng 05/11 và 06/11 bằng Excel.
+* Menu và tên trang giữ nguyên, các khung giữ nguyên.
+* Khác biệt nội dung là do lần chạy SEL2 không có các thông tin này:
+  - khung chất lượng: dòng "chưa có đánh giá WAPE";
+  - cột Phương pháp: mã mô hình;
+  - ô giải thích: "—";
+  - không có "đồng bộ lúc".
+* Phần duy nhất được thêm: dòng thông tin "Nguồn – làm mới lúc – dữ liệu đến".
+* Code: 1.4.4 = commit 77c0b01 + 350cadb (ban-144). Reviewer 3 lượt: không có lỗi nghiêm trọng.
+
+Cài theo chuỗi `scripts\ops\cai_144.py` (runner CAI-144-20261106), chỉ cài khi đạt từng bước; lỗi thì quay về 1.4.3:
+1. toàn bộ test + gói;
+2. sao lưu + thử khôi phục;
+3. cài với -VerifiedBackup, ngoài khung D0;
+4. kiểm tra sau cài;
+5. xuất lại Excel 06/11 và kiểm từng dòng 20 ngày;
+6. dựng file lịch sử 04–06/11;
+7. tắt task Excel20.
+
+* 12:50 – sửa bộ kiểm verifyoh của chuỗi 1.4.2: bộ kiểm tìm `open_hours` ở sai cấp JSON nên báo lỗi tạm mỗi 30 phút. Lần
+  đọc thật đã đạt: 01:43 ngày 06/11, 304.926 dòng, tới 05/11.
+
+## 06/11/2026 ~21:20 – Chủ dự án trả lời báo cáo 17:06 + kế hoạch tiếp theo
+
+**A. Trả lời 5 câu hỏi**
+1. Trang Lịch sử dùng số của lần chạy ngày D (horizon 1), không dùng horizon 2.
+   - 1.4.4 đang cài dùng horizon 2; đổi sang horizon 1 trong 1.4.5.
+   - Cách làm: `HISTORY_HORIZONS = (1,)`; file lịch sử cũ bị coi là cũ và tự dựng lại.
+2. Lọc "Dự phòng": ngày nào đã có số SEL2 thì chỉ hiện số SEL2, mỗi ngày đúng 1 số cuối cùng. Lọc "Dự phòng" không hiện các ngày đó (đã làm trong 1.4.4).
+3. Giao diện hiện đủ 20 ngày, có bộ lọc TỪ NGÀY – ĐẾN NGÀY: làm trong 1.4.5, sau khi có mô hình học thật cho ngày 8–20.
+4. `candidate_forecasts`: giữ 120 ngày, không cắt giảm.
+5. Cho phép trỏ task dọn hằng tuần sang bản cài 1.4.4 (sau khi cài xong), chạy thử, rồi xoá bản cài 1.4.0.
+
+**B. Ngày 8–20 phải do mô hình học thật cho từng ngày.** Cách chép tuần 1 sang tuần sau không được dùng làm kết quả chính thức.
+* Backtest F1 chạy sau khi push v1.4.4.
+* Ứng viên được chọn: LGBM_TAM_XA và TONG_TUAN.
+* Mốc so sánh (không được chọn): UOC_TINH_THEO_TUAN và Avg.
+* Cách chọn giữa 2 ứng viên: lấy ứng viên có Đúng cao hơn, với điều kiện thiếu/demand không cao hơn quá 1 điểm % so với ứng viên kia.
+* Nếu ứng viên tốt nhất KÉM UOC_TINH_THEO_TUAN (Đúng thấp hơn, hoặc thiếu cao hơn quá 1 điểm): DỪNG, báo chủ dự án quyết, không tự đưa vào.
+* Báo cáo Excel theo format đã dùng:
+  - các sheet TONG_HOP (Bảng 1–4 và 3B), THEO_THANG, PIVOT, HUONG_DAN;
+  - bộ lọc từ ngày – đến ngày (ngày đích), mô hình, horizon, nhóm A/B/C, kho.
+* Trong lúc chờ 1.4.5, file Excel giữ ngày 8–20 theo UOC_TINH_THEO_TUAN (đã ghi rõ là ước tính).
+
+**C. Bản 1.4.5 gồm**
+1. Mô hình ngày 8–20 chọn ở mục B; cột `cach_tinh` ghi tên mô hình. Ngày 1–7 giữ nguyên SEL2. Học lại theo tuần cùng các mô hình hiện có.
+2. Làm tròn `lightgbm_forecast` ở mọi horizon (< 0,2 → 0, còn lại làm tròn lên). `raw_value` giữ số gốc. `forecast_used` không đổi. Test: `lightgbm_forecast` là số nguyên ở mọi horizon.
+3. Sheet GIAI_THICH: mỗi SKU×kho có `lightgbm_forecast` một dòng cho ngày D, gồm:
+   - `model_used`; số gốc của 6 mô hình; số ngày đúng / số ngày chấm trong 28 ngày của từng mô hình; lý do FALLBACK;
+   - lịch sử gần đây: bán hôm qua, TB 7 ngày, TB 28 ngày, trung vị 28 ngày, số ngày mở bán / số ngày có bán trong 28 ngày, ngày bán gần nhất;
+   - 3 yếu tố ảnh hưởng mạnh nhất (đóng góp từng biến, tên biến tiếng Việt);
+   - `ly_do` bằng chữ khi `forecast_used` = 0.
+
+   Hướng dẫn đọc sheet ghi trong TOM_TAT. Thời gian xuất cả file dưới 15 phút.
+4. Giao diện hiện đủ 20 ngày + bộ lọc từ ngày – đến ngày trên các trang dự báo và trang Lịch sử. Gửi ảnh trước–sau để CHỦ DỰ ÁN DUYỆT (không tự duyệt phần này).
+5. Nhắc giờ mở bán của BI: mỗi sáng nếu file có cờ OPEN_HOURS_LAG thì báo điện thoại gồm:
+   - ngày giờ mở bán mới nhất đang có;
+   - giờ BI dựng `openhours_by_sku` và `demand_planing_lightgbm` đêm qua, bảng nào trước.
+
+   Ghi thêm 1 dòng vào TOM_TAT.
+6. Mỗi ngày chỉ giữ 1 file Excel cuối cùng. Các bản xuất trước trong cùng ngày đổi tên hậu tố `_bo` (không xoá).
+7. TOM_TAT ghi tỷ lệ FALLBACK theo 2 mẫu số: tất cả SKU×kho trong phạm vi, và chỉ SKU×kho có mở bán. Tách lý do "không mở bán 28 ngày" khỏi FALLBACK vì thiếu ngày.
+8. Xác nhận quy tắc tự chuyển mã mới mặc định AVG_DEMAND sang LIGHTGBM khi có số LightGBM (đã có trong 1.4.3); chưa có thì thêm.
+9. (Từ mục A1) Trang Lịch sử dùng horizon 1.
+
+Quy trình: test + reviewer + sao lưu + thử khôi phục + cài -VerifiedBackup. Phần không phải giao diện tự duyệt theo tiêu chí như 1.4.4; phần giao diện chờ chủ dự án duyệt ảnh. Push github/1.4.5 + tag v1.4.5.
+
+**D. Thứ tự**
+1. Cài 1.4.4 → push v1.4.4.
+2. Backtest F1.
+3. 1.4.5.
+4. Báo cáo đơn đột biến (D4).
+5. Kiểm chứng học lại mỗi ngày (F2): chỉ báo kết quả, không bật.
+
+Để sau: gộp code vào main (sau khoảng 1 tuần chạy ổn); học Tết (tháng 12); test giao diện chập chờn khi máy tải nặng.
+
+## 06/11/2026 22:26 – ĐÃ TỰ DUYỆT (B3): cài 1.4.4 + push github/1.4.4 + tag v1.4.4
+
+Căn cứ, từng tiêu chí đều đạt (`reports\release-1.4.4-20261106`):
+
+* **Toàn bộ test** (`release.json`, commit 350cadb): backend 1.777 đạt, 21 bỏ qua, 0 lỗi; frontend 205/205 đạt.
+* **Gói cài:** `DemandForecast-1.4.4-win64-portable.zip`, SHA-256 CB454C1A…BF30.
+* **Reviewer:** 3 lượt, không có lỗi nghiêm trọng (lượt 1 có 1 lỗi nghiêm trọng, đã sửa và review lại).
+* **Sao lưu + thử khôi phục:** đạt. Bản `backup-20261106-165332-pre-144.zip` (SHA E67990CB…161F).
+* **Cài:** `-VerifiedBackup`, 20:49 – 22:07; app dừng khoảng 13 phút. Kết quả: UPGRADE OK 1.4.3 → 1.4.4; schema 12 → 12; integrity ok.
+* **Kiểm tra sau cài:** đạt.
+  - health 1.4.4; lịch chạy trùng tuyệt đối; 0 mục cài đặt đổi;
+  - storage.json và cấu hình nguồn không đổi;
+  - 52 bảng, 0 bảng mất dòng.
+* **Xuất lại Excel 06/11 (v2):** 1.174.380 dòng = 58.719 SKU×kho × 20; 0 dòng sai quy tắc forecast_used; seller/product đúng.
+* **File lịch sử 04–06/11:** đã dựng. **Task DemandForecastExcel20:** đã tắt (không xoá).
+
+Tag v1.4.4 gắn vào commit đã cài 350cadb. Nhánh github/1.4.4 thêm commit 1727514 (công cụ vận hành: runner chỉ giữ máy thức khi cắm sạc, cai_144, sửa bộ kiểm verifyoh).
+
+## 06/11/2026 ~23:00 – Chủ dự án: đổi khung tạm dừng cho việc nặng KHÔNG ghi production (backtest, kiểm chứng trên bản sao g1)
+
+Áp dụng từ đêm 06→07/11:
+1. Không dừng ở 23:45–00:15: chạy liền tới 00:45.
+   - Chốt an toàn: trong 23:50–00:05, nếu RAM trống < 1,5 GB hoặc commit trống < 3 GB thì tạm dừng ở điểm lưu tới 00:05 rồi chạy tiếp.
+2. Dừng ở 00:45. Chạy lại ngay khi lần chạy đêm xong hết: D-1 thành công, SEL2 đã công bố, file Excel trong ngày đã xuất và kiểm.
+   - Thứ Hai: chờ thêm bước học lại tuần.
+   - Tới 03:45 lần chạy đêm vẫn chưa xong thì chạy tiếp như cũ.
+3. Việc GHI vào production (cài đặt, đồng bộ, sửa DB thật) giữ nguyên khung tránh 23:45–00:15 và 00:45–03:45.
+4. Báo điện thoại khi tạm dừng, khi chạy lại, và khi backtest xong (kèm giờ dự kiến có báo cáo).
+
+Thực hiện lúc 23:02:
+* `runner.py`: blocked window nhận thêm tuỳ chọn.
+  - `low_memory_only`: chỉ chặn khi bộ nhớ thấp; đã chặn thì giữ tới hết khung.
+  - `release_command`: mở khung sớm khi lệnh trả 0; kiểm tối đa 1 lần/phút; đã mở thì giữ mở tới hết khung.
+* `scripts\ops\night_done.py` (chỉ đọc): kiểm D-1, SEL2 PUBLISHED, Excel đã xuất (sha256 khớp + bản mới nhất); thứ Hai thêm CANDIDATE_TRAIN.
+* Test `test_windows_cond.py`: 7/7 đạt.
+* Plan backtest `reports\bt-runner-20261106\plan.json` đã đổi theo khung mới. Runner khởi động lại lúc 23:02 và chạy tiếp từ điểm lưu (6/6 mô hình gốc đã học xong).
+
+## 06/11/2026 23:40 – Backtest ngày 8–20 (F1) xong: DỪNG, chờ chủ dự án quyết (không đưa vào 1.4.5)
+
+* **Dữ liệu:** bản sao g1, 39 ngày dự báo (01/09–09/10/2026), horizon 8–20, khoảng 4,34 triệu ô SKU×ngày được chấm.
+* **Kết quả** (`reports\backtest-ngay8-20-20261106\full\bao_cao_ngay8_20.xlsx`, `metrics.json`):
+
+| Cách | Đúng 8–20 | Thiếu 8–20 |
+|---|---|---|
+| UOC_TINH_THEO_TUAN (mốc) | 74,65 % | 41,47 % |
+| LGBM_TAM_XA (ứng viên) | 74,11 % | 47,19 % |
+| TONG_TUAN (ứng viên) | 72,28 % | 42,62 % |
+| Avg (mốc) | 47,24 % | 44,29 % |
+
+* **Áp quy tắc chọn của chủ dự án (06/11 21:20):**
+  - Giữa 2 ứng viên: LGBM_TAM_XA có Đúng cao hơn, nhưng thiếu cao hơn TONG_TUAN 4,57 điểm (> 1 điểm), nên chọn TONG_TUAN.
+  - So TONG_TUAN với UOC_TINH_THEO_TUAN: Đúng thấp hơn 2,37 điểm; thiếu 42,62 > 41,47 + 1. ⇒ **KÉM mốc ⇒ DỪNG**, chờ chủ dự án quyết.
+  - Mục C1 của 1.4.5 (mô hình ngày 8–20) chưa làm. Các mục khác của 1.4.5 vẫn làm. Excel giữ UOC_TINH_THEO_TUAN (ghi rõ là ước tính).
+
+## 07/11/2026 00:55 – Chủ dự án: TRIỂN KHAI QUA ĐÊM, tự duyệt toàn bộ tới 07:00 ngày 07/11
+
+Toàn văn yêu cầu: các mục 0, A–I của tin nhắn lúc khoảng 00:50.
+
+**Nguyên tắc cố định:** mọi tính toán, hệ số, lựa chọn đều theo từng SKU×kho, từ lịch sử của chính SKU×kho đó; không dùng hệ số chung theo nhóm hay kho. Các ngưỡng là điểm xuất phát, mức cuối chọn bằng backtest.
+
+| Mục | Nội dung |
+|---|---|
+| 0 | Quyền allow/deny trong `.claude/settings.local.json` |
+| A | Đánh dấu đơn nghi đột biến: T1, T2, T4, T5, T6, T7 + ngoại lệ; chỉ bỏ phần vượt; thử mức 1/2/3 tín hiệu |
+| B | Hồ sơ ngày trong tháng theo SKU×kho (làm trơn ±2/±3/±5; kéo về 1 với k; giới hạn chọn bằng backtest); dùng làm biến LightGBM và cho UOC_NGAY_THANG; SEL2_8_20 chọn 2 cách tốt nhất theo SKU |
+| C | Thử lịch sử 90/120/150/180 ngày |
+| D | Nạp dữ liệu 2025 (chưa học); SEL2 1 ngày trước/sau nạp phải trùng tuyệt đối; BigQuery theo tháng, dry-run, < 5 GB/truy vấn; sao lưu trước; tránh khung giờ |
+| E | Danh sách đơn bị đánh dấu 30 ngày (CHI_TIET, THEO_SKU, THEO_KHACH, THONG_KE, HUONG_DAN); không chờ chủ dự án |
+| F | Backtest ngày 1–7 và 8–20 trên g1, chấm tháng 9–10; quy tắc: Đúng cao hơn, thiếu ≤ +1 điểm, tổng lệch ≤ +2 điểm |
+| G | Tổ hợp đạt → bản kế tiếp, tự duyệt với 2 chốt: (a) không kho nào giảm Đúng > 1 điểm hoặc tăng thiếu > 2 điểm; (b) test + reviewer + sao lưu + thử khôi phục + cài -VerifiedBackup. File sáng sau không đạt → tự quay về |
+| H | Thứ tự: 0 → 1.4.5 (C2–C8, Lịch sử horizon 1) → E → F → G → D → F2 |
+| I | 07:00 báo cáo tổng hợp |
+
+**Thực hiện:**
+* **Mục 0 BỊ CHẶN:** bộ phân loại an toàn không cho phiên tự sửa file quyền.
+  - File đề xuất ở scratchpad phiên: `settings.local.de_xuat.json`. Chủ dự án tự chép.
+  - Đã báo điện thoại; bỏ qua bước này theo đúng chỉ dẫn.
+* **Ghi chú:** `settings.json` của repo đặt git commit/push = "ask". Quy tắc "ask" thắng "allow".
+
+## 07/11/2026 01:10 – Chủ dự án: xác nhận đêm; C8 đã duyệt; không hỏi tới 07:00
+
+1. **Mục 0:** chủ dự án yêu cầu lại, lần ghi `.claude/settings.local.json` này được cho phép.
+   - Đã thêm 36 quyền allow và 35 quyền deny.
+   - Đã chạy thử python, git, schtasks, powershell scripts\ops: không bị hỏi.
+2. **C8 (duyệt từ 05/11):**
+   - Mã AVG_DEMAND do MẶC ĐỊNH → tự chuyển LIGHTGBM khi lần chạy SEL2 có `lightgbm_forecast` (lịch sử: changed_by = system, lý do AUTO_LIGHTGBM_KHI_CO_SO).
+   - Mã AVG_DEMAND do NGƯỜI DÙNG ĐẶT → giữ Avg.
+   - Đã ghi vào quy tắc cố định trong CLAUDE.md; làm trong 1.4.5.
+   - Ghi kèm C2: `lightgbm_forecast` làm tròn từ 1.4.5, số gốc ở `raw_value`.
+3. Tới 07:00 không hỏi chủ dự án; mọi quyết định theo quy tắc tự duyệt của prompt qua đêm.
+
+## 07/11/2026 09:10 – Phiên điều phối dừng 02:15–09:07; hết hạn tự duyệt (07:00)
+
+* Phiên điều phối không chạy từ khoảng 02:15 tới 09:07 (lý do chưa rõ; máy đang chạy pin 94 %). Báo cáo 07:00 gửi trễ lúc 09:10.
+* 1.4.5 (phần không giao diện) đã commit cục bộ `de9d51e` lúc 09:07. Lần push lúc 09:07 lỗi mạng (Could not resolve host).
+* Quyền tự duyệt hết hạn lúc 07:00. Vì vậy KHÔNG cài 1.4.5 và KHÔNG push / tag; chờ chủ dự án.
+* Chuỗi cài đã soạn sẵn: `reports\release-1.4.5-20261107\plan.json` (`cai_145.py`).
+
+## 07/11/2026 ~10:20 – Chủ dự án: kế hoạch tiếp theo (tự duyệt 24/24, chạy pin, quyền git, logic đột biến mới)
+
+* **A.** Tự duyệt 24/24 theo quy tắc và chốt an toàn; chỉ chờ chủ dự án ở phần duyệt ảnh giao diện (C4).
+* **B. Mất điện, máy chạy pin:**
+  - Bước test + đóng gói 1.4.5 chạy tiếp nếu pin ≥ 30 %, dưới 30 % thì tạm dừng.
+  - Không bắt đầu việc nặng mới.
+  - Bước cài chỉ chạy khi cắm sạc.
+* **C. Quyền git:** chủ dự án đã xoá khối "ask" trong `D:\Buymed\Lightgbm AI\.claude\settings.json`. Kiểm lúc 10:28:
+  - JSON đúng cú pháp; deny còn đủ 11 dòng; không còn "ask".
+  - `git commit --allow-empty` trên nhánh thử `perm-test-20261107` (ban-1.4), đã xoá nhánh: không bị hỏi.
+  - `git push --dry-run origin github/1.4.5`: không bị hỏi.
+  - Ghi chú: 7 worktree (ban-1.4, ban-142…ban-145, lgbm-chot, san-xuat) vẫn còn khối "ask" trong `.claude\settings.json` riêng của chúng. Phiên chính đọc settings của repo chính nên không bị ảnh hưởng; phiên mở trong worktree sẽ bị hỏi.
+* **D. Logic đánh dấu đột biến mới** (so theo cỡ đơn):
+  - Tín hiệu: T1, T2 (k × cỡ đơn bình thường, k = 5 / 10 / 20), T4, T7. Bỏ T5 và T6.
+  - Ngoại lệ thêm "khách mua sỉ thường xuyên".
+  - Xuất lại danh sách 30 ngày, kèm sheet SO_SANH.
+* **E.** Các phần khác giữ như prompt qua đêm.
+* **F. Thứ tự:** C, D → 1.4.5 (cài khi có điện, push + tag) → kiểm file 07/11 → backtest 1–7 (logic mới) → backtest 8–20 → G → nạp 2025 → F2 → C3 → C4.
+* **Ghi chú:** máy ngủ 09:43–10:28 khi đang chạy pin (đúng cách mới: chạy pin thì không giữ máy thức). Bước test 1.4.5 chạy tiếp sau khi máy thức.
+
+## 07/11/2026 11:10 – ĐÃ TỰ DUYỆT: rút gọn backtest ngày 1–7 (giai đoạn 1)
+
+* **Căn cứ:** chạy thử cho thấy mỗi biến thể × gốc mất 45–100 phút trên toàn bộ SKU×kho.
+  - Lưới đầy đủ: khoảng 375 giờ.
+  - Giai đoạn 1 nguyên bản: khoảng 75 giờ.
+  - Cả hai đều không khả thi trên máy này.
+* **Thiết kế rút gọn:**
+  - Mẫu 20 % SKU×kho, phân tầng theo kho × nhóm, seed cố định.
+  - 10 gốc (từ 18/08).
+  - 4 biến thể: L0 (học lại, không làm sạch, làm mốc cùng code), L2_H180_P0, L1_H180_P0, L2_H180_P1. Chấm thêm SEL2 đã công bố trên cùng mẫu.
+* **Quy tắc chọn:** so với L0 (Đúng cao hơn, thiếu ≤ +1 điểm, lệch ≤ +2 điểm, chốt theo kho).
+* **Giai đoạn 2** (H 90/120/150) chỉ chạy quanh biến thể tốt nhất.
+* **Thứ tự chạy:** sau khi cài 1.4.5 xong, mỗi lúc 1 việc nặng.
+
+## 07/11/2026 13:36 – ĐÃ TỰ DUYỆT: cài 1.4.5 + push github/1.4.5 + tag v1.4.5 (`de9d51e`)
+
+Căn cứ (`reports\release-1.4.5-20261107`):
+* **Test và đóng gói:** backend 1.808 đạt, 21 bỏ qua; frontend 205/205. Gói SHA-256 72E860DD…BA08.
+* **Review:** reviewer và data-reviewer đều không có lỗi nghiêm trọng; các điểm nên sửa đã sửa trước khi đóng gói.
+* **Sao lưu + thử khôi phục:** đạt (`backup-20261107-111523-pre-145.zip`).
+* **Cài:** -VerifiedBackup, 12:21–13:14; UPGRADE OK 1.4.4 → 1.4.5.
+* **Kiểm tra sau cài:** đạt (lịch trùng tuyệt đối, 0 cài đặt đổi, 52 bảng không mất dòng, quy tắc cố định có trong code).
+* **Excel 07/11 v2:** 1.175.300 dòng = 58.765 × 20; 0 dòng sai quy tắc; `lightgbm_forecast` là số nguyên; bản v1 đổi tên `_bo`.
+* **File lịch sử:** đã dựng lại theo horizon 1 cho 04–07/11.
+* **Task nhắc giờ mở bán:** `DemandForecastOpenHoursNotice` đã đăng ký (07:30, lặp tới 11:00).
+* **Nhánh github/1.4.5:** đầu nhánh `f0d642c` (thêm session watchdog + `stop_process.py`). Tag v1.4.5 = `de9d51e`.
+* **data-check sau cài:** chưa chạy, để không chồng việc nặng với backtest. Chạy sau.
+
+## 07/11/2026 22:55 – Backtest ngày 1–7 (logic đột biến v2, mẫu 20 %): KHÔNG ĐẠT, giữ SEL2 hiện tại
+
+* **Mẫu chấm:** 3.162 / 15.807 SKU×kho (phân tầng kho × nhóm), 52 ngày dự báo 01/09–22/10. Mốc so sánh: L0 (học lại không làm sạch).
+* **Kiểm tra mốc:** L0 so với SEL2 đã công bố lệch rất nhỏ (Đúng −0,21 / thiếu −0,22 / lệch +0,18 điểm), nên mốc tin được.
+
+| Biến thể | Đúng | Thiếu | Lệch | So với L0: Đúng / thiếu / lệch |
+|---|---|---|---|---|
+| L0 (mốc) | 74,31 % | 39,19 % | 69,34 % | – |
+| L1 H180 | 75,22 % | 43,94 % | 66,04 % | +0,90 / **+4,75** / −3,30 |
+| L2 H180 | 74,43 % | 41,14 % | 68,45 % | +0,12 / **+1,94** / −0,89 |
+| L2 H180 + hồ sơ ngày | 74,41 % | 41,20 % | 68,71 % | +0,10 / **+2,00** / −0,63 |
+
+* **Kết luận:** không biến thể nào đạt quy tắc (thiếu ≤ +1 điểm). Giữ nguyên SEL2 ngày 1–7; không đưa vào bản cài.
+* **Không chạy giai đoạn 2** (thử lịch sử 90/120/150 ngày), vì không có biến thể đạt để thử quanh nó.
+* **Gợi ý thử sau** (không tự làm): bỏ một phần phần vượt (ví dụ 50 %), hoặc chỉ bỏ ở nhóm A/B. Lý do: dư giảm mạnh và Đúng S2 tăng, nhưng thiếu tăng.
+* **Báo cáo:** `reports\backtest-ngay1-7-20261107\mau20\bao_cao_ngay1_7.xlsx`, `verdict_1_7.json`.
+
+## 07/11/2026 ~23:00 – Chủ dự án: quy tắc báo cáo mới (cố định)
+
+* Chat chỉ dùng cho: việc lớn xong, lỗi, cần quyết, và báo cáo định kỳ 07:00 / 19:00. Bước nhỏ chỉ cập nhật STATUS.md + báo điện thoại ngắn.
+* Mỗi tin là một báo cáo đầy đủ theo mẫu 5 mục, kèm file `reports\bao-cao\BAO_CAO_YYYYMMDD_HHMM.md`.
+* Đã ghi vào CLAUDE.md. Báo cáo gộp đầu tiên: `BAO_CAO_20261107_2300.md`.
+
+## 07/11/2026 ~23:10 – Chủ dự án: TỔNG HỢP MỌI VIỆC, hạn cứng 12:00 ngày 08/11 (thay mọi prompt lẻ trước đó)
+
+* **A.** Quy tắc vận hành giữ nguyên. Báo cáo chat lúc 07:00 và 12:00; không mở rộng hướng thử nghiệm.
+* **B1.** Hoàn tất backtest ngày 8–20, áp quy tắc chọn; báo cáo theo mẫu, thêm sheet THEO_SKU.
+* **B2.** Bản 1.4.6:
+  - Nội dung: cách ngày 8–20 nếu đạt + GIAI_THICH. File giải thích riêng giữ 7 ngày; Excel hằng ngày (có sheet GIAI_THICH) giữ 90 ngày.
+  - Cài trước 10:00, không trùng D0. Sau cài: data-check, xuất lại Excel hôm nay, push v1.4.6.
+* **B3.** Test làm sạch đột biến ngày 1–7, logic v3:
+  - Khách quen bắt buộc có T1; T7 không đứng một mình; khách mới xét T2, T4.
+  - Ngoại lệ E1–E3 theo từng SKU×kho. Thêm E4 với N = 4 / 5 / 7 / 9 / 12.
+  - Chạy mức 1, H180, P0, mẫu 20 % (giảm nếu không kịp 10:00); chấm riêng tháng 7–10 và cả kỳ.
+  - Chọn N tốt nhất và ổn định. Không đạt thì DỪNG hướng làm sạch đột biến.
+* **B4.** Kiểm file 08/11; không đạt thì quay về bản trước.
+* **C. Việc nhẹ:**
+  - C1: ảnh C4 chờ duyệt.
+  - C2: data-check sau cài 1.4.5.
+  - C3: chuẩn bị dọn worktree: liệt kê 8 file còn "ask"; nén rồi `git worktree remove` 6 worktree cũ nếu không còn thay đổi cần giữ.
+* **D.** Sau 12:00: nạp 2025 → F2.
+* **E.** Danh sách cải tiến: gộp main (khoảng 11/11), Tết tháng 12, test giao diện chập chờn, tắt lịch tự động khi có máy chủ công ty.
+* **F.** Báo cáo 07:00 và 12:00.
