@@ -55,7 +55,7 @@ def main(argv=None):
     wt = Path(o.path).resolve()
     rc, out, _ = git("worktree", "list", "--porcelain")
     paths = [Path(l[9:]).resolve() for l in out.splitlines() if l.startswith("worktree ")]
-    if wt not in paths or wt == REPO.resolve():
+    if wt not in paths or wt == REPO.resolve() or (paths and wt == paths[0]):   # paths[0] = the main worktree
         print(f"REFUSED: {wt} is not a secondary worktree of {REPO}")
         return 2
     others = [p for p in paths if p != wt]

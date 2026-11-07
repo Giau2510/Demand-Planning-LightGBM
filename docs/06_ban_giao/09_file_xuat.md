@@ -203,8 +203,8 @@ Nằm sau các sheet `DU_BAO_<fc_code>`, trước `TOM_TAT`. Một dòng cho m�
 Dữ liệu lấy từ file phụ `<models>\sel2\<scope hash>\giai_thich\<D>_<run id>.json.gz`, do lần chạy SEL2 ghi trong một
 tiến trình con sau khi công bố (kiểm tra bộ nhớ trước, dừng sau 20 phút). Không có file phụ (lần chạy trước 1.4.6, hoặc
 bước này bị bỏ qua / lỗi / quá giờ) → file Excel không có sheet `GIAI_THICH`; khi bước của lần chạy hôm nay bị bỏ qua /
-lỗi, file có thêm cờ `GIAI_THICH_SKIPPED`. File phụ không nằm trong bản sao lưu và bị xoá cùng hạn với
-`candidate_forecasts` (`sel2_pipeline.retention_days`, mặc định 120 ngày).
+lỗi, file có thêm cờ `GIAI_THICH_SKIPPED`. File phụ không nằm trong bản sao lưu và chỉ giữ 7 ngày
+(chủ dự án 07/11: `pipeline.GIAI_THICH_RETENTION_DAYS`); file Excel hằng ngày vẫn giữ sheet `GIAI_THICH` (thư mục xuất giữ 90 ngày).
 
 ---
 

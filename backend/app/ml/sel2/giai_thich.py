@@ -10,7 +10,8 @@ child after a timeout, pipeline._giai_thich_hook):
   <D>_<run id>.status.json (status, reason) and never fails the published run or its export: the file is then written
   without the sheet GIAI_THICH and with the file flag GIAI_THICH_SKIPPED (the other sheets are unchanged). A run
   published before 1.4.6 has neither file: no sheet, no flag. Derived data only: excluded from the backups
-  (backup.py) and deleted with the candidate forecasts (apply_retention: forecast days before D - retention_days).
+  (backup.py) and kept 7 days only (owner 07/11: pipeline.GIAI_THICH_RETENTION_DAYS; apply_retention deletes the
+  forecast days before D - retention_days).
   Per series of the run's scope (sku_code, fc_code), columns in "cols":
     model_used, ok, nday, second (candidate ranked 2nd), fb (FALLBACK code: NO_OPEN_DAY / FEW_DAYS / SECOND_MISSING)
       = the arrays of select.select_day(detail=...) of the published selection (same scores, same order);

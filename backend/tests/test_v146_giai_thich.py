@@ -285,3 +285,13 @@ def test_backup_excludes_the_giai_thich_sidecars(data_dir, tmp_path):
         names = z.namelist()
     rel = model.relative_to(paths.models_dir()).as_posix()
     assert f"models/{rel}" in names and not any("giai_thich" in n for n in names)
+
+
+def test_run_day_applies_the_7_day_sidecar_retention(monkeypatch):
+    """owner 07/11: the explanation sidecars are kept 7 days whatever sel2_pipeline.retention_days is"""
+    from app.ml.sel2 import pipeline, giai_thich
+    assert pipeline.GIAI_THICH_RETENTION_DAYS == 7
+    import inspect
+    src = inspect.getsource(pipeline)
+    assert "giai_thich.apply_retention(d, GIAI_THICH_RETENTION_DAYS)" in src
+    assert "giai_thich.apply_retention(d, s.retention_days)" not in src
