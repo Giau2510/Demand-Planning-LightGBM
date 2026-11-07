@@ -653,3 +653,21 @@ Căn cứ (`reports\release-1.4.5-20261107`):
 * **D.** Sau 12:00: nạp 2025 → F2.
 * **E.** Danh sách cải tiến: gộp main (khoảng 11/11), Tết tháng 12, test giao diện chập chờn, tắt lịch tự động khi có máy chủ công ty.
 * **F.** Báo cáo 07:00 và 12:00.
+
+## 08/11/2026 03:40 – B1 backtest ngày 8–20 (UOC_NGAY_THANG + SEL2_8_20, đột biến v2): KHÔNG ĐẠT, giữ UOC_TINH_THEO_TUAN
+
+* **Phạm vi:** 39 ngày dự báo 01/09–09/10; 1.536 biến thể UOC_NGAY_THANG. Số biến thể đạt quy tắc: 0.
+* **Kết quả 8–20 tổng:**
+  - UOC_TINH_THEO_TUAN: Đúng 74,65 %, thiếu 41,47 %, lệch 73,38 %.
+  - UOC_NGAY_THANG, biến thể tốt nhất (`NT_DTE_H90_W5_K56_C0.8-1.2_L1`): Đúng 74,52 %, thiếu 41,63 %, lệch 73,99 %.
+  - SEL2_8_20: Đúng 74,42 %, thiếu 41,34 %, lệch 73,33 %.
+* **Kiểm tra chia đôi kỳ:** cũng không đạt.
+* **Kết luận:**
+  - Bản 1.4.6 chỉ gồm C3 (GIAI_THICH) + phần lưu 7 ngày. Chuỗi CAI-146 tự chạy tiếp.
+  - Ngày 8–20 giữ UOC_TINH_THEO_TUAN; file Excel ghi rõ là ước tính.
+* **Báo cáo:** `reports\backtest-ngay8-20-20261107\full\bao_cao_ngay8_20b.xlsx` (có THEO_SKU), `verdict_8_20b.json`.
+* **B4 (file 08/11 bằng 1.4.5): ĐẠT.**
+  - 1.175.300 dòng = 58.765 × 20; 0 dòng sai quy tắc; seller/product đúng; is_stale = 0.
+  - `lightgbm_forecast` là số nguyên.
+  - FALLBACK 37,27 % trên tất cả SKU×kho / 16,89 % trên SKU×kho có mở bán.
+  - Có dòng nhắc giờ mở bán; C8 tự chuyển 4 mã sang LIGHTGBM.
