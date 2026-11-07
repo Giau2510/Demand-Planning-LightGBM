@@ -24,8 +24,9 @@ is written.
   with the file flag `GIAI_THICH_SKIPPED`; the run and its export never fail because of it. Runs published before 1.4.6
   have no sidecar: no sheet, no flag. `select.select_day(detail=...)` / `_scores(counts=...)` expose the selection
   arrays without changing the selection.
-* **Retention / backups**: sidecars are derived files, deleted with the candidate forecasts (forecast days before D -
-  `sel2_pipeline.retention_days`, 120 by default) and **excluded from the database backups** (`backup.py`).
+* **Retention / backups**: sidecars are derived files, kept **7 days** only (owner 07/11/2026: forecast days before
+  D - 7 deleted by `pipeline.run_day`, `GIAI_THICH_RETENTION_DAYS`; the daily Excel keeps its GIAI_THICH sheet, export
+  folders are kept 90 days) and **excluded from the database backups** (`backup.py`).
 
 ## 1.4.5 (07/11/2026) (daily Excel: rounded LightGBM column, one final file per day, FALLBACK shares; history horizon 1)
 

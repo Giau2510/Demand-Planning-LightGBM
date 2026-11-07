@@ -58,6 +58,8 @@ MIN_COMMIT_MB = 3072            # free commit (RAM + page file) needed before ea
 DAY_MIN_COMMIT_MB = 1500        # free commit needed to start a day's run (candidates + SEL2 + publication)
 GIAI_THICH_MIN_COMMIT_MB = MIN_COMMIT_MB   # 1.4.6: free commit needed to start the GIAI_THICH child (else skipped)
 GIAI_THICH_TIMEOUT_S = 1200                # 1.4.6: the GIAI_THICH child is killed after 20 minutes
+GIAI_THICH_RETENTION_DAYS = 7              # owner 07/11: the explanation sidecars are kept 7 days only (the daily Excel
+                                           # keeps its GIAI_THICH sheet; export folders are kept 90 days)
 TRAIN_BUSY = "SEL2_TRAIN_BUSY"  # another process trains the same scope (retryable; = jobs.TRAIN_BUSY)
 OPEN_HOURS_READ_DAYS = 15
 BACKTEST_HISTORY_FLOOR = date(2026, 6, 1)
@@ -429,7 +431,7 @@ def run_day(d: date | None = None, trigger: str = "manual", job_id=None, scope_k
          child_seconds=out["giai_thich"].get("seconds"), child_peak_mb=out["giai_thich"].get("peak_private_mb"))
     try:
         from . import giai_thich
-        out["retention_giai_thich"] = giai_thich.apply_retention(d, s.retention_days)
+        out["retention_giai_thich"] = giai_thich.apply_retention(d, GIAI_THICH_RETENTION_DAYS)
     except Exception as e:  # noqa: BLE001 - derived files; the next run deletes again
         out["retention_giai_thich_error"] = f"{type(e).__name__}: {e}"[:300]
     try:
