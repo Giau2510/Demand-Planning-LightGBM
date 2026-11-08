@@ -143,11 +143,12 @@ def test_migration_0006_from_v4_and_from_v5_keeps_every_row_and_deletes_nothing(
                 assert [_snap(k)["status"] for k in (100, 3)] == ["COMPLETE", "COMPLETE"]
             before = _fp_all()
             res = db.migrate(target)
-            assert (res["from"], res["to"]) == (start, 12)                       # 1.2.9: + 0007-0009; 1.2.13: + 0010; 1.3.1: + 0011; 1.4.0: + 0012
+            assert (res["from"], res["to"]) == (start, 13)                       # 1.2.9: + 0007-0009; 1.2.13: + 0010; 1.3.1: + 0011; 1.4.0: + 0012; 1.4.8: + 0013
             assert res["applied"] == ["0005_eod_backup_actual_close.sql", "0006_eod_snapshot_retention.sql",
                                       "0007_open_hours.sql", "0008_customer_aggregates.sql",
                                       "0009_actual_finalization.sql", "0010_history_sync.sql",
-                                      "0011_lgbm_chot.sql", "0012_sel2_pipeline.sql"][start - 4:]
+                                      "0011_lgbm_chot.sql", "0012_sel2_pipeline.sql",
+                                      "0013_spike_lines.sql"][start - 4:]
             assert _rows("SELECT COUNT(*) AS n FROM demand_daily WHERE open_hours IS NOT NULL OR "
                          "open_hours_status IS NOT NULL")[0]["n"] == 0                     # nothing invented
             assert db.migrate(target)["applied"] == []                          # running it again changes nothing
@@ -194,7 +195,7 @@ def test_a_failed_0006_leaves_schema_5_with_the_0005_protection(tmp_path, monkey
         assert db.migrate(target)["applied"] == ["0006_eod_snapshot_retention.sql", "0007_open_hours.sql",
                                                  "0008_customer_aggregates.sql", "0009_actual_finalization.sql",
                                                  "0010_history_sync.sql", "0011_lgbm_chot.sql",
-                                                 "0012_sel2_pipeline.sql"]
+                                                 "0012_sel2_pipeline.sql", "0013_spike_lines.sql"]
         assert _rows("SELECT COUNT(*) AS n FROM forecast_eod_snapshot_values")[0]["n"] == 21
 
 
@@ -513,7 +514,7 @@ def test_upgrading_a_v4_database_with_a_saved_125_schedule_keeps_the_new_flows_o
     with monkeypatch.context() as m:
         m.setattr(paths, "db_path", lambda: target)
         _store_125_schedule()
-        assert db.migrate(target)["to"] == 12                # 1.2.9: up to 0009 (seventh batch); 1.2.13: 0010; 1.3.1: 0011; 1.4.0: 0012
+        assert db.migrate(target)["to"] == 13                # 1.2.9: up to 0009 (seventh batch); 1.2.13: 0010; 1.3.1: 0011; 1.4.0: 0012; 1.4.8: 0013
         s = ss.get("schedule")
         raw = json.loads(_rows("SELECT value_json FROM app_settings WHERE section='schedule'")[0]["value_json"])
     assert raw == STORED_125                                 # the migrations write no setting

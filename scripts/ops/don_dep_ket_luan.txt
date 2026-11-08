@@ -1,0 +1,5 @@
+# Concluded experiments for scripts\ops\don_dep_dinh_ky.ps1 (owner rule 08/11/2026): one folder name of <project>\reports
+# per line. In a listed folder the intermediate data files (.parquet .pkl .npz .npy .log .tmp .feather) and superseded
+# versions (<stem>_v<N> when a higher version of the same stem exists) become cleanup candidates; .py .md .json and the
+# newest version of each file stay. A folder also listed in don_dep_giu.txt is not touched (the keep list wins).
+# Lines starting with # are comments.

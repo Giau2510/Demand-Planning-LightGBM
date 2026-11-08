@@ -412,13 +412,16 @@ def test_legacy_rows_get_no_status_from_the_migration_and_the_dry_run_measures_t
     res = db.migrate(src)
     # 1.2.13: the upgrade path continues with 0010 (history sync); 0009 is still applied first
     assert res["applied"] == ["0009_actual_finalization.sql", "0010_history_sync.sql",
-                              "0011_lgbm_chot.sql", "0012_sel2_pipeline.sql"] and res["to"] == 12   # 1.3.1: + 0011; 1.4.0: + 0012
+                              "0011_lgbm_chot.sql", "0012_sel2_pipeline.sql",
+                              "0013_spike_lines.sql"] and res["to"] == 13   # 1.3.1: + 0011; 1.4.0: + 0012; 1.4.8: + 0013
     c = sqlite3.connect(src)
     assert c.execute("SELECT * FROM demand_daily ORDER BY rowid").fetchall() == before    # nothing changed
     assert [c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in FINAL_TABLES] == [0, 0]   # no status invented
     assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     from test_v140_t1_settings_schema import reverse_0012
-    reverse_0012(c)                                                       # 1.4.0: the newest migration first
+    from test_v148_spike import reverse_0013
+    reverse_0013(c)                                                       # 1.4.8: the newest migration first
+    reverse_0012(c)                                                       # 1.4.0: then 0012
     reverse_0011(c)                                                       # 1.3.1: then 0011
     reverse_0010(c)                                                       # 1.2.13: the newer migration first
     reverse_0009(c)                                                       # the header's reverse statements (copy only)
@@ -427,7 +430,7 @@ def test_legacy_rows_get_no_status_from_the_migration_and_the_dry_run_measures_t
                          "OR name LIKE 'trg_af%'").fetchall()
     c.close()
     assert db.migrate(src)["applied"] == ["0009_actual_finalization.sql", "0010_history_sync.sql",
-                                          "0011_lgbm_chot.sql", "0012_sel2_pipeline.sql"]
+                                          "0011_lgbm_chot.sql", "0012_sel2_pipeline.sql", "0013_spike_lines.sql"]
     assert db.migrate(src)["applied"] == []
 
 

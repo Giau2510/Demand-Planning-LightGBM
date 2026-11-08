@@ -234,6 +234,7 @@ Khi `sel2_pipeline.enabled` = True (mặc định). `False` = công tắc khẩn
 | `FORECAST_EXPORT:<ngày>:STALE` | `export_deadline` (06:30), khi chưa có lần chạy SEL2 nào của hôm nay và chưa có file | file `is_stale = 1` |
 | `FORECAST_EXPORT:<ngày>:AVG` | từ `avg_reexport_time` (mặc định None = TẮT, chờ duyệt) | xuất lại khi bảng AVG_DEMAND đổi sau lần đọc của file mới nhất |
 | `FORECAST_EXPORT` mode `MANUAL` | nút xuất / `POST /api/sel2/export` (`confirm=true`) | job nền trigger `MANUAL`; export đang chờ / đang chạy thì trả lại job đó (`already_active`), không tạo job thứ hai |
+| `SPIKE_LINES` (1.4.8, một lần mỗi ngày, không thử lại) | công tắc `spike_cleaning` TẮT: sau khi `FORECAST_REFRESH` hôm nay xong (đã công bố, hoặc quá `refresh_deadline`) và không có làm mới / `CANDIDATE_TRAIN` đang chờ hay chạy; BẬT: ngay sau D-1 thành công | tiến trình con `spike-lines --date D --yes` (giới hạn 45 phút, cần bộ nhớ commit trống >= 3072 MB): đọc dòng đơn SO từ BigQuery (chỉ đọc, ~3,1 GB mỗi đêm, < 5 GB) vào `so_lines_cache`, đánh dấu đột biến, `demand_excess_daily`; lỗi = job FAILED + một cảnh báo WARNING `SPIKE_LINES_FAILED`, D-1 / làm mới / Excel vẫn chạy |
 
 - Ngày huấn luyện: lần làm mới chờ `CANDIDATE_TRAIN` tới `prev_week_deadline` (06:20), sau đó chạy với mô hình tuần
   trước (cờ `MODEL_PREV_WEEK`). Sau `prev_week_deadline`, `FORECAST_REFRESH` chỉ chạy song song với `CANDIDATE_TRAIN`
@@ -246,10 +247,15 @@ Khi `sel2_pipeline.enabled` = True (mặc định). `False` = công tắc khẩn
   `train_timeout_seconds` + 10 phút (`AGE`) chuyển FAILED (`INTERRUPTED`).
 - Tiến trình con (Windows) nằm trong một Job Object KILL_ON_JOB_CLOSE: tắt server thì tiến trình con cũng dừng (không
   còn huấn luyện mồ côi).
-- Công tắc luồng: `CANDIDATE_TRAIN` theo `schedule.train_enabled`, `FORECAST_EXPORT` theo `schedule.refresh_enabled`;
+- Công tắc luồng: `CANDIDATE_TRAIN` theo `schedule.train_enabled`, `FORECAST_EXPORT` và `SPIKE_LINES` theo `schedule.refresh_enabled`;
   chỉ nguồn BIGQUERY.
 - CLI (không có `--yes` chỉ in đường dẫn DB và kế hoạch): `sel2-train --origin D`, `sel2-day [--date D] [--force]`,
   `sel2-export --date D`, `sel2-avg-read --date D | --hist-from D1 --hist-to D2`, `sel2-openhours-backfill`,
   `sel2-bootstrap [--days 35]`, `sel2-replay --from D --to D --out DIR [--copy-ok]` (chỉ trên BẢN SAO DB, không công
   bố: với `--yes` cần `copy_info.json` cạnh `app.db` hoặc `--copy-ok`, nếu không `SEL2_REPLAY_NOT_A_COPY`).
   `sel2-avg-read --date` chỉ nhận hôm nay (`AVG_CURRENT_ONLY_TODAY`); ngày đã qua dùng `--hist-from` / `--hist-to`.
+- 1.4.8 `SPIKE_LINES` khi `sel2_pipeline.spike_cleaning` BẬT: `FORECAST_REFRESH` và `CANDIDATE_TRAIN` (tuần và bù) chờ
+  job này khi nó đã lên lịch / PENDING / RUNNING, tối đa 45 phút tính từ lúc tạo dòng job, rồi chạy tiếp (lỗi của nó
+  không bao giờ chặn). Khi TẮT (mặc định): mọi quyết định lịch khác giữ nguyên như 1.4.7 (kiểm thử so từng tick với
+  bộ lập lịch 1.4.7). CLI: `spike-lines --date D [--initial] [--dry-run] [--yes]` (`--dry-run`: chỉ ước tính byte
+  BigQuery; không `--yes`: chỉ in kế hoạch).

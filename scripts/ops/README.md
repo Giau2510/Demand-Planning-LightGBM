@@ -34,7 +34,9 @@ documents itself in its header; this file is the overview.
 | `e1_backup.py`, `e1_restore.py`, `fs_restore_verify.py` | Online backup with the installed code + restore test in an isolated temporary copy (used by the cai_14x chains). |
 | `status_monitor.py` | Read-only STATUS.md / toast monitor of the 03/11 E2 / E3 runs (historical). |
 | `toast.ps1` | Windows toast (built-in WinRT API). |
-| `don_dep_dinh_ky.ps1`, `register-don-dep-task.ps1` | Weekly cleanup (dry run unless `-Apply`); see its header. |
+| `don_dep_dinh_ky.ps1`, `register-don-dep-task.ps1` | Weekly cleanup (dry run unless `-Apply`); see its header and the rules below. |
+| `don_dep_current.ps1` | Stable entry point of the cleanup: runs `don_dep_dinh_ky.ps1` of the INSTALLED version (`current.txt`); exit 2 when `current.txt` or that script is missing. |
+| `don_dep_giu.txt`, `don_dep_ket_luan.txt` | `reports\` folders kept entirely / concluded experiments (read next to the script that runs). |
 | `ops_config.py` | Machine paths of all the Python scripts above (next section). |
 | `tests\` | Isolated tests (temporary folders, fake ntfy / app servers, no production access). |
 
@@ -88,3 +90,30 @@ cd scripts\ops\tests
 
 `tests\ops_test_env.py` points every `DF_OPS_*` path into a fresh temporary folder before the scripts are imported
 (removed after a passing run, kept after a failure). Each script prints PASS / FAIL lines and exits 1 on any failure.
+
+## Cleanup rules (`don_dep_dinh_ky.ps1`, owner 03/11 + 08/11/2026)
+
+Dry run unless `-Apply`; when in doubt an entry is KEPT and listed as `kept_uncertain`. current / previous version =
+`current.txt` and the newest EXISTING version folder older than it.
+
+The weekly task (`register-don-dep-task.ps1`, default since 08/11) runs `don_dep_current.ps1`, i.e. the cleanup script
+of the INSTALLED version (`-Direct` registers this folder's script instead). The installed script reads
+`don_dep_giu.txt` / `don_dep_ket_luan.txt` next to itself (the installed copy), except that the wrapper passes
+`<ProjectRoot>\scripts\ops\don_dep_giu.txt` / `don_dep_ket_luan.txt` (`-KeepListFile` / `-ConcludedListFile`) when they
+exist and the installed script has these parameters.
+
+| Group | Candidates |
+|---|---|
+| backups | `<project>\backups` zips (+ `.sha256` / `config-*`) except: newest overall, last 7 days, per current / previous version the newest `*-pre-<ver without dots>.zip`, the newest backup before its install and those within 20 min before it. |
+| exports | day folders outside the 30 newest AND older than 30 days; `du_bao_<day>_v<K>_bo.xlsx` of kept days older than 3 days while a newer `du_bao_<day>_v<M>.xlsx` (M > K) exists (else kept_uncertain; a `_TAM` file does not count). |
+| logs | files older than 30 days, archived to `logs-archive-YYYYMM.zip` first (unchanged). |
+| tmp | `D:\Buymed\tmp` entries older than 1 day not used by a process (unchanged). |
+| deploy_temp | `%TEMP%\DemandForecast-deploy-*` older than 1 day, not on a process command line. |
+| reports | packaged folders: data files outside `package*` (unchanged); folders in `don_dep_ket_luan.txt`: .parquet .pkl .npz .npy .log .tmp .feather and `_v<N>` files with a higher plain `_v<M>` (code / text .py .ps1 .sql .ipynb .sh .R .bat .md .json .txt .yaml .yml always kept; lettered `_v3b` variants and matches inside `package*` -> kept_uncertain); `don_dep_giu.txt` wins. |
+| installs | version folders other than current / previous; newer than current, not x.y.z or named in a scheduled task action -> kept_uncertain; used by a process -> kept; current.txt re-read before each deletion. The whole group is skipped (nothing selected) when the scheduled tasks or the process list cannot be read. |
+| dist_versions | `DemandForecast-<ver>*` in `<project>\dist` and `<project>\worktrees\*\dist` of versions older than current other than previous / `-DistKeep` (newer -> kept_uncertain). **Behaviour change 08/11: deleted with `-Apply` alone** (no `-IncludeDist` needed). |
+| dist | `prune-artifacts.ps1` plan (deleted only with `-Apply -IncludeDist -DistKeep`), not in the totals. |
+
+Info only: `worktree_can_remove` lines for `<project>\worktrees\*` that are clean, on a remote-tracking branch, tagged
+`v<version>` and installed (removal: `archive_worktree.py`). current.txt unreadable -> backups / installs / dist_versions
+select nothing.

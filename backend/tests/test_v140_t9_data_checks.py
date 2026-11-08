@@ -74,9 +74,13 @@ def test_broken_sel2_rows_are_reported(sel2_on, data_dir):
         c.execute("UPDATE forecast_source_config SET forecast_source = 'AVG_DEMAND' WHERE sku_code = 'S01'")
         c.execute("INSERT INTO forecast_source_config(sku_code, fc_code, forecast_source, updated_by, updated_at) "
                   "VALUES ('S02', 'FC1', 'LIGHTGBM', 'x', '2026-10-28T00:00:00+00:00')")      # no history row
+        # 1.4.8: only the newest version of a day of the last 30 days is checked -> one newest version per recent day
+        # (relative to the real Vietnam today: the stuck-training check above uses the real clock)
+        from app.timeutil import today_vn
+        d2, d3 = today_vn() - timedelta(days=1), today_vn() - timedelta(days=2)
         c.executemany("INSERT INTO export_runs(id, forecast_date, version, path, created_at) VALUES (?, ?, ?, ?, ?)",
-                      [("EXP-2", str(D), 2, "exports/du_bao/20261028/du_bao_20261028_v2.xlsx", recent),
-                       ("EXP-3", str(D), 3, "../outside.xlsx", recent)])
+                      [("EXP-2", str(d2), 2, f"exports/du_bao/{d2:%Y%m%d}/du_bao_{d2:%Y%m%d}_v2.xlsx", recent),
+                       ("EXP-3", str(d3), 3, "../outside.xlsx", recent)])
     res, chk = _run()
     assert res["status"] == "FAIL"
     assert chk["sel2_protection_triggers"]["status"] == "FAIL"
@@ -103,3 +107,60 @@ def test_target_date_rule_reads_only_the_newest_day(sel2_on, data_dir):
                   (str(D - timedelta(days=1)),))
     _, chk = _run()
     assert chk["candidate_forecasts_target_date"]["status"] == "OK"
+
+
+# ------------------------------------------------------------------ 1.4.8: export_files_exist, newest version, 30 days
+def _exports(data_dir, rows):
+    """rows: (id, forecast_date, version, file present)."""
+    with db.tx() as c:
+        for rid, day, v, present in rows:
+            rel = f"exports/du_bao/{day:%Y%m%d}/du_bao_{day:%Y%m%d}_v{v}.xlsx"
+            if present:
+                (data_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+                (data_dir / rel).write_bytes(b"x")
+            c.execute("INSERT INTO export_runs(id, forecast_date, version, path, created_at) VALUES (?, ?, ?, ?, ?)",
+                      (rid, str(day), v, rel, "2026-11-01T00:00:00+00:00"))
+
+
+def _export_check():
+    return {x["check"]: x for x in data_checks.run(paths.db_path(), paths.models_dir())["checks"]}["export_files_exist"]
+
+
+def _freeze_vn(y, m, d, hh, mm):
+    from app import timeutil
+    from app.timeutil import VN_TZ
+    t = datetime(y, m, d, hh, mm, tzinfo=VN_TZ)
+    timeutil.set_now_override(lambda: t)
+
+
+def test_export_check_retired_older_version_missing_is_ok(data_dir):
+    _freeze_vn(2026, 11, 8, 10, 0)
+    day = date(2026, 11, 5)
+    _exports(data_dir, [("EXP-A1", day, 1, False), ("EXP-A2", day, 2, False), ("EXP-A3", day, 3, True)])
+    e = _export_check()
+    assert e["status"] == "OK" and e["count"] == 0, e
+    assert "30 days" in e["rule"]
+
+
+def test_export_check_newest_version_missing_within_30_days_warns(data_dir):
+    _freeze_vn(2026, 11, 8, 10, 0)
+    day = date(2026, 11, 5)
+    _exports(data_dir, [("EXP-B1", day, 1, True), ("EXP-B2", day, 2, False)])
+    e = _export_check()
+    assert e["status"] == "WARN" and e["examples"] == [["EXP-B2", str(day), 2, "missing"]]
+
+
+def test_export_check_window_boundary_is_the_vietnam_day(data_dir):
+    """00:30 Vietnam on 08/11 is still 07/11 in UTC: today = 08/11 (Vietnam), the kept window starts 09/10 (today - 30,
+    inclusive); a newest version missing on 08/10 (older than 30 days, deleted by the cleanup) is not reported."""
+    _freeze_vn(2026, 11, 8, 0, 30)
+    edge, older = date(2026, 10, 9), date(2026, 10, 8)
+    _exports(data_dir, [("EXP-E", edge, 1, False), ("EXP-O", older, 1, False), ("EXP-O2", older, 2, False)])
+    e = _export_check()
+    assert e["status"] == "WARN" and e["examples"] == [["EXP-E", str(edge), 1, "missing"]], e
+
+
+def test_export_check_newest_missing_older_than_30_days_is_ok(data_dir):
+    _freeze_vn(2026, 11, 8, 10, 0)
+    _exports(data_dir, [("EXP-C1", date(2026, 9, 1), 1, False), ("EXP-C2", date(2026, 10, 1), 4, False)])
+    assert _export_check()["status"] == "OK"

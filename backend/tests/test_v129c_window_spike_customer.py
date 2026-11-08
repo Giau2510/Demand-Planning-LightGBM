@@ -555,7 +555,8 @@ def test_migration_0008_is_additive_and_reversible_on_a_copy(tmp_path):
     assert res["applied"] == ["0008_customer_aggregates.sql", "0009_actual_finalization.sql",
                               "0010_history_sync.sql",                               # 0010: 1.2.13, additive
                               "0011_lgbm_chot.sql",                                  # 0011: 1.3.1, additive
-                              "0012_sel2_pipeline.sql"] and res["to"] == 12          # 0012: 1.4.0, additive
+                              "0012_sel2_pipeline.sql",                              # 0012: 1.4.0, additive
+                              "0013_spike_lines.sql"] and res["to"] == 13            # 0013: 1.4.8, additive
     again = db.migrate(src)
     assert again["applied"] == []                                            # idempotent
     c = sqlite3.connect(src)

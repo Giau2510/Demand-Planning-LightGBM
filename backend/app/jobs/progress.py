@@ -26,6 +26,8 @@ STAGES = {
     # (ml/sel2/jobs.py)
     "CANDIDATE_TRAIN": ["QUEUED", "STARTED", "TRAINING", "DONE"],
     "FORECAST_EXPORT": ["QUEUED", "STARTED", "EXPORTING", "DONE"],
+    # 1.4.8 nightly SO-line cache + spike flags (spike_lines.py, child process)
+    "SPIKE_LINES": ["QUEUED", "STARTED", "SYNCING", "DONE"],
 }
 TERMINAL_STAGES = ("DONE", "FAILED", "SKIPPED", "INTERRUPTED")
 

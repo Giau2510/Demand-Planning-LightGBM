@@ -31,25 +31,30 @@ _live: dict[str, tuple[str, bool, threading.Thread]] = {}     # job id -> (job t
 _live_lock = threading.Lock()
 
 JOB_TYPES = ("D1_SYNC", "D0_SYNC", "TRAIN_PUBLISH", "FORECAST_EXTEND", "EOD_FORECAST_SNAPSHOT", "ACTUAL_CLOSE",
-             "FORECAST_REFRESH", "ACCURACY_REPORT", "CANDIDATE_TRAIN", "FORECAST_EXPORT")
+             "FORECAST_REFRESH", "ACCURACY_REPORT", "CANDIDATE_TRAIN", "FORECAST_EXPORT", "SPIKE_LINES")
 # each automatic flow has its own switch (1.1.8); FORECAST_EXTEND is manual only
 # 1.4.0 (sel2_pipeline.enabled): CANDIDATE_TRAIN = weekly training of the SEL2 candidates (switch of the training flow),
 # FORECAST_EXPORT = stale / AVG_DEMAND re-export of the daily Excel (switch of the refresh flow)
 FLOW_FLAG = {"D1_SYNC": "d1_enabled", "D0_SYNC": "d0_enabled", "TRAIN_PUBLISH": "train_enabled",
              "EOD_FORECAST_SNAPSHOT": "eod_enabled", "ACTUAL_CLOSE": "close_enabled",
              "FORECAST_REFRESH": "refresh_enabled", "ACCURACY_REPORT": "report_enabled",
-             "CANDIDATE_TRAIN": "train_enabled", "FORECAST_EXPORT": "refresh_enabled"}
+             "CANDIDATE_TRAIN": "train_enabled", "FORECAST_EXPORT": "refresh_enabled", "SPIKE_LINES": "refresh_enabled"}
 FLOW_OFF_CODE = {"D1_SYNC": "D1_SCHEDULE_DISABLED", "D0_SYNC": "D0_SCHEDULE_DISABLED", "TRAIN_PUBLISH": "TRAIN_SCHEDULE_DISABLED",
                  "EOD_FORECAST_SNAPSHOT": "EOD_SCHEDULE_DISABLED", "ACTUAL_CLOSE": "CLOSE_SCHEDULE_DISABLED",
                  "FORECAST_REFRESH": "REFRESH_SCHEDULE_DISABLED", "ACCURACY_REPORT": "REPORT_SCHEDULE_DISABLED",
-                 "CANDIDATE_TRAIN": "TRAIN_SCHEDULE_DISABLED", "FORECAST_EXPORT": "REFRESH_SCHEDULE_DISABLED"}
-SEL2_TYPES = ("CANDIDATE_TRAIN", "FORECAST_EXPORT")     # 1.4.0: run only while sel2_pipeline.enabled is True
+                 "CANDIDATE_TRAIN": "TRAIN_SCHEDULE_DISABLED", "FORECAST_EXPORT": "REFRESH_SCHEDULE_DISABLED",
+                 "SPIKE_LINES": "REFRESH_SCHEDULE_DISABLED"}
+# 1.4.8 SPIKE_LINES = the nightly SO-line cache + spike flags (spike_lines.py, child process, switch of the refresh flow)
+SEL2_TYPES = ("CANDIDATE_TRAIN", "FORECAST_EXPORT", "SPIKE_LINES")     # run only while sel2_pipeline.enabled is True
 SEL2_TRAIN_MARGIN = 120         # seconds over sel2_pipeline.train_timeout_seconds before the runner's own TIMEOUT
 # 1.3.1: a forecast refresh attempt is one job row; its result gives the row status (NOT_READY / SKIPPED -> SKIPPED, never
 # retried by the runner: the schedule makes the next attempt every refresh_retry_minutes until refresh_deadline)
 REFRESH_STATUS = {"PUBLISHED": "SUCCEEDED", "FAILED": "FAILED"}
 # 1.3.1: the weekly accuracy report's result status -> job status (an unknown status is recorded as FAILED)
 REPORT_STATUS = {"DONE": "SUCCEEDED", "SKIPPED": "SKIPPED", "FAILED": "FAILED"}
+# 1.4.8: SPIKE_LINES result -> job status; its handler never raises and writes its own WARNING alert (a failure is a
+# FAILED row, never retried, no ERROR alert: D-1 / refresh / export go on)
+SPIKE_STATUS = REPORT_STATUS
 # jobs whose handler takes the cancel callable
 CANCELLABLE = ("TRAIN_PUBLISH", "FORECAST_EXTEND", "FORECAST_REFRESH", "CANDIDATE_TRAIN")
 _STATUS_STAGE = {"RUNNING": "STARTED", "SUCCEEDED": "DONE", "FAILED": "FAILED", "SKIPPED": "SKIPPED",
@@ -108,13 +113,18 @@ def _handlers():
         progress.set_stage(job_id, "EXPORTING")
         return sel2_jobs.export_job(job_id, params)
 
+    def spike(job_id, params):
+        from .. import spike_lines
+        progress.set_stage(job_id, "SYNCING")
+        return spike_lines.job(job_id, params)
+
     def report(job_id, params):
         from ..ml import accuracy_report
         return accuracy_report.run(business_date=params.get("business_date"), job_id=job_id,
                                    trigger=_trigger_of(job_id), progress=progress.reporter(job_id))
     return {"D0_SYNC": d0, "D1_SYNC": d1, "TRAIN_PUBLISH": train, "FORECAST_EXTEND": extend,
             "EOD_FORECAST_SNAPSHOT": eod, "ACTUAL_CLOSE": close, "FORECAST_REFRESH": refresh, "ACCURACY_REPORT": report,
-            "CANDIDATE_TRAIN": candidate_train, "FORECAST_EXPORT": export}
+            "CANDIDATE_TRAIN": candidate_train, "FORECAST_EXPORT": export, "SPIKE_LINES": spike}
 
 
 def _trigger_of(job_id: str) -> str:
@@ -431,6 +441,8 @@ def execute(job_type: str, key: str, trigger: str = "MANUAL", scheduled_for: str
                 status = REFRESH_STATUS.get(res.get("status"), "SKIPPED")
             elif job_type == "ACCURACY_REPORT":
                 status = REPORT_STATUS.get(res.get("status"), "FAILED")
+            elif job_type == "SPIKE_LINES":
+                status = SPIKE_STATUS.get(res.get("status"), "FAILED")
             _update(row["id"], status=status, finished_at=now_iso(), reason_code=res.get("reason_code"),
                     result_json=_result_json(params, res, res_info), next_attempt_at=None)
             log.info("job finished", extra={"ctx": {"job_id": row["id"], "status": status,
@@ -475,6 +487,9 @@ def job_timeout(job_type: str, sched) -> int:
     and kills it first)."""
     if job_type == "CANDIDATE_TRAIN":
         return int(ss.get("sel2_pipeline").train_timeout_seconds) + SEL2_TRAIN_MARGIN
+    if job_type == "SPIKE_LINES":       # 1.4.8: the child's own timeout (45 min) ends it first
+        from ..spike_lines import TIMEOUT_S
+        return TIMEOUT_S + SEL2_TRAIN_MARGIN
     return sched.timeout_seconds
 
 

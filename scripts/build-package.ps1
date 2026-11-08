@@ -30,7 +30,8 @@ $packagedScripts = @("_common.ps1", "start.ps1", "stop.ps1", "check-env.ps1", "b
                      "register-autostart.ps1", "unregister-autostart.ps1", "smoke_test.py",
                      "migrate-storage.ps1", "rollback-storage.ps1", "diagnose.ps1", "repair-storage.ps1",
                      "deploy-upgrade.ps1", "_deploy_staging.ps1", "rollback-version.ps1", "eod-retention.ps1",
-                     "ops\don_dep_dinh_ky.ps1", "ops\register-don-dep-task.ps1", "ops\don_dep_giu.txt")
+                     "ops\don_dep_dinh_ky.ps1", "ops\register-don-dep-task.ps1", "ops\don_dep_giu.txt",
+                     "ops\don_dep_ket_luan.txt", "ops\don_dep_current.ps1")
 
 function Get-GitState {
     $ErrorActionPreference = "Continue"

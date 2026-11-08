@@ -4,7 +4,9 @@ Everything runs in an isolated temporary tree: a fake project folder, a fake %LO
 PowerShell only) with storage.json pointing at a fake data folder, and a fake -TmpRoot. Junctions (cmd mklink /J) are
 placed both as group roots / parents of a group root and nested inside a group; each points at a folder holding a
 sentinel that would be a candidate if the junction were followed. Never touches the real project, data, %LOCALAPPDATA%
-or D:\\Buymed\\tmp; the scheduled task is never registered (-Plan only)."""
+or D:\\Buymed\\tmp; the scheduled task is never registered (-Plan only). 08/11/2026 rules (installs, dist_versions,
+deploy_temp, concluded reports, backups of the current / previous version, 30 newest export days + _bo files, worktree
+info, the don_dep_current.ps1 wrapper): same isolation; %TEMP% of the child PowerShell is a temporary folder too."""
 from __future__ import annotations
 
 import json
@@ -20,6 +22,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 CLEANUP = ROOT / "scripts" / "ops" / "don_dep_dinh_ky.ps1"
 REGISTER = ROOT / "scripts" / "ops" / "register-don-dep-task.ps1"
+WRAPPER = ROOT / "scripts" / "ops" / "don_dep_current.ps1"
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32" or not shutil.which("powershell"), reason="Windows PowerShell only")
 
@@ -57,6 +60,9 @@ def _set_times(tmp: Path, items: list[tuple[Path, datetime]]) -> None:
 def _run(script: Path, args: list[str], la: Path) -> tuple[int, str]:
     env = dict(os.environ)
     env["LOCALAPPDATA"] = str(la)
+    temp = la.parent / "TEMP"                       # the deploy_temp group never sees the real %TEMP%
+    temp.mkdir(parents=True, exist_ok=True)
+    env["TEMP"] = env["TMP"] = str(temp)
     p = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script),
                         *args], capture_output=True, timeout=300, env=env)
     return p.returncode, (p.stdout + p.stderr).decode("utf-8", errors="replace")
@@ -106,13 +112,18 @@ def tree(tmp_path: Path) -> dict:
     times: list[tuple[Path, datetime]] = []
     sentinels: list[Path] = []
     junctions: list[Path] = []
-    exp: dict[str, set[str]] = {k: set() for k in ("backups", "exports", "logs", "tmp", "reports")}
+    exp: dict[str, set[str]] = {k: set() for k in ("backups", "exports", "logs", "tmp", "reports", "installs", "dist_versions",
+                                                   "deploy_temp")}
 
     # fake %LOCALAPPDATA%: storage.json (data logs folder behind a junction PARENT), one installed version
     (proj / "scripts").mkdir(parents=True)
     protected = [_file(la / "DemandForecast" / "keep_me.txt"), _file(data / "db" / "app.db"), _file(data / "models" / "m.txt")]
-    _file(la / "Programs" / "DemandForecast" / "1.4.0" / "VERSION", b"1.4.0")
-    _file(la / "Programs" / "DemandForecast" / "current.txt", b"1.4.0")
+    pd = la / "Programs" / "DemandForecast"
+    protected += [_file(pd / "1.4.0" / "VERSION", b"1.4.0"), _file(pd / "current.txt", b"1.4.0"),
+                  _file(pd / "1.3.9" / "VERSION", b"1.3.9")]                  # current + previous version: kept
+    _file(pd / "1.3.8" / "app" / "x.py")
+    exp["installs"].add(_n(pd / "1.3.8"))
+    protected += [_file(pd / "1.5.0" / "VERSION"), _file(pd / "staging" / "x.txt")]   # newer / not a version: uncertain
     via = _junction(tmp_path / "via", outside / "datalogs_target")
     sentinels.append(_file(outside / "datalogs_target" / "datalogs" / "old.log"))
     times.append((sentinels[-1], old45))
@@ -124,27 +135,38 @@ def tree(tmp_path: Path) -> dict:
     # backups: 9 manual, 8 cli, one old and one young pre-upgrade, companions, a nested junction
     bk = proj / "backups"
     base = (NOW - timedelta(days=200)).replace(hour=8, minute=0, second=0)
+    # 08/11 rule: only the newest backup overall, the last 7 days and the backups before the installs of the current /
+    # previous version stay (here: the 5-day-old pre-upgrade backup)
     for i in range(9):
-        z = _file(bk / f"backup-{_stamp(base + timedelta(days=i))}-manual.zip")
-        if i < 2:
-            exp["backups"].add(_n(z))
+        exp["backups"].add(_n(_file(bk / f"backup-{_stamp(base + timedelta(days=i))}-manual.zip")))
     exp["backups"].add(_n(_file(bk / f"backup-{_stamp(base)}-manual.zip.sha256", b"ab")))
     exp["backups"].add(_n(_file(bk / f"config-{_stamp(base + timedelta(minutes=1))}-manual.json", b"{}")))
     for j in range(8):
-        z = _file(bk / f"backup-{_stamp(base + timedelta(days=j, hours=6))}-cli.zip")
-        if j == 0:
-            exp["backups"].add(_n(z))
+        exp["backups"].add(_n(_file(bk / f"backup-{_stamp(base + timedelta(days=j, hours=6))}-cli.zip")))
     exp["backups"].add(_n(_file(bk / f"backup-{_stamp(NOW - timedelta(days=100))}-pre-upgrade.zip")))
     kept = [_file(bk / f"backup-{_stamp(NOW - timedelta(days=5))}-pre-upgrade.zip"), _file(bk / "notes.txt")]
     junctions.append(_junction(bk / "linked", outside / "bk"))
     sentinels.append(_file(outside / "bk" / f"backup-{_stamp(base - timedelta(days=1))}-manual.zip"))
 
-    # exports: one day folder older than 90 days, one recent, one old-named junction
+    # exports: the 30 newest days (1..30 days ago) stay, one older day folder goes, one old-named junction; _bo files of
+    # the kept days: day 10 (candidate), day 2 (too young), day 20 without a current file (kept_uncertain)
     du = data / "exports" / "du_bao"
     d_old = du / old120.strftime("%Y%m%d")
     _file(d_old / "du_bao.xlsx")
     exp["exports"].add(_n(d_old))
-    kept.append(_file(du / (NOW - timedelta(days=10)).strftime("%Y%m%d") / "du_bao.xlsx"))
+    for k in range(1, 31):
+        ymd = (NOW - timedelta(days=k)).strftime("%Y%m%d")
+        if k != 20:
+            kept.append(_file(du / ymd / f"du_bao_{ymd}.xlsx"))
+        if k in (2, 10, 20):
+            if k != 20:
+                kept.append(_file(du / ymd / f"du_bao_{ymd}_v2.xlsx"))          # the newer version of the day
+            bo = _file(du / ymd / f"du_bao_{ymd}_v1_bo.xlsx")
+            times.append((bo, NOW - timedelta(days=k)))
+            if k == 10:
+                exp["exports"].add(_n(bo))
+            else:
+                kept.append(bo)
     junctions.append(_junction(du / (old120 - timedelta(days=1)).strftime("%Y%m%d"), outside / "exp"))
     sentinels.append(_file(outside / "exp" / "du_bao.xlsx"))
 
@@ -169,6 +191,26 @@ def tree(tmp_path: Path) -> dict:
     # dist: the group ROOT is a junction (as in a worktree)
     junctions.append(_junction(proj / "dist", outside / "dist"))
     sentinels.append(_file(outside / "dist" / "DemandForecast-1.3.1-win64-portable.zip"))
+    # dist of a worktree: packages of the current (1.4.0) and previous (1.3.9) version stay, 1.3.8 goes
+    wd = proj / "worktrees" / "wt1" / "dist"
+    kept += [_file(wd / "DemandForecast-1.4.0-win64-portable.zip"), _file(wd / "DemandForecast-1.4.0-win64-portable.zip.sha256"),
+             _file(wd / "DemandForecast-1.4.0-win64-portable.manifest.json"), _file(wd / "DemandForecast-1.3.9-win64-portable.zip"),
+             _file(wd / ".cache" / "python-embed.zip"), _file(wd / "DemandForecast-notes.txt")]
+    exp["dist_versions"] |= {_n(_file(wd / "DemandForecast-1.3.8-win64-portable.zip")),
+                             _n(_file(wd / "DemandForecast-1.3.8-win64-portable.zip.sha256"))}
+    _file(wd / "DemandForecast-1.3.8" / "VERSION")
+    exp["dist_versions"].add(_n(wd / "DemandForecast-1.3.8"))
+
+    # %TEMP% (isolated, see _run): an old DemandForecast-deploy-<stamp> folder goes; a new one, the managed
+    # DemandForecast-deploy root and another old folder stay
+    tp = tmp_path / "TEMP"
+    od = tp / "DemandForecast-deploy-20261101-000000"
+    times += [(_file(od / "pkg.zip"), old3), (od, old3)]
+    exp["deploy_temp"].add(_n(od))
+    kept.append(_file(tp / "DemandForecast-deploy-20261107-000000" / "pkg.zip"))
+    for p in (_file(tp / "DemandForecast-deploy" / "20261101-000000" / "pkg.zip"), _file(tp / "other_old" / "a.txt")):
+        kept.append(p)
+        times += [(p, old3), (p.parent, old3)]
 
     # tmp: old folder / file (candidates), a copied file with an old last write but a new creation time (kept),
     # a new file, a junction into %LOCALAPPDATA%\DemandForecast
@@ -429,3 +471,394 @@ def test_log_archive_that_is_a_junction_is_refused(tree):
     assert any("reparse point in path" in e for e in _list(g["errors"])), g["errors"]
     assert old_log.is_file() and sentinel.is_file() and link.is_junction()
     assert g["deleted_count"] == 0
+
+
+# ------------------------------------------------------------------ 08/11/2026 rules
+
+
+def _install(la: Path, current: str | None, versions: list[str]) -> Path:
+    pd = la / "Programs" / "DemandForecast"
+    for v in versions:
+        _file(pd / v / "VERSION", v.encode())
+    if current is not None:
+        _file(pd / "current.txt", current.encode())
+    (la / "DemandForecast").mkdir(parents=True, exist_ok=True)
+    return pd
+
+
+def _uncertain(g: dict) -> set[str]:
+    return {_n(u["path"]) for u in _list(g.get("kept_uncertain"))}
+
+
+def test_backups_installs_and_dist_versions_keep_current_and_previous(tmp_path: Path):
+    """current 1.4.7, previous 1.4.6: backups (pre-<ver> names, install times, 7 days, newest), version folders (one
+    used by a running process, one newer than current) and dist packages of the project and of a worktree."""
+    la, proj = tmp_path / "LA", tmp_path / "proj"
+    (proj / "scripts").mkdir(parents=True)
+    pd = _install(la, "1.4.7", ["1.4.4", "1.4.5", "1.4.6", "1.4.7", "1.5.0"])
+    times = [(pd / "1.4.7", NOW - timedelta(days=19)), (pd / "1.4.6", NOW - timedelta(days=29)),
+             (pd / "1.4.5", NOW - timedelta(days=45)), (pd / "1.4.4", NOW - timedelta(days=60)), (pd / "1.5.0", NOW - timedelta(days=1))]
+    bk = proj / "backups"
+
+    def b(days: float, kind: str, minutes: int = 0) -> Path:
+        return _file(bk / f"backup-{_stamp(NOW - timedelta(days=days, minutes=minutes))}-{kind}.zip")
+
+    # b2 newest pre-146, b3 newest pre-147 (and newest before the 1.4.7 install), b5 last 7 days + newest overall,
+    # b7 newest before the 1.4.6 install; b8 30 min before that install (not within 20 min)
+    b1, b2, b3, b4 = b(40, "pre-146"), b(30, "pre-146"), b(20, "pre-147"), b(25, "cli")
+    b5, b6, b7, b8 = b(3, "manual"), b(50, "pre-145"), b(29, "manual", 10), b(29, "cli", 30)
+    s1, s4 = _file(Path(f"{b1}.sha256"), b"ab"), _file(Path(f"{b4}.sha256"), b"ab")
+    want_bk = {_n(p) for p in (b1, s1, b4, s4, b6, b8)}
+    kept = [b2, b3, b5, b7]
+    dist, wdist = proj / "dist", proj / "worktrees" / "w1" / "dist"
+    kept += [_file(dist / n) for n in ("DemandForecast-1.4.7-win64-portable.zip", "DemandForecast-1.4.7-win64-portable.zip.sha256",
+                                        "DemandForecast-1.4.7-win64-portable.manifest.json", "DemandForecast-1.4.6-win64-portable.zip",
+                                        "DemandForecast-1.4.7-superseded-20261101-000000-win64-portable.zip")]
+    kept.append(_file(dist / ".cache" / "python-3.14-embed-amd64.zip"))
+    want_dist = {_n(_file(dist / "DemandForecast-1.4.5-win64-portable.zip")),
+                 _n(_file(dist / "DemandForecast-1.4.5-win64-portable.zip.sha256")),
+                 _n(_file(wdist / "DemandForecast-1.4.4-abc1234-linux-src.tar.gz"))}
+    _file(dist / "DemandForecast-1.4.5" / "VERSION")
+    want_dist.add(_n(dist / "DemandForecast-1.4.5"))
+    _set_times(tmp_path, times)
+    user = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)", str(pd / "1.4.4")])
+    try:
+        code, out = _run(CLEANUP, ["-ProjectRoot", str(proj), "-TmpRoot", str(tmp_path / "tmproot")], la)
+        assert code == 0, out
+        rep = _report(out)
+        assert rep["current_version"] == "1.4.7" and rep["previous_version"] == "1.4.6"
+        g = _groups(rep)
+        assert g["backups"]["status"] == "ok" and _cands(g["backups"]) == want_bk, g["backups"]
+        assert _cands(g["installs"]) == {_n(pd / "1.4.5")}, g["installs"]
+        assert _uncertain(g["installs"]) == {_n(pd / "1.5.0")}
+        assert "used by running process" in _skips(rep)[_n(pd / "1.4.4")]
+        assert _cands(g["dist_versions"]) == want_dist, g["dist_versions"]
+        # -DistKeep keeps one more version (the old switch also applies to dist_versions)
+        code, out = _run(CLEANUP, ["-ProjectRoot", str(proj), "-TmpRoot", str(tmp_path / "tmproot"), "-DistKeep", "1.4.5"], la)
+        assert code == 0, out
+        assert _cands(_groups(_report(out))["dist_versions"]) == {_n(wdist / "DemandForecast-1.4.4-abc1234-linux-src.tar.gz")}
+        code, out = _run(CLEANUP, ["-ProjectRoot", str(proj), "-TmpRoot", str(tmp_path / "tmproot"), "-Apply"], la)
+        assert code == 0, out
+        g = _groups(_report(out))
+        for name, want in (("backups", want_bk), ("installs", {_n(pd / "1.4.5")}), ("dist_versions", want_dist)):
+            assert {_n(c["path"]) for c in _list(g[name]["candidates"]) if c.get("deleted")} == want, name
+        for p in want_bk | want_dist | {_n(pd / "1.4.5")}:
+            assert not os.path.lexists(p), p
+        for p in kept + [pd / "current.txt", pd / "1.4.4" / "VERSION", pd / "1.4.6" / "VERSION", pd / "1.4.7" / "VERSION",
+                         pd / "1.5.0" / "VERSION"]:
+            assert p.is_file(), p
+        assert (pd / "current.txt").read_text() == "1.4.7"
+    finally:
+        user.kill()
+        user.wait()
+
+
+def test_unreadable_current_version_selects_nothing_in_version_groups(tmp_path: Path):
+    la, proj = tmp_path / "LA", tmp_path / "proj"
+    (proj / "scripts").mkdir(parents=True)
+    pd = _install(la, "garbage", ["1.4.5", "1.4.6"])
+    old = _file(proj / "backups" / f"backup-{_stamp(NOW - timedelta(days=90))}-cli.zip")
+    _file(proj / "backups" / f"backup-{_stamp(NOW - timedelta(days=80))}-cli.zip")
+    pkg = _file(proj / "dist" / "DemandForecast-1.4.5-win64-portable.zip")
+    code, out = _run(CLEANUP, ["-ProjectRoot", str(proj), "-TmpRoot", str(tmp_path / "tmproot"), "-Apply"], la)
+    assert code == 0, out
+    g = _groups(_report(out))
+    for name in ("backups", "installs", "dist_versions"):
+        assert g[name]["status"] == "skipped" and g[name]["candidate_count"] == 0, (name, g[name])
+        assert "x.y.z" in g[name]["note"], g[name]["note"]
+    assert old.is_file() and pkg.is_file() and (pd / "1.4.5" / "VERSION").is_file()
+
+
+def test_concluded_reports_and_keep_list(tmp_path: Path):
+    """A copy of the script with its own lists (the lists are read next to the script): concluded folder done1
+    (intermediate files, superseded versions), done2 with a package folder (kept_uncertain), keepme in both lists."""
+    la, proj, tool = tmp_path / "LA", tmp_path / "proj", tmp_path / "tool" / "scripts" / "ops"
+    (proj / "scripts").mkdir(parents=True)
+    la.mkdir()
+    tool.mkdir(parents=True)
+    script = tool / CLEANUP.name
+    shutil.copy2(CLEANUP, script)
+    (tool / "don_dep_giu.txt").write_text("# keep\nkeepme\n", encoding="ascii")
+    (tool / "don_dep_ket_luan.txt").write_text("# done\ndone1\ndone2\nkeepme\nmissing\n", encoding="ascii")
+    rp = proj / "reports"
+    d1 = rp / "done1"
+    want = {_n(_file(d1 / n)) for n in ("a.parquet", "sub/b.pkl", "x.log", "c.npz", "d.npy", "e.feather", "f.tmp",
+                                         "r_v1.csv", "m_v1.xlsx", "m_v2.xlsx", "sub/t_v1.dat")}
+    # code / text always stays (also older versions); r_v2 is the newest plain version (r_v2b is a variant, not newer)
+    kept = [_file(d1 / n) for n in ("r_v2.csv", "m_v10.xlsx", "s_v1.py", "s_v2.py", "n_v1.md", "n_v2.md", "c_v1.json",
+                                     "c_v2.json", "plain.csv", "r_v1.txt", "sub/t_v2.dat", "solo_v3.csv", "k_v1.ps1",
+                                     "k_v2.ps1", "q_v1.sql", "q_v2.sql", "nb_v1.ipynb", "nb_v2.ipynb", "w_v1.sh", "w_v2.sh",
+                                     "z_v1.R", "z_v2.R", "y_v1.bat", "y_v2.bat", "l_v1.txt", "l_v2.txt", "cfg_v1.yaml",
+                                     "cfg_v2.yaml", "o_v1.yml", "o_v2.yml")]
+    d2 = rp / "done2"
+    unc = {_n(_file(d2 / "package" / "p.parquet")), _n(_file(d2 / "package" / "q_v1.csv")), _n(_file(d1 / "r_v2b.csv"))}
+    kept += [_file(d2 / "package" / "q_v2.csv"), _file(d2 / "README.md")]
+    want.add(_n(_file(d2 / "out.parquet")))
+    kept += [_file(rp / "keepme" / "a.parquet"), _file(rp / "keepme" / "r_v1.csv"), _file(rp / "keepme" / "r_v2.csv"),
+             _file(rp / "other" / "a.parquet")]
+    code, out = _run(script, ["-ProjectRoot", str(proj), "-TmpRoot", str(tmp_path / "tmproot")], la)
+    assert code == 0, out
+    rep = _report(out)
+    g = _groups(rep)["reports"]
+    assert g["status"] == "ok", g
+    assert _cands(g) == want
+    assert _uncertain(g) == unc
+    skips = _skips(rep)
+    assert "keep list" in skips[_n(rp / "keepme")]
+    assert "not found" in skips[_n(rp / "missing")]
+    assert {_n(u["path"]) for u in _list(rep["kept_uncertain"])} >= unc
+    code, out = _run(script, ["-ProjectRoot", str(proj), "-TmpRoot", str(tmp_path / "tmproot"), "-Apply"], la)
+    assert code == 0, out
+    for p in want:
+        assert not os.path.lexists(p), p
+    for p in kept + [Path(u) for u in unc]:
+        assert Path(p).is_file(), p
+
+
+def test_report_lists_passed_as_parameters(tmp_path: Path):
+    """-KeepListFile / -ConcludedListFile replace the lists next to the script (the wrapper passes the source copies)."""
+    la, proj = tmp_path / "LA", tmp_path / "proj"
+    (proj / "scripts").mkdir(parents=True)
+    la.mkdir()
+    giu, kl = _file(tmp_path / "lists" / "giu.txt", b"keepme\n"), _file(tmp_path / "lists" / "kl.txt", b"done1\nkeepme\n")
+    rp = proj / "reports"
+    want = _file(rp / "done1" / "a.parquet")
+    kept = [_file(rp / "keepme" / "a.parquet"), _file(rp / "cai-tien-20261031" / "a.parquet")]
+    code, out = _run(CLEANUP, ["-ProjectRoot", str(proj), "-TmpRoot", str(tmp_path / "tmproot"), "-KeepListFile", str(giu),
+                               "-ConcludedListFile", str(kl), "-Apply"], la)
+    assert code == 0, out
+    g = _groups(_report(out))["reports"]
+    assert _cands(g) == {_n(want)} and str(kl) in g["note"], g
+    assert not want.exists() and all(p.is_file() for p in kept)
+
+
+def _git(cwd: Path, *a: str) -> None:
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false",
+                    "-c", "tag.gpgsign=false", *a], cwd=cwd, check=True, capture_output=True)
+
+
+@pytest.mark.skipif(not shutil.which("git"), reason="git not installed")
+def test_worktree_info_lists_finished_worktrees_only(tmp_path: Path):
+    la, proj = tmp_path / "LA", tmp_path / "proj"
+    (proj / "scripts").mkdir(parents=True)
+    _install(la, "1.4.7", ["1.4.7"])
+    remote = tmp_path / "remote.git"
+    remote.mkdir()
+    _git(remote, "init", "-q", "--bare")
+    res = {}
+    for name, dirty in (("done", False), ("busy", True)):
+        w = proj / "worktrees" / name
+        _file(w / "backend" / "app" / "__init__.py", b'__version__ = "1.4.7"\n')
+        _git(w, "init", "-q")
+        _git(w, "add", "-A")
+        _git(w, "commit", "-q", "-m", "x")
+        _git(w, "remote", "add", "origin", str(remote))
+        _git(w, "push", "-q", "origin", f"HEAD:refs/heads/{name}")
+        _git(w, "fetch", "-q", "origin")
+        _git(w, "tag", "v1.4.7")
+        if dirty:
+            _file(w / "new.txt")
+        res[name] = w
+    code, out = _run(CLEANUP, ["-ProjectRoot", str(proj), "-TmpRoot", str(tmp_path / "tmproot")], la)
+    assert code == 0, out
+    info = {_n(w["path"]): w for w in _list(_report(out)["worktrees"])}
+    assert info[_n(res["done"])]["can_remove"] is True, info
+    assert info[_n(res["busy"])]["can_remove"] is False and "uncommitted" in info[_n(res["busy"])]["reason"]
+    flat = " ".join(out.split())
+    assert f"worktree_can_remove {res['done']}" in flat
+    assert (res["busy"] / "new.txt").is_file() and (res["done"] / ".git").is_dir()
+
+
+_STUB_CLEANUP = ("param([string]$ProjectRoot = '', [switch]$Apply, [switch]$IncludeDist, [string[]]$DistKeep = @(), [string]$TmpRoot = '')\n"
+                 "Set-Content -LiteralPath (Join-Path $PSScriptRoot 'ran.txt') -Encoding UTF8 "
+                 "-Value \"root=$ProjectRoot|apply=$Apply|dist=$IncludeDist|keep=$($DistKeep -join ',')|tmp=$TmpRoot\"\n"
+                 "exit 3\n")
+
+
+def test_wrapper_runs_the_installed_version_script(tmp_path: Path):
+    la = tmp_path / "LA"
+    proj = tmp_path / "my proj"
+    (proj / "scripts").mkdir(parents=True)
+    la.mkdir()
+    code, out = _run(WRAPPER, ["-ProjectRoot", str(proj)], la)
+    assert code == 2 and "current.txt not found" in out, out
+    pd = _install(la, "nonsense", [])
+    code, out = _run(WRAPPER, ["-ProjectRoot", str(proj)], la)
+    assert code == 2 and "x.y.z" in out, out
+    (pd / "current.txt").write_text("1.4.7\n", encoding="ascii")
+    code, out = _run(WRAPPER, ["-ProjectRoot", str(proj)], la)
+    assert code == 2 and "has no scripts" in out, out
+    ops = pd / "1.4.7" / "scripts" / "ops"
+    ops.mkdir(parents=True)
+    (ops / "don_dep_dinh_ky.ps1").write_text(_STUB_CLEANUP, encoding="ascii")
+    _file(pd / "1.4.6" / "scripts" / "ops" / "don_dep_dinh_ky.ps1", b"exit 9\n")       # an older version: never run
+    code, out = _run(WRAPPER, ["-ProjectRoot", str(proj) + "\\", "-Apply", "-IncludeDist", "-DistKeep", "1.4.6,1.4.5",
+                               "-TmpRoot", str(tmp_path / "tmproot")], la)
+    assert code == 3, out
+    ran = (ops / "ran.txt").read_text(encoding="utf-8-sig").strip()
+    assert ran == f"root={proj}|apply=True|dist=True|keep=1.4.6,1.4.5|tmp={tmp_path / 'tmproot'}", ran
+    code, out = _run(WRAPPER, [], la)                     # default -ProjectRoot: the source folder of the wrapper
+    assert code == 3, out
+    ran = (ops / "ran.txt").read_text(encoding="utf-8-sig").strip()
+    assert ran == f"root={ROOT}|apply=False|dist=False|keep=|tmp=", ran
+
+
+# ------------------------------------------------------------------ 08/11/2026 fix loop 1
+
+
+def test_versions_previous_from_existing_folders_newer_kept_and_two_digit_parts(tmp_path: Path):
+    """S1: install history names 1.4.7 but only the 1.4.6 folder exists -> previous = 1.4.6 (its package stays).
+    C1: a package newer than the current version is never a candidate. 1.4.10 > 1.4.9 (numeric, not text).
+    current.txt changed between the plan and the apply: the folder of the new current version is not deleted."""
+    la, proj = tmp_path / "LA", tmp_path / "proj"
+    (proj / "scripts").mkdir(parents=True)
+    pd = _install(la, "1.4.8", ["1.4.5", "1.4.6", "1.4.8"])
+    hist = proj / "logs" / "don_dep" / "install-history.json"
+    _file(hist, json.dumps({"installs": [{"version": "1.4.7", "created": (NOW - timedelta(days=9)).strftime("%Y-%m-%dT%H:%M:%S"),
+                                          "source": "version folder"}]}).encode())
+    dist = proj / "dist"
+    pk = {v: _file(dist / f"DemandForecast-{v}-win64-portable.zip") for v in ("1.4.5", "1.4.6", "1.4.7", "1.4.8", "1.4.9", "1.4.10")}
+    args = ["-ProjectRoot", str(proj), "-TmpRoot", str(tmp_path / "tmproot")]
+    code, out = _run(CLEANUP, args, la)
+    assert code == 0, out
+    rep = _report(out)
+    assert rep["previous_version"] == "1.4.6", rep["previous_version"]
+    g = _groups(rep)
+    assert _cands(g["dist_versions"]) == {_n(pk["1.4.5"]), _n(pk["1.4.7"])}, g["dist_versions"]
+    assert _uncertain(g["dist_versions"]) == {_n(pk["1.4.9"]), _n(pk["1.4.10"])}
+    assert _cands(g["installs"]) == {_n(pd / "1.4.5")}
+    # 1.4.10 current, 1.4.9 previous (two-digit part), 1.4.8 / 1.4.5 / 1.4.6 go, 1.4.10 and 1.4.9 packages stay
+    _install(la, "1.4.10", ["1.4.9", "1.4.10"])
+    code, out = _run(CLEANUP, args, la)
+    assert code == 0, out
+    rep = _report(out)
+    assert rep["current_version"] == "1.4.10" and rep["previous_version"] == "1.4.9", rep
+    g = _groups(rep)
+    assert _cands(g["dist_versions"]) == {_n(pk[v]) for v in ("1.4.5", "1.4.6", "1.4.7", "1.4.8")}
+    assert _uncertain(g["dist_versions"]) == set()
+    assert _cands(g["installs"]) == {_n(pd / v) for v in ("1.4.5", "1.4.6", "1.4.8")}
+    # current.txt goes back to 1.4.8 after this plan: the apply run keeps 1.4.8 (and 1.4.6 as its previous)
+    (pd / "current.txt").write_text("1.4.8", encoding="ascii")
+    code, out = _run(CLEANUP, args + ["-Apply"], la)
+    assert code == 0, out
+    assert (pd / "1.4.8" / "VERSION").is_file() and (pd / "1.4.6" / "VERSION").is_file() and not (pd / "1.4.5").exists()
+    assert (pd / "1.4.9" / "VERSION").is_file() and (pd / "1.4.10" / "VERSION").is_file()      # newer than current: kept
+    assert pk["1.4.6"].is_file() and pk["1.4.8"].is_file() and pk["1.4.9"].is_file() and pk["1.4.10"].is_file()
+
+
+def test_exports_few_day_folders_and_bo_needs_a_newer_version(tmp_path: Path):
+    """Fewer than 30 day folders: old ones stay. A _bo file goes only when a newer du_bao_<day>_v<M>.xlsx exists (a
+    _TAM file does not count)."""
+    la, proj, data = tmp_path / "LA", tmp_path / "proj", tmp_path / "data"
+    (proj / "scripts").mkdir(parents=True)
+    _install(la, None, [])
+    (la / "DemandForecast" / "storage.json").write_text(json.dumps({"data_dir": str(data)}), encoding="utf-8")
+    du = data / "exports" / "du_bao"
+    d40, d50, d5 = ((NOW - timedelta(days=k)).strftime("%Y%m%d") for k in (40, 50, 5))
+    kept = [_file(du / d40 / f"du_bao_{d40}_v2.xlsx"), _file(du / d50 / f"du_bao_{d50}.xlsx"), _file(du / d5 / f"du_bao_{d5}_TAM.xlsx")]
+    bo40 = _file(du / d40 / f"du_bao_{d40}_v1_bo.xlsx")
+    bo40b = _file(du / d40 / f"du_bao_{d40}_v2_bo.xlsx")            # no v3: kept_uncertain
+    bo5 = _file(du / d5 / f"du_bao_{d5}_v1_bo.xlsx")                 # only a _TAM file next to it: kept_uncertain
+    _set_times(tmp_path, [(bo40, NOW - timedelta(days=40)), (bo40b, NOW - timedelta(days=40)), (bo5, NOW - timedelta(days=5))])
+    code, out = _run(CLEANUP, ["-ProjectRoot", str(proj), "-TmpRoot", str(tmp_path / "tmproot"), "-Apply"], la)
+    assert code == 0, out
+    g = _groups(_report(out))["exports"]
+    assert g["status"] == "ok", g
+    assert _cands(g) == {_n(bo40)}, g
+    assert _uncertain(g) == {_n(bo40b), _n(bo5)}
+    assert not bo40.exists() and all(p.is_file() for p in kept + [bo40b, bo5])
+
+
+def test_deploy_temp_folder_used_by_a_process_is_kept(tmp_path: Path):
+    la, proj = tmp_path / "LA", tmp_path / "proj"
+    (proj / "scripts").mkdir(parents=True)
+    la.mkdir()
+    tp = tmp_path / "TEMP"
+    used, free = tp / "DemandForecast-deploy-20261101-000000", tp / "DemandForecast-deploy-20261102-000000"
+    times = []
+    for d in (used, free):
+        times += [(_file(d / "pkg.zip"), NOW - timedelta(days=3)), (d, NOW - timedelta(days=3))]
+    _set_times(tmp_path, times)
+    user = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)", str(used / "pkg.zip")])
+    try:
+        code, out = _run(CLEANUP, ["-ProjectRoot", str(proj), "-TmpRoot", str(tmp_path / "tmproot"), "-Apply"], la)
+        assert code == 0, out
+        rep = _report(out)
+        assert _cands(_groups(rep)["deploy_temp"]) == {_n(free)}
+        assert "used by running process" in _skips(rep)[_n(used)]
+        assert (used / "pkg.zip").is_file() and not free.exists()
+    finally:
+        user.kill()
+        user.wait()
+
+
+_STUB_LISTS = ("param([string]$ProjectRoot = '', [switch]$Apply, [switch]$IncludeDist, [string[]]$DistKeep = @(), [string]$TmpRoot = '',\n"
+               "      [string]$KeepListFile = '', [string]$ConcludedListFile = '')\n"
+               "Set-Content -LiteralPath (Join-Path $PSScriptRoot 'ran.txt') -Encoding UTF8 "
+               "-Value \"root=$ProjectRoot|giu=$KeepListFile|kl=$ConcludedListFile\"\n"
+               "exit 0\n")
+
+
+def test_wrapper_passes_the_source_lists_and_keeps_a_drive_root(tmp_path: Path):
+    la, proj = tmp_path / "LA", tmp_path / "my proj"
+    pd = _install(la, "1.4.8", [])
+    ops = pd / "1.4.8" / "scripts" / "ops"
+    ops.mkdir(parents=True)
+    (ops / "don_dep_dinh_ky.ps1").write_text(_STUB_LISTS, encoding="ascii")
+    giu = _file(proj / "scripts" / "ops" / "don_dep_giu.txt", b"x\n")
+    code, out = _run(WRAPPER, ["-ProjectRoot", str(proj)], la)
+    assert code == 0, out
+    assert (ops / "ran.txt").read_text(encoding="utf-8-sig").strip() == f"root={proj}|giu={giu}|kl="
+    kl = _file(proj / "scripts" / "ops" / "don_dep_ket_luan.txt", b"y\n")
+    code, out = _run(WRAPPER, ["-ProjectRoot", str(proj)], la)
+    assert code == 0, out
+    assert (ops / "ran.txt").read_text(encoding="utf-8-sig").strip() == f"root={proj}|giu={giu}|kl={kl}"
+    drive = str(tmp_path)[:3]                                        # e.g. C:\ (the stub only records it)
+    code, out = _run(WRAPPER, ["-ProjectRoot", drive], la)
+    assert code == 0, out
+    assert (ops / "ran.txt").read_text(encoding="utf-8-sig").strip().startswith(f"root={drive}|")
+
+
+def test_register_plan_uses_the_wrapper_unless_direct(tree):
+    la, proj = tree["la"], tree["proj"]
+    code, out = _run(REGISTER, ["-Plan", "-ProjectRoot", str(proj)], la)
+    assert code == 0, out
+    flat = " ".join(out.split())
+    assert "don_dep_current.ps1" in flat and "nothing registered" in flat
+    code, out = _run(REGISTER, ["-Plan", "-Direct", "-ProjectRoot", str(proj)], la)
+    assert code == 0, out
+    flat = " ".join(out.split())
+    assert "don_dep_dinh_ky.ps1" in flat and "don_dep_current.ps1" not in flat
+
+
+_TASK_DRIVER = """$ErrorActionPreference = 'Stop'
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($args[0], [ref]$null, [ref]$null)
+$fn = $ast.Find({ param($x) $x -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq 'Get-TaskActionVersions' }, $true)
+Invoke-Expression $fn.Extent.Text
+foreach ($l in Get-Content -LiteralPath $args[1] -Encoding UTF8) { '[' + (@(Get-TaskActionVersions $l $args[2]) -join ',') + ']' }
+"""
+
+
+def test_task_action_versions_helper(tmp_path: Path):
+    """Get-TaskActionVersions (taken from the script by its AST; no task is registered): a file inside a version folder,
+    quoted / unquoted, the %LOCALAPPDATA% form, a bare folder, and the 1.4.30 vs 1.4.3 prefix trap."""
+    la = tmp_path / "LA"
+    base = la / "Programs" / "DemandForecast"
+    cases = [
+        (f'powershell.exe -File "{base}\\1.4.3\\scripts\\start.ps1"', "1.4.3"),
+        (f"{base}\\1.4.4\\python\\pythonw.exe -m app.cli serve", "1.4.4"),
+        ("-File %LOCALAPPDATA%\\Programs\\DemandForecast\\1.4.5\\scripts\\x.ps1", "1.4.5"),
+        (f"cmd /c cd {base}\\1.4.6", "1.4.6"),
+        (f"'{base}\\1.4.7'", "1.4.7"),
+        (f"{str(base).replace(chr(92), '/')}/1.4.8/run.bat", "1.4.8"),
+        (f"{base}\\1.4.30\\x.ps1 {base}\\1.4.3x\\y", "1.4.30"),
+        (f"{base}\\current.txt {la}\\Other\\1.4.9\\x.ps1", ""),
+    ]
+    drv = tmp_path / "_tav.ps1"
+    drv.write_text(_TASK_DRIVER, encoding="ascii")
+    lst = tmp_path / "_tav.txt"
+    lst.write_text("\n".join(c for c, _ in cases), encoding="utf-8")
+    code, out = _run(drv, [str(CLEANUP), str(lst), str(base)], la)
+    assert code == 0, out
+    got = [ln.strip() for ln in out.splitlines() if ln.strip().startswith("[")]
+    assert got == [f"[{w}]" for _, w in cases], (got, out)

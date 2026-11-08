@@ -533,6 +533,13 @@ CATALOG: dict[str, tuple[str, str]] = {
                             "Unexpected error in a SEL2 command — see the detail; not retried automatically."),
     "SEL2_REPLAY_NOT_A_COPY": ("sel2-replay chỉ chạy trên BẢN SAO cơ sở dữ liệu (có copy_info.json cạnh app.db, hoặc thêm --copy-ok) — không chạy, không ghi gì.",
                                "sel2-replay runs only on a database COPY (copy_info.json next to app.db, or --copy-ok) — nothing was run or written."),
+    # 1.4.8 SO-line cache + spike cleaning (spike_lines.py, ml/sel2/pipeline.py)
+    "SPIKE_LINES_FAILED": ("Bước đọc dòng đơn SO và đánh dấu đơn đột biến của đêm nay lỗi — D-1, làm mới dự báo và file Excel vẫn chạy bình thường; xem chi tiết job SPIKE_LINES.",
+                           "Tonight's SO-line read and spike flagging step failed — D-1, the forecast refresh and the Excel file run as usual; see the SPIKE_LINES job."),
+    "SPIKE_LINES_NO_CUSTOMER": ("Chưa cấu hình cột mã khách hàng (bigquery.customer_id_column) — không đọc dòng đơn SO để đánh dấu đơn đột biến.",
+                                "The customer column (bigquery.customer_id_column) is not set — the SO lines for the spike flags are not read."),
+    "SPIKE_CLEANING_SKIPPED": ("Làm sạch đơn đột biến đang bật nhưng chưa có dấu đột biến đủ mới cho ngày này — lần chạy dùng số bán gốc (không làm sạch).",
+                               "Spike cleaning is on but no recent enough spike flags exist for this day — the run uses the raw demand (no cleaning)."),
 }
 
 

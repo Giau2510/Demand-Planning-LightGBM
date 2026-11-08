@@ -1,37 +1,69 @@
 <#
-.SYNOPSIS  Periodic cleanup (owner rules 03/11/2026). DRY RUN unless -Apply. Keep this file ASCII-only.
+.SYNOPSIS  Periodic cleanup (owner rules 03/11/2026, extended 08/11/2026). DRY RUN unless -Apply. Keep this file ASCII-only.
+           Owner rule 08/11: when in doubt KEEP (listed as kept_uncertain in the report).
+           current / previous version: current = %LOCALAPPDATA%\Programs\DemandForecast\current.txt (read only);
+           previous = the newest EXISTING version folder older than it (a version only in install-history.json is ignored).
            Groups and rules (everything not listed as a candidate stays):
-             backups  <project>\backups: keep the 7 newest *-manual.zip, the 7 newest *-cli.zip, every other backup
-                      (*-pre-*.zip) younger than 30 days, the newest backup taken before each install (version folder
-                      creation time under %LOCALAPPDATA%\Programs\DemandForecast, remembered in
-                      <project>\logs\don_dep\install-history.json once seen), every backup taken within 20 min
-                      before an install and a cli backup taken right after a manual one (deploy pair); a kept zip keeps
-                      its .sha256 / config-* companions. The other backup zips (+ their companions) are candidates.
-             exports  <data>\exports\du_bao\YYYYMMDD\ folders older than 90 days (folder date). <data> = data_dir of
+             backups  <project>\backups: keep the newest backup overall, every backup of the last 7 days (name time),
+                      for the current and the previous version the newest *-pre-<version without dots>.zip (pre-1.4.6 ->
+                      backup-...-pre-146.zip), the newest backup taken before each install of that version and every
+                      backup taken within 20 min before it (install time = version folder creation time, remembered in
+                      <project>\logs\don_dep\install-history.json once seen); a kept zip keeps its .sha256 / config-*
+                      companions. The other backup zips (+ their companions) are candidates. current.txt unreadable ->
+                      group skipped.
+             exports  <data>\exports\du_bao\YYYYMMDD\ folders that are not among the 30 newest day folders and older
+                      than 30 days (folder date); in the kept folders, *_bo files (earlier versions of the day,
+                      du_bao_YYYYMMDD_vK_bo.xlsx) older than 3 days (folder date and last write) while a newer
+                      du_bao_YYYYMMDD_vM.xlsx (M > K) exists; otherwise kept (kept_uncertain). <data> = data_dir of
                       %LOCALAPPDATA%\DemandForecast\storage.json (read only); unreadable -> group skipped.
              logs     <data> log folder and <project>\logs\** files older than 30 days: added to
                       logs-archive-YYYYMM.zip next to them (verified) BEFORE deletion; a file in use is never touched.
              tmp      -TmpRoot (default D:\Buymed\tmp) entries older than 1 day (newest creation / last write time of the
                       entry and, for a folder, of everything in it) that no running process names on its command line.
+             deploy_temp  %TEMP%\DemandForecast-deploy-* folders older than 1 day (same age rule as tmp) that no
+                      running process names on its command line (the managed %TEMP%\DemandForecast-deploy\ is not touched).
              reports  <project>\reports\<folder> with a package* subfolder: data files (.parquet, .csv, .zip,
-                      order_lines*) outside the package folder(s); folders in scripts\ops\don_dep_giu.txt are excluded.
+                      order_lines*) outside the package folder(s). Folders listed in scripts\ops\don_dep_ket_luan.txt
+                      (concluded experiments) also: intermediate data files (.parquet .pkl .npz .npy .log .tmp .feather)
+                      anywhere below and superseded versions (stem ending _v<N> while the same stem with a higher plain
+                      _v<M> and the same extension exists in the same folder); code / text (.py .ps1 .sql .ipynb .sh .R
+                      .bat .md .json .txt .yaml .yml) is always kept; lettered variants (_v3b) and matches inside a
+                      package* folder are kept (kept_uncertain). Folders in scripts\ops\don_dep_giu.txt are excluded
+                      entirely (the keep list wins). -KeepListFile / -ConcludedListFile replace the two lists.
+             installs %LOCALAPPDATA%\Programs\DemandForecast\<x.y.z> folders other than the current and the previous
+                      version; a folder newer than the current version, not named x.y.z or named in a scheduled task
+                      action is kept (kept_uncertain); a
+                      folder named on a running process command line / executable path is kept; current.txt is never
+                      touched; current.txt unreadable -> group skipped.
+             dist_versions  <project>\dist and <project>\worktrees\*\dist: DemandForecast-<x.y.z>* entries (packages,
+                      .sha256, manifests, staging folders) of versions older than the current one other than the
+                      previous and -DistKeep (newer -> kept_uncertain); deleted with -Apply alone (no -IncludeDist
+                      needed: behaviour change 08/11). current.txt unreadable -> group skipped.
              dist     plan of scripts\prune-artifacts.ps1 (dry run); deleted only with -Apply -IncludeDist -DistKeep
-                      <rollback version(s)> (-IncludeDist without -DistKeep is refused: no -Keep = rollback package gone).
-                      prune-artifacts.ps1 is not run at all (plan or apply) while anything under dist\ / release\ is a
-                      junction / symlink or unreadable (it recurses through junctions).
+                      <rollback version(s)> (-IncludeDist without -DistKeep is refused: no -Keep = rollback package gone);
+                      the current and the previous version are added to its -Keep. Not in the totals (dist_versions
+                      covers dist\; its deletions are). prune-artifacts.ps1 is not run at all (plan or apply) while
+                      anything under dist\ / release\ is a junction / symlink or unreadable (it recurses through junctions).
+           Info only: <project>\worktrees\<name> git worktrees whose version is installed, whose HEAD is on a
+           remote-tracking branch, whose tag v<version> exists and whose status is clean -> "worktree_can_remove"
+           (never removed here: scripts\ops\archive_worktree.py).
            Never: follows or deletes through a junction / symlink: a group root or a candidate that is, or lies under,
            a reparse point (any parent up to the drive root) is reported and skipped; touches the live DB, models,
-           %LOCALAPPDATA%\DemandForecast, %LOCALAPPDATA%\Programs\DemandForecast, checkpoints\, dist\ (except through
-           prune-artifacts.ps1 with -IncludeDist). Refuses a ProjectRoot inside %LOCALAPPDATA%\Programs\DemandForecast
+           %LOCALAPPDATA%\DemandForecast, %LOCALAPPDATA%\Programs\DemandForecast (except a version folder of the
+           installs group), checkpoints\, dist\ (except the dist_versions group and prune-artifacts.ps1 with
+           -IncludeDist). Refuses a ProjectRoot inside %LOCALAPPDATA%\Programs\DemandForecast
            or %LOCALAPPDATA%\DemandForecast (a packaged copy: pass -ProjectRoot <source folder>; 8.3 short names are
            expanded first) or holding VERSION with current.txt next to it; a -TmpRoot that is a drive root or the
            project / data / %LOCALAPPDATA% folder or one of their parents.
-           Report: <project>\logs\don_dep\don_dep-YYYYMMDD-HHMMSS.json (+ .txt). Exit 0 ok, 1 error, 2 refused.
+           Report: <project>\logs\don_dep\don_dep-YYYYMMDD-HHMMSS.json (+ .txt): per group candidates (count, bytes),
+           kept_uncertain, before / after; totals. Exit 0 ok, 1 error, 2 refused.
+           The weekly task should run scripts\ops\don_dep_current.ps1 (runs the script of the INSTALLED version).
 .EXAMPLE   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ops\don_dep_dinh_ky.ps1            (plan only)
            powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ops\don_dep_dinh_ky.ps1 -Apply     (delete)
            ... -Apply -IncludeDist -DistKeep 1.3.1      (also dist\ retention, keeping the 1.3.1 rollback package)
 #>
 param([string]$ProjectRoot = "", [switch]$Apply, [switch]$IncludeDist, [string[]]$DistKeep = @(),
+      [string]$KeepListFile = "", [string]$ConcludedListFile = "",   # reports lists (default: next to this script)
       [string]$TmpRoot = "D:\Buymed\tmp")       # owner rule: the only folder on D: this script cleans (tests pass their own)
 $ErrorActionPreference = "Stop"
 $Now = Get-Date
@@ -50,6 +82,8 @@ if ($IncludeDist -and $DistKeep.Count -eq 0) {
 Add-Type -Namespace DfCleanup -Name Native -MemberDefinition @'
 [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
 public static extern uint GetLongPathName(string shortPath, System.Text.StringBuilder longPath, uint bufferLength);
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+public static extern uint GetShortPathName(string longPath, System.Text.StringBuilder shortPath, uint bufferLength);
 '@
 
 function Get-LongPath([string]$Path) {
@@ -168,6 +202,64 @@ function Read-StorageConfig {
 $Storage = Read-StorageConfig
 $DataDir = if ($Storage.ok) { $Storage.data } else { $null }
 
+function Read-InstallState {
+    # current version = current.txt (READ ONLY); previous = newest EXISTING version folder x.y.z older than it (a version
+    # only remembered in install-history.json whose folder is gone is not a rollback target); versions = folders + history
+    $st = @{ ok = $false; current = $null; previous = $null; keep = @(); versions = @(); note = "" }
+    $f = Join-Path $ProgDir "current.txt"
+    if (-not (Test-Path -LiteralPath $ProgDir -PathType Container)) { $st.note = "install folder not found"; return $st }
+    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { $st.note = "current.txt not found"; return $st }
+    try { $v = "$(Get-Content -LiteralPath $f -Raw -ErrorAction Stop)".Trim() } catch { $st.note = "current.txt unreadable"; return $st }
+    if ($v -notmatch '^\d+\.\d+\.\d+$') { $st.note = "current.txt holds no version x.y.z"; return $st }
+    $vs = @{}
+    $dirs = @()
+    foreach ($d in @(Get-ChildItem -LiteralPath $ProgDir -Directory -Force)) {
+        if ($d.Name -match '^\d+\.\d+\.\d+$') { $vs[$d.Name] = $true; if (-not (Test-Reparse $d)) { $dirs += $d.Name } }
+    }
+    if (Test-Path -LiteralPath $HistFile -PathType Leaf) {
+        try {
+            foreach ($e in @((Get-Content -LiteralPath $HistFile -Raw -Encoding UTF8 | ConvertFrom-Json).installs)) {
+                if ("$($e.version)" -match '^\d+\.\d+\.\d+$') { $vs["$($e.version)"] = $true }
+            }
+        } catch { $st.note = "install-history.json unreadable; " }
+    }
+    $older = @($dirs | Where-Object { [version]$_ -lt [version]$v } | Sort-Object { [version]$_ })
+    $st.ok = $true
+    $st.current = $v
+    $st.versions = @($vs.Keys)
+    if ($older.Count) { $st.previous = $older[$older.Count - 1] }
+    $st.keep = @(@($v, $st.previous) | Where-Object { $_ })
+    $st.note += "current $v, previous $(if ($st.previous) { $st.previous } else { 'none' })"
+    return $st
+}
+
+$Inst = Read-InstallState
+$Script:ProcLines = $null
+
+function Get-ProcLines {
+    # command line + executable path of every running process (lower case, / -> \), read once; $null = unreadable
+    if ($null -ne $Script:ProcLines) { return , $Script:ProcLines }
+    try {
+        $Script:ProcLines = @(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {
+            [pscustomobject]@{ pid = $_.ProcessId; text = ("$($_.CommandLine) | $($_.ExecutablePath)").ToLowerInvariant().Replace('/', '\') } })
+    } catch { return $null }
+    return , $Script:ProcLines
+}
+
+function Get-PathUsers([string]$Path) {
+    # pids whose command line / executable path names $Path (long or 8.3 short form, Git Bash form) or something below
+    # it; nothing when the process list is unreadable (callers check Get-ProcLines first)
+    $procs = Get-ProcLines
+    if ($null -eq $procs) { return $null }
+    $forms = @($Path.ToLowerInvariant())
+    $sb = New-Object System.Text.StringBuilder 32768
+    $n = [DfCleanup.Native]::GetShortPathName($Path, $sb, [uint32]$sb.Capacity)
+    if ($n -gt 0 -and $n -lt $sb.Capacity) { $forms += $sb.ToString().ToLowerInvariant() }
+    if ($Path -match '^([A-Za-z]):\\(.*)$') { $forms += ("\" + $Matches[1] + "\" + $Matches[2]).ToLowerInvariant() }
+    $pats = @($forms | Sort-Object -Unique | ForEach-Object { [regex]::Escape($_.TrimEnd('\')) + '(\\|"|''|\s|\||$)' })
+    return @($procs | Where-Object { $t = $_.text; @($pats | Where-Object { [regex]::IsMatch($t, $_) }).Count -gt 0 } | ForEach-Object { $_.pid })
+}
+
 # -TmpRoot: never a drive root, never the project / data / %LOCALAPPDATA% folders or one of their parents
 $tmpBad = $null
 if ($TmpRoot.Length -le 3) { $tmpBad = "a drive root" }
@@ -190,12 +282,15 @@ if ($DataDir) {
     $Protected[(Join-Path $DataDir "models") + '\'] = "models"
 }
 
-function Get-ProtectReason([string]$Path) {
-    # path strings only say nothing about where a junction leads: any reparse point in the chain refuses the path
+function Get-ProtectReason([string]$Path, [string]$Allow = "") {
+    # path strings only say nothing about where a junction leads: any reparse point in the chain refuses the path.
+    # $Allow = one protected key whose entries (strictly below it, never the key folder itself) a group may select:
+    # installs (a version folder) and dist_versions (a package in dist\)
     $rp = Get-ReparseInChain $Path
     if ($rp) { return "reparse point in path: $rp" }
     $p = (Get-LongPath $Path) + '\'
     foreach ($k in $Protected.Keys) {
+        if ($Allow -and $k -ieq $Allow -and $p.Length -gt $k.Length -and $p.StartsWith($k, [StringComparison]::OrdinalIgnoreCase)) { continue }
         if ($p.StartsWith($k, [StringComparison]::OrdinalIgnoreCase)) { return $Protected[$k] }
         if ($k.StartsWith($p, [StringComparison]::OrdinalIgnoreCase)) { return "contains $($Protected[$k])" }
     }
@@ -207,14 +302,16 @@ function New-Group([string]$Name, [string[]]$Roots) {
     return [ordered]@{ group = $Name; roots = @($Roots); status = "ok"; note = ""; before_bytes = 0L; candidate_count = 0
                        candidate_bytes = 0L; after_bytes = 0L; after_is_projection = (-not $Apply); deleted_count = 0
                        deleted_bytes = 0L; candidates = (New-Object System.Collections.ArrayList)
+                       kept_uncertain = (New-Object System.Collections.ArrayList)
                        skipped = (New-Object System.Collections.ArrayList); errors = (New-Object System.Collections.ArrayList) }
 }
 
-function Add-Candidate($G, [string]$Path, [string]$Kind, [long]$Bytes, [datetime]$Time, [string]$Reason) {
-    $why = Get-ProtectReason $Path
+function Add-Candidate($G, [string]$Path, [string]$Kind, [long]$Bytes, [datetime]$Time, [string]$Reason, [string]$Allow = "") {
+    $why = Get-ProtectReason $Path $Allow
     if ($why) { [void]$G.skipped.Add([ordered]@{ path = $Path; reason = "protected ($why)" }); return $null }
     $c = [ordered]@{ path = $Path; kind = $Kind; bytes = $Bytes; age_days = [math]::Round(($Now - $Time).TotalDays, 1)
                      last_write = $Time.ToString("s"); reason = $Reason }
+    if ($Allow) { $c["allow"] = $Allow }
     [void]$G.candidates.Add($c)
     $G.candidate_count += 1
     $G.candidate_bytes += $Bytes
@@ -222,6 +319,11 @@ function Add-Candidate($G, [string]$Path, [string]$Kind, [long]$Bytes, [datetime
 }
 
 function Add-Skip($G, [string]$Path, [string]$Reason) { [void]$G.skipped.Add([ordered]@{ path = $Path; reason = $Reason }) }
+
+function Add-Uncertain($G, [string]$Path, [long]$Bytes, [string]$Reason) {
+    # owner rule 08/11: not sure -> kept and listed
+    [void]$G.kept_uncertain.Add([ordered]@{ path = $Path; bytes = $Bytes; reason = $Reason })
+}
 
 function Test-GroupRoot($G, [string]$Root) {
     # a group root that is, or lies under, a junction / symlink is never entered: reported, nothing selected in it
@@ -245,6 +347,7 @@ function Get-BackupGroup {
     if (-not (Test-Path -LiteralPath $ProgDir -PathType Container)) {
         $g.status = "skipped"; $g.note = "install folder not found: install times unknown, nothing selected"; return $g
     }
+    if (-not $Inst.ok) { $g.status = "skipped"; $g.note = "$($Inst.note): current version unknown, nothing selected"; return $g }
     # install times = version folders now + every install seen before (install-history.json keeps them after an old
     # version folder is removed; entries can also be added by hand: {"version": "...", "created": "yyyy-MM-ddTHH:mm:ss"})
     $hist = [ordered]@{}
@@ -283,17 +386,19 @@ function Get-BackupGroup {
         }
     }
     $keep = @{}
-    foreach ($typ in @("manual", "cli")) {
-        foreach ($z in @($zips | Where-Object { $_.type -eq $typ } | Sort-Object t, name | Select-Object -Last 7)) {
-            if (-not $keep.ContainsKey($z.name)) { $keep[$z.name] = "7 newest $typ" }
-        }
-    }
-    foreach ($z in $zips) {
-        if (($z.type -eq "pre" -or $z.type -eq "other") -and ($Now - $z.t).TotalDays -le 30 -and -not $keep.ContainsKey($z.name)) {
-            $keep[$z.name] = "$($z.type) backup younger than 30 days"
-        }
-    }
     $srt = @($zips | Sort-Object t, name)
+    if ($srt.Count) { $keep[$srt[$srt.Count - 1].name] = "newest backup overall" }
+    foreach ($z in $srt) {
+        if (($Now - $z.t).TotalDays -le 7 -and -not $keep.ContainsKey($z.name)) { $keep[$z.name] = "backup of the last 7 days" }
+    }
+    foreach ($ver in $Inst.keep) {
+        # cai_14x.py: backup reason "pre-1.4.6" -> backup-<stamp>-pre-146.zip (backup.py keeps letters, digits, - and _)
+        $tag = "pre-" + $ver.Replace('.', '')
+        $pre = @($srt | Where-Object { $_.kind -eq $tag -or $_.kind -like "$tag-*" -or $_.kind -like "${tag}_*" })
+        if ($pre.Count -and -not $keep.ContainsKey($pre[$pre.Count - 1].name)) {
+            $keep[$pre[$pre.Count - 1].name] = "newest $tag backup (before the install of $ver)"
+        }
+    }
     for ($k = 1; $k -lt $srt.Count; $k++) {
         # deploy-upgrade.ps1 takes a manual backup, then install.ps1 a cli one: that cli = the backup before an install.
         # Remembered in install-history.json, so it stays kept after the manual partner is removed.
@@ -304,20 +409,19 @@ function Get-BackupGroup {
         }
     }
     $Script:InstallHistory = @($hist.Values | Sort-Object { $_.created })
-    $installs = @($Script:InstallHistory | ForEach-Object { [pscustomobject]@{ t = [datetime]::ParseExact($_.created, "s", $Inv); pair = ($_.version -eq "deploy-pair") } } |
+    # 08/11: only the installs of the current and the previous version keep backups (deploy pairs stay recorded in
+    # install-history.json but no longer keep a backup by themselves)
+    $installs = @($Script:InstallHistory | Where-Object { $Inst.keep -contains $_.version } |
+                  ForEach-Object { [pscustomobject]@{ t = [datetime]::ParseExact($_.created, "s", $Inv); version = $_.version } } |
                   Sort-Object t)
     foreach ($ins in $installs) {
         $it = $ins.t
         $before = @($zips | Where-Object { $_.t -le $it } | Sort-Object t, name)
         if ($before.Count -eq 0) { continue }
         $nb = $before[$before.Count - 1]
-        if ($ins.pair) {
-            if (-not $keep.ContainsKey($nb.name)) { $keep[$nb.name] = "cli right after a manual backup (deploy pair = before an install)" }
-            continue
-        }
-        if (-not $keep.ContainsKey($nb.name)) { $keep[$nb.name] = "newest backup before install $($it.ToString('s'))" }
+        if (-not $keep.ContainsKey($nb.name)) { $keep[$nb.name] = "newest backup before install of $($ins.version) $($it.ToString('s'))" }
         foreach ($z in @($before | Where-Object { ($it - $_.t).TotalMinutes -le 20 })) {
-            if (-not $keep.ContainsKey($z.name)) { $keep[$z.name] = "taken within 20 min before install $($it.ToString('s'))" }
+            if (-not $keep.ContainsKey($z.name)) { $keep[$z.name] = "taken within 20 min before install of $($ins.version) $($it.ToString('s'))" }
         }
     }
     $g["kept"] = New-Object System.Collections.ArrayList
@@ -340,7 +444,7 @@ function Get-BackupGroup {
         $kind = if ($c.item.PSIsContainer) { "dir" } else { "file" }
         [void](Add-Candidate $g $c.item.FullName $kind $c.bytes $z.t "companion of deleted $($z.name)")
     }
-    $g.note = "installs known: $($installs.Count); backup zips: $($zips.Count), kept: $($keep.Count)"
+    $g.note = "kept versions: $($Inst.keep -join ', '), their installs known: $($installs.Count); backup zips: $($zips.Count), kept: $($keep.Count)"
     return $g
 }
 
@@ -351,6 +455,7 @@ function Get-ExportGroup {
     $g = New-Group "exports" @($root)
     if (-not (Test-GroupRoot $g $root)) { $g.status = "skipped"; $g.note = "reparse point in path: nothing selected"; return $g }
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { $g.status = "skipped"; $g.note = "folder not found"; return $g }
+    $days = @()
     foreach ($i in @(Get-ChildItem -LiteralPath $root -Force)) {
         if (Test-Reparse $i) { Add-Skip $g $i.FullName "reparse point (junction / symlink): not followed, not deleted"; continue }
         if (-not $i.PSIsContainer) { $g.before_bytes += $i.Length; continue }
@@ -359,10 +464,43 @@ function Get-ExportGroup {
         $g.before_bytes += $bytes
         if ($i.Name -notmatch '^\d{8}$') { continue }
         try { $d = [datetime]::ParseExact($i.Name, "yyyyMMdd", $Inv) } catch { continue }
-        if (($Today - $d).TotalDays -le 90) { continue }
-        if ($tree.reparse.Count -or $tree.errors.Count) { Add-TreeIssues $g $tree; Add-Skip $g $i.FullName "contains a reparse point / unreadable entry: kept"; continue }
-        [void](Add-Candidate $g $i.FullName "dir" $bytes $d "daily export folder older than 90 days ($($i.Name))")
+        $days += [pscustomobject]@{ item = $i; d = $d; tree = $tree; bytes = $bytes }
     }
+    # owner 08/11: the 30 newest day folders stay; a folder goes only when it is ALSO older than 30 days
+    $newest = @{}
+    foreach ($x in @($days | Sort-Object d -Descending | Select-Object -First 30)) { $newest[$x.item.Name] = $true }
+    $boLimit = $Now.AddDays(-3)
+    foreach ($x in $days) {
+        $i = $x.item; $tree = $x.tree
+        if (-not $newest.ContainsKey($i.Name) -and ($Today - $x.d).TotalDays -gt 30) {
+            if ($tree.reparse.Count -or $tree.errors.Count) { Add-TreeIssues $g $tree; Add-Skip $g $i.FullName "contains a reparse point / unreadable entry: kept"; continue }
+            [void](Add-Candidate $g $i.FullName "dir" $x.bytes $x.d "daily export folder outside the 30 newest days and older than 30 days ($($i.Name))")
+            continue
+        }
+        # kept day: its earlier versions du_bao_YYYYMMDD_vK_bo.xlsx older than 3 days, only while a NEWER version file
+        # du_bao_YYYYMMDD_vM.xlsx (M > K, not _bo) exists in the folder (a _TAM or other file does not count)
+        $top = @($tree.files | Where-Object { $_.DirectoryName -ieq $i.FullName })
+        $bo = @($top | Where-Object { $_.BaseName -match '_bo$' })
+        if ($bo.Count -eq 0) { continue }
+        $verRe = '^du_bao_' + $i.Name + '_v(\d+)$'
+        $maxV = -1L
+        foreach ($f in $top) {
+            if ($f.Extension -ieq ".xlsx" -and $f.BaseName -match $verRe) { if ([long]$Matches[1] -gt $maxV) { $maxV = [long]$Matches[1] } }
+        }
+        $young = (($Today - $x.d).TotalDays -le 3)
+        foreach ($f in $bo) {
+            if ($f.Extension -ine ".xlsx" -or $f.BaseName -notmatch ('^du_bao_' + $i.Name + '_v(\d+)_bo$')) {
+                Add-Uncertain $g $f.FullName $f.Length "_bo file not named du_bao_$($i.Name)_v<K>_bo.xlsx: kept"; continue
+            }
+            $k = [long]$Matches[1]
+            if ($maxV -le $k) {
+                Add-Uncertain $g $f.FullName $f.Length "no newer version file du_bao_$($i.Name)_v<M>.xlsx (M > $k) in the folder: kept"; continue
+            }
+            if ($young -or $f.LastWriteTime -ge $boLimit) { continue }
+            [void](Add-Candidate $g $f.FullName "file" $f.Length $f.LastWriteTime "earlier version v$k of day $($i.Name) (_bo, newer v$maxV exists) older than 3 days")
+        }
+    }
+    $g.note = "day folders: $($days.Count)"
     return $g
 }
 
@@ -443,12 +581,45 @@ function Get-TmpGroup {
     return $g
 }
 
+# ------------------------------------------------------------------ old deploy staging folders in %TEMP%
+function Get-DeployTempGroup {
+    if (-not $env:TEMP -or -not [IO.Path]::IsPathRooted($env:TEMP)) { $g = New-Group "deploy_temp" @(); $g.status = "skipped"; $g.note = "TEMP not set"; return $g }
+    $root = Get-LongPath $env:TEMP
+    $g = New-Group "deploy_temp" @($root)
+    if (-not (Test-GroupRoot $g $root)) { $g.status = "skipped"; $g.note = "reparse point in path: nothing selected"; return $g }
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) { $g.status = "skipped"; $g.note = "folder not found"; return $g }
+    if ($null -eq (Get-ProcLines)) { $g.status = "skipped"; $g.note = "process command lines unreadable: nothing selected"; return $g }
+    $limit = $Now.AddDays(-1)
+    # only DemandForecast-deploy-<stamp> (deploy-upgrade.ps1 before 1.2.14); the managed DemandForecast-deploy\ is not
+    # matched (deploy-upgrade.ps1 removes its own run folder)
+    foreach ($i in @(Get-ChildItem -LiteralPath $root -Directory -Force | Where-Object { $_.Name -like "DemandForecast-deploy-*" })) {
+        if (Test-Reparse $i) { Add-Skip $g $i.FullName "reparse point (junction / symlink): not followed, not deleted"; continue }
+        $tree = Get-Tree $i.FullName
+        $bytes = Get-Sum $tree.files
+        $g.before_bytes += $bytes
+        $newest = $i.LastWriteTime
+        if ($i.CreationTime -gt $newest) { $newest = $i.CreationTime }
+        foreach ($lst in @($tree.files, $tree.dirs)) {
+            foreach ($x in $lst) {
+                if ($x.LastWriteTime -gt $newest) { $newest = $x.LastWriteTime }
+                if ($x.CreationTime -gt $newest) { $newest = $x.CreationTime }
+            }
+        }
+        if ($newest -ge $limit) { continue }
+        $users = @(Get-PathUsers $i.FullName)
+        if ($users.Count) { Add-Skip $g $i.FullName "used by running process(es) $($users -join ', '): kept"; continue }
+        if ($tree.reparse.Count -or $tree.errors.Count) { Add-TreeIssues $g $tree; Add-Skip $g $i.FullName "contains a reparse point / unreadable entry: kept"; continue }
+        [void](Add-Candidate $g $i.FullName "dir" $bytes $newest "deploy staging folder older than 1 day, no running process uses it")
+    }
+    return $g
+}
+
 # ------------------------------------------------------------------ packaged experiments
 function Get-ReportGroup {
     $root = Join-Path $ProjectRoot "reports"
     $g = New-Group "reports" @($root)
     if (-not (Test-GroupRoot $g $root)) { $g.status = "skipped"; $g.note = "reparse point in path: nothing selected"; return $g }
-    $keepFile = Join-Path $PSScriptRoot "don_dep_giu.txt"
+    $keepFile = if ($KeepListFile) { $KeepListFile } else { Join-Path $PSScriptRoot "don_dep_giu.txt" }
     if (-not (Test-Path -LiteralPath $keepFile -PathType Leaf)) { $g.status = "skipped"; $g.note = "keep list not found: $keepFile"; return $g }
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { $g.status = "skipped"; $g.note = "folder not found"; return $g }
     $keepList = @{}
@@ -456,28 +627,202 @@ function Get-ReportGroup {
         $s = $line.Trim()
         if ($s -and -not $s.StartsWith("#")) { $keepList[$s] = $true }
     }
-    $g.note = "keep list: $($keepList.Count) folder(s)"
+    # concluded experiments (owner 08/11): optional list next to the keep list; missing = none
+    $doneList = @{}
+    $doneFile = if ($ConcludedListFile) { $ConcludedListFile } else { Join-Path $PSScriptRoot "don_dep_ket_luan.txt" }
+    if (Test-Path -LiteralPath $doneFile -PathType Leaf) {
+        foreach ($line in Get-Content -LiteralPath $doneFile) {
+            $s = $line.Trim()
+            if ($s -and -not $s.StartsWith("#")) { $doneList[$s] = $true }
+        }
+    }
+    $g.note = "keep list: $($keepList.Count) folder(s) ($keepFile); concluded list: $($doneList.Count) folder(s) ($doneFile)"
+    foreach ($n in @($doneList.Keys)) {
+        if (-not (Test-Path -LiteralPath (Join-Path $root $n) -PathType Container)) { Add-Skip $g (Join-Path $root $n) "listed in don_dep_ket_luan.txt but not found" }
+    }
     $dataExt = @(".parquet", ".csv", ".zip")
+    $interExt = @(".parquet", ".pkl", ".npz", ".npy", ".log", ".tmp", ".feather")
+    $alwaysKeep = @(".py", ".ps1", ".sql", ".ipynb", ".sh", ".r", ".bat", ".md", ".json", ".txt", ".yaml", ".yml")   # code / text
     foreach ($d in @(Get-ChildItem -LiteralPath $root -Directory -Force)) {
         if (Test-Reparse $d) { Add-Skip $g $d.FullName "reparse point (junction / symlink): not followed, not deleted"; continue }
         $pk = @(Get-ChildItem -LiteralPath $d.FullName -Directory -Force | Where-Object { $_.Name -like "package*" -and -not (Test-Reparse $_) } |
                 ForEach-Object { $_.Name })
-        if ($pk.Count -eq 0) { continue }
+        $done = $doneList.ContainsKey($d.Name)
+        if ($pk.Count -eq 0 -and -not $done) { continue }
         if ($keepList.ContainsKey($d.Name)) { Add-Skip $g $d.FullName "in keep list (don_dep_giu.txt)"; continue }
         $tree = Get-Tree $d.FullName
         Add-TreeIssues $g $tree
         $g.before_bytes += Get-Sum $tree.files
+        $sup = if ($done) { Get-Superseded $tree.files } else { [pscustomobject]@{ sup = @{}; variant = @{} } }
         foreach ($f in $tree.files) {
             $rel = $f.FullName.Substring($d.FullName.Length + 1)
             $parts = $rel.Split('\')
-            if ($parts.Count -gt 1 -and $pk -contains $parts[0]) { continue }       # inside a package folder
-            if ($f.Extension -eq ".md" -or $f.Name -like "package*") { continue }
-            if (($dataExt -contains $f.Extension.ToLowerInvariant()) -or $f.Name -like "order_lines*") {
+            $inPk = ($parts.Count -gt 1 -and $pk -contains $parts[0])               # inside a package folder
+            $ext = $f.Extension.ToLowerInvariant()
+            if ($pk.Count -and -not $inPk -and $f.Extension -ne ".md" -and $f.Name -notlike "package*" -and
+                (($dataExt -contains $ext) -or $f.Name -like "order_lines*")) {
                 [void](Add-Candidate $g $f.FullName "file" $f.Length $f.LastWriteTime "data file of packaged experiment $($d.Name) outside its package folder")
+                continue
             }
+            if (-not $done -or $alwaysKeep -contains $ext) { continue }
+            $why = $null
+            if ($interExt -contains $ext) { $why = "intermediate data file ($ext)" }
+            elseif ($sup.sup.ContainsKey($f.FullName)) { $why = "superseded by $($sup.sup[$f.FullName])" }
+            elseif ($sup.variant.ContainsKey($f.FullName)) {
+                Add-Uncertain $g $f.FullName $f.Length "variant $($sup.variant[$f.FullName]) of concluded experiment $($d.Name) (letter suffix): kept"; continue
+            }
+            if (-not $why) { continue }
+            if ($inPk) { Add-Uncertain $g $f.FullName $f.Length "inside package folder $($parts[0]) of concluded experiment $($d.Name) ($why): kept"; continue }
+            if (Test-InUse $f.FullName) { Add-Skip $g $f.FullName "file in use: not touched"; continue }
+            [void](Add-Candidate $g $f.FullName "file" $f.Length $f.LastWriteTime "concluded experiment $($d.Name): $why")
         }
     }
     return $g
+}
+
+function Get-Superseded($Files) {
+    # .sup: FullName -> name of the newer version: stem <base>_v<N>, same folder, same extension, a higher plain N exists.
+    # .variant: FullName -> stem of a lettered version <base>_v<N><letters> (_v3b: a variant, not a newer version) of a
+    # base that has other versions: kept (kept_uncertain), and never counted as superseding another file
+    $groups = @{}
+    foreach ($f in $Files) {
+        if ($f.BaseName -notmatch '^(.+)_v(\d+)([A-Za-z]*)$') { continue }
+        $key = "$($f.DirectoryName)|$($Matches[1])|$($f.Extension)".ToLowerInvariant()
+        if (-not $groups.ContainsKey($key)) { $groups[$key] = New-Object System.Collections.ArrayList }
+        [void]$groups[$key].Add([pscustomobject]@{ f = $f; n = [long]$Matches[2]; s = $Matches[3].ToLowerInvariant() })
+    }
+    $res = [pscustomobject]@{ sup = @{}; variant = @{} }
+    foreach ($lst in $groups.Values) {
+        if ($lst.Count -lt 2) { continue }
+        foreach ($x in @($lst | Where-Object { $_.s })) { $res.variant[$x.f.FullName] = $x.f.BaseName }
+        $plain = @($lst | Where-Object { -not $_.s } | Sort-Object n)
+        if ($plain.Count -lt 2) { continue }
+        $top = $plain[$plain.Count - 1]
+        foreach ($x in $plain) {
+            if ($x.n -lt $top.n) { $res.sup[$x.f.FullName] = $top.f.Name }
+        }
+    }
+    return $res
+}
+
+# ------------------------------------------------------------------ installed version folders
+function Get-TaskActionVersions([string]$Text, [string]$Base) {
+    # versions x.y.z whose folder <Base>\<x.y.z> (or something inside it) a task action names; %VAR% expanded, / -> \;
+    # the version must end at \ " ' a blank or the end (1.4.30 never counts as 1.4.3)
+    $txt = [Environment]::ExpandEnvironmentVariables($Text).ToLowerInvariant().Replace('/', '\')
+    $pre = [regex]::Escape($Base.ToLowerInvariant().TrimEnd('\') + '\')
+    $bs = [string][char]92
+    $re = $pre + '(\d+\.\d+\.\d+)(?=' + [regex]::Escape($bs) + '|"|''|\s|$)'
+    return @([regex]::Matches($txt, $re) | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+}
+
+function Get-InstallGroup {
+    $g = New-Group "installs" @($ProgDir)
+    if (-not (Test-GroupRoot $g $ProgDir)) { $g.status = "skipped"; $g.note = "reparse point in path: nothing selected"; return $g }
+    if (-not $Inst.ok) { $g.status = "skipped"; $g.note = "$($Inst.note): nothing selected"; return $g }
+    if ($null -eq (Get-ProcLines)) { $g.status = "skipped"; $g.note = "process command lines unreadable: nothing selected"; return $g }
+    $g.note = $Inst.note
+    $allow = $ProgDir.TrimEnd('\') + '\'
+    # a version folder named in a scheduled task action (program, arguments, working folder) is kept
+    $taskVers = @{}
+    try {
+        foreach ($t in @(Get-ScheduledTask -ErrorAction Stop)) {
+            foreach ($a in @($t.Actions)) {
+                foreach ($v in @(Get-TaskActionVersions "$($a.Execute) $($a.Arguments) $($a.WorkingDirectory)" $ProgDir)) {
+                    $taskVers[$v] = (@($taskVers[$v], $t.TaskName) | Where-Object { $_ }) -join ', '
+                }
+            }
+        }
+    } catch { $g.status = "skipped"; $g.note = "scheduled tasks unreadable: nothing selected"; return $g }
+    foreach ($i in @(Get-ChildItem -LiteralPath $ProgDir -Directory -Force)) {
+        if (Test-Reparse $i) { Add-Skip $g $i.FullName "reparse point (junction / symlink): not followed, not deleted"; continue }
+        $tree = Get-Tree $i.FullName
+        $bytes = Get-Sum $tree.files
+        $g.before_bytes += $bytes
+        if ($i.Name -notmatch '^\d+\.\d+\.\d+$') { Add-Uncertain $g $i.FullName $bytes "not a version folder x.y.z: kept"; continue }
+        if ($Inst.keep -contains $i.Name) { continue }
+        if ([version]$i.Name -gt [version]$Inst.current) { Add-Uncertain $g $i.FullName $bytes "newer than the current version $($Inst.current): kept"; continue }
+        if ($taskVers.ContainsKey($i.Name)) { Add-Uncertain $g $i.FullName $bytes "named in scheduled task(s) $($taskVers[$i.Name]): kept"; continue }
+        $users = @(Get-PathUsers $i.FullName)
+        if ($users.Count) { Add-Skip $g $i.FullName "used by running process(es) $($users -join ', '): kept"; continue }
+        if ($tree.reparse.Count -or $tree.errors.Count) { Add-TreeIssues $g $tree; Add-Skip $g $i.FullName "contains a reparse point / unreadable entry: kept"; continue }
+        $c = Add-Candidate $g $i.FullName "dir" $bytes $i.CreationTime "installed version $($i.Name) is neither the current ($($Inst.current)) nor the previous ($($Inst.previous))" $allow
+        if ($c) { $c["install_version"] = $i.Name }
+    }
+    return $g
+}
+
+# ------------------------------------------------------------------ dist folders: packages of other versions
+function Get-DistVersionGroup {
+    $roots = @(Join-Path $ProjectRoot "dist")
+    $wt = Join-Path $ProjectRoot "worktrees"
+    if ((Test-Path -LiteralPath $wt -PathType Container) -and -not (Get-ReparseInChain $wt)) {
+        foreach ($w in @(Get-ChildItem -LiteralPath $wt -Directory -Force | Where-Object { -not (Test-Reparse $_) })) { $roots += (Join-Path $w.FullName "dist") }
+    }
+    $g = New-Group "dist_versions" $roots
+    if (-not $Inst.ok) { $g.status = "skipped"; $g.note = "$($Inst.note): nothing selected"; return $g }
+    $keepV = @(@($Inst.keep) + @($DistKeep) | Sort-Object -Unique)
+    $g.note = "kept versions: $($keepV -join ', ')"
+    $allow = (Join-Path $ProjectRoot "dist") + '\'
+    foreach ($r in $roots) {
+        if (-not (Test-Path -LiteralPath $r)) { continue }
+        if (-not (Test-GroupRoot $g $r)) { continue }
+        if (-not (Test-Path -LiteralPath $r -PathType Container)) { continue }
+        foreach ($i in @(Get-ChildItem -LiteralPath $r -Force | Where-Object { $_.Name -like "DemandForecast-*" })) {
+            if (Test-Reparse $i) { Add-Skip $g $i.FullName "reparse point (junction / symlink): not followed, not deleted"; continue }
+            $tree = $null
+            if ($i.PSIsContainer) { $tree = Get-Tree $i.FullName; $bytes = Get-Sum $tree.files } else { $bytes = $i.Length }
+            $g.before_bytes += $bytes
+            if ($i.Name -notmatch '^DemandForecast-(\d+\.\d+\.\d+)(?=$|[-.])') { Add-Uncertain $g $i.FullName $bytes "no version x.y.z in the name: kept"; continue }
+            $v = $Matches[1]
+            if ($keepV -contains $v) { continue }
+            if ([version]$v -gt [version]$Inst.current) { Add-Uncertain $g $i.FullName $bytes "version $v newer than the current version $($Inst.current): kept"; continue }
+            if ($null -ne $tree -and ($tree.reparse.Count -or $tree.errors.Count)) { Add-TreeIssues $g $tree; Add-Skip $g $i.FullName "contains a reparse point / unreadable entry: kept"; continue }
+            $kind = if ($i.PSIsContainer) { "dir" } else { "file" }
+            [void](Add-Candidate $g $i.FullName $kind $bytes $i.LastWriteTime "package entry of version $v (kept: $($keepV -join ', '))" $allow)
+        }
+    }
+    return $g
+}
+
+# ------------------------------------------------------------------ worktrees (information only)
+function Get-WorktreeInfo {
+    $res = New-Object System.Collections.ArrayList
+    $wt = Join-Path $ProjectRoot "worktrees"
+    if (-not (Test-Path -LiteralPath $wt -PathType Container) -or (Get-ReparseInChain $wt)) { return , $res }
+    $git = Get-Command git.exe -ErrorAction SilentlyContinue
+    $ErrorActionPreference = "Continue"           # git writes to stderr; only its exit code / output matter here
+    foreach ($w in @(Get-ChildItem -LiteralPath $wt -Directory -Force | Where-Object { -not (Test-Reparse $_) })) {
+        if (-not (Test-Path -LiteralPath (Join-Path $w.FullName ".git"))) { continue }
+        $info = [ordered]@{ path = $w.FullName; branch = ""; version = ""; clean = $false; pushed = $false; tag = $false
+                            installed = $false; can_remove = $false; reason = "" }
+        $init = Join-Path $w.FullName "backend\app\__init__.py"
+        if (Test-Path -LiteralPath $init -PathType Leaf) {
+            $m = Select-String -LiteralPath $init -Pattern '^__version__\s*=\s*"(\d+\.\d+\.\d+)"' | Select-Object -First 1
+            if ($m) { $info.version = $m.Matches[0].Groups[1].Value }
+        }
+        if (-not $git) { $info.reason = "git not found"; [void]$res.Add($info); continue }
+        $info.branch = "$(& $git.Source -C $w.FullName branch --show-current 2>$null)".Trim()
+        $st = @(& $git.Source -C $w.FullName --no-optional-locks status --porcelain 2>$null)
+        $info.clean = ($LASTEXITCODE -eq 0 -and $st.Count -eq 0)
+        $rb = @(& $git.Source -C $w.FullName branch -r --contains HEAD 2>$null)
+        $info.pushed = ($LASTEXITCODE -eq 0 -and $rb.Count -gt 0)
+        if ($info.version) {
+            $tg = @(& $git.Source -C $w.FullName tag -l "v$($info.version)" 2>$null)
+            $info.tag = ($tg.Count -gt 0)
+            $info.installed = ($Inst.versions -contains $info.version)
+        }
+        $why = @()
+        if (-not $info.version) { $why += "version unknown" }
+        if (-not $info.clean) { $why += "uncommitted changes (or git status failed)" }
+        if (-not $info.pushed) { $why += "HEAD not on a remote-tracking branch" }
+        if ($info.version -and -not $info.tag) { $why += "tag v$($info.version) not found" }
+        if ($info.version -and -not $info.installed) { $why += "version not installed" }
+        $info.can_remove = ($why.Count -eq 0)
+        $info.reason = if ($why.Count) { $why -join "; " } else { "clean, pushed, tagged, installed (remove with scripts\ops\archive_worktree.py)" }
+        [void]$res.Add($info)
+    }
+    return , $res
 }
 
 # ------------------------------------------------------------------ dist (own retention script)
@@ -501,7 +846,8 @@ function Get-DistGroup {
         $g.status = "skipped"; $g.note = "reparse point / unreadable entry under dist\ / release\: prune-artifacts.ps1 not run"; return $g
     }
     $p = @{}
-    if ($DistKeep.Count) { $p["Keep"] = $DistKeep }
+    $pk = @(@($DistKeep) + @(if ($Inst.ok) { $Inst.keep }) | Sort-Object -Unique)    # + current / previous (08/11)
+    if ($pk.Count) { $p["Keep"] = $pk }
     try { $out = @(& $prune @p *>&1 | ForEach-Object { "$_" }) }
     catch { [void]$g.errors.Add("prune-artifacts.ps1 (plan): $($_.Exception.Message)"); $g.status = "error"; return $g }
     $g["plan"] = $out
@@ -527,12 +873,26 @@ function Get-DistGroup {
 # ------------------------------------------------------------------ apply
 function Remove-Candidate($G, $C) {
     $p = $C.path
-    $why = Get-ProtectReason $p
+    $allow = if ($C.Contains("allow")) { $C.allow } else { "" }
+    $why = Get-ProtectReason $p $allow
     if ($why) { [void]$G.errors.Add("${p}: refused, protected ($why)"); return }
     try {
         if (-not (Test-Path -LiteralPath $p)) { Add-Skip $G $p "gone before deletion"; return }
         $it = Get-Item -LiteralPath $p -Force
         if (Test-Reparse $it) { Add-Skip $G $p "reparse point at deletion time: not deleted"; return }
+        if ($C.Contains("install_version")) {
+            # checked again right before the deletion: current.txt still readable and naming another version, the
+            # folder still not used by a running process (process list read again)
+            $inst2 = Read-InstallState
+            if (-not $inst2.ok -or $inst2.keep -contains $C.install_version -or -not $it.PSIsContainer -or
+                [version]$C.install_version -gt [version]$inst2.current) {
+                Add-Skip $G $p "current / previous version changed or current.txt unreadable at deletion time: not deleted"; return
+            }
+            $Script:ProcLines = $null
+            if ($null -eq (Get-ProcLines)) { Add-Skip $G $p "process list unreadable at deletion time: not deleted"; return }
+            $users = @(Get-PathUsers $p)
+            if ($users.Count) { Add-Skip $G $p "used by running process(es) $($users -join ', ') at deletion time: not deleted"; return }
+        }
         if ($it.PSIsContainer) {
             $t = Get-Tree $p
             if ($t.reparse.Count -or $t.errors.Count) { Add-TreeIssues $G $t; Add-Skip $G $p "reparse point / unreadable entry at deletion time: not deleted"; return }
@@ -597,7 +957,8 @@ function Invoke-DistApply($G) {
         }
     }
     $p = @{ Apply = $true }
-    if ($DistKeep.Count) { $p["Keep"] = $DistKeep }
+    $pk = @(@($DistKeep) + @(if ($Inst.ok) { $Inst.keep }) | Sort-Object -Unique)    # + current / previous (08/11)
+    if ($pk.Count) { $p["Keep"] = $pk }
     try {
         $out = @(& $prune @p *>&1 | ForEach-Object { "$_" })
         $G["apply_output"] = $out
@@ -614,12 +975,18 @@ $outDir = Join-Path $ProjectRoot "logs\don_dep"
 $report = [ordered]@{ tool = "scripts\ops\don_dep_dinh_ky.ps1"; mode = $mode; started_at = $Now.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
                       local_time = $Now.ToString("s"); project_root = $ProjectRoot; include_dist = [bool]$IncludeDist
                       dist_keep = @($DistKeep); tmp_root = $TmpRoot
-                      data_dir = $DataDir; storage_note = $Storage.note; groups = @(); totals = $null; errors = @(); exit_code = 0 }
+                      data_dir = $DataDir; storage_note = $Storage.note; current_version = $Inst.current
+                      previous_version = $Inst.previous; install_note = $Inst.note; groups = @(); totals = $null
+                      kept_uncertain = @(); worktrees = @(); errors = @(); exit_code = 0 }
 $groups = @()
-foreach ($fn in @("Get-BackupGroup", "Get-ExportGroup", "Get-LogGroup", "Get-TmpGroup", "Get-ReportGroup", "Get-DistGroup")) {
+# dist_versions before dist: its own deletions first, prune-artifacts.ps1 (-IncludeDist) afterwards
+$fns = [ordered]@{ "Get-BackupGroup" = "backups"; "Get-ExportGroup" = "exports"; "Get-LogGroup" = "logs"; "Get-TmpGroup" = "tmp"
+                   "Get-DeployTempGroup" = "deploy_temp"; "Get-ReportGroup" = "reports"; "Get-InstallGroup" = "installs"
+                   "Get-DistVersionGroup" = "dist_versions"; "Get-DistGroup" = "dist" }
+foreach ($fn in @($fns.Keys)) {
     try { $groups += , (& $fn) }
     catch {
-        $gname = ($fn -replace '^Get-|Group$', '').ToLowerInvariant()
+        $gname = $fns[$fn]
         $g = New-Group $gname @()
         $g.status = "error"; [void]$g.errors.Add("line $($_.InvocationInfo.ScriptLineNumber): $($_.Exception.Message) $($_.ScriptStackTrace)")
         $groups += , $g
@@ -633,16 +1000,26 @@ if ($Apply) {
         else { foreach ($c in @($g.candidates)) { Remove-Candidate $g $c } }
     }
 }
-$tot = [ordered]@{ before_bytes = 0L; candidate_count = 0; candidate_bytes = 0L; after_bytes = 0L; deleted_count = 0; deleted_bytes = 0L }
+$tot = [ordered]@{ before_bytes = 0L; candidate_count = 0; candidate_bytes = 0L; after_bytes = 0L; deleted_count = 0; deleted_bytes = 0L
+                   kept_uncertain_count = 0; kept_uncertain_bytes = 0L }
+$uncertain = New-Object System.Collections.ArrayList
 foreach ($g in $groups) {
     if ($Apply) { $g.after_bytes = $g.before_bytes - $g.deleted_bytes }
     elseif ($g.group -eq "dist" -and -not $IncludeDist) { $g.after_bytes = $g.before_bytes }
     else { $g.after_bytes = $g.before_bytes - $g.candidate_bytes }
     if ($g.errors.Count -and $g.status -eq "ok") { $g.status = "error" }
-    foreach ($k in @($tot.Keys)) { $tot[$k] += $g[$k] }
+    foreach ($u in $g.kept_uncertain) { [void]$uncertain.Add([ordered]@{ group = $g.group; path = $u.path; bytes = $u.bytes; reason = $u.reason }) }
+    $tot.kept_uncertain_count += $g.kept_uncertain.Count
+    foreach ($u in $g.kept_uncertain) { $tot.kept_uncertain_bytes += $u.bytes }
+    # the prune-artifacts.ps1 plan overlaps dist_versions (same dist\ packages): only its deletions count in the totals
+    $keys = if ($g.group -eq "dist") { @("deleted_count", "deleted_bytes") } else { @("before_bytes", "candidate_count", "candidate_bytes", "after_bytes", "deleted_count", "deleted_bytes") }
+    foreach ($k in $keys) { $tot[$k] += $g[$k] }
 }
 $report.groups = $groups
 $report.totals = $tot
+$report.kept_uncertain = $uncertain
+try { $report.worktrees = Get-WorktreeInfo }
+catch { $report.errors += "worktree info: $($_.Exception.Message)" }
 $failed = @($groups | Where-Object { $_.status -eq "error" }).Count -gt 0
 $report.exit_code = if ($failed) { 1 } else { 0 }
 
@@ -650,13 +1027,20 @@ $gb = { param($b) "{0:N3} GB" -f ($b / 1GB) }
 $lines = @("Don dep dinh ky / periodic cleanup  mode=$mode  $($Now.ToString('s'))  project=$ProjectRoot")
 if (-not $Apply) { $lines += "DRY RUN: nothing deleted. Re-run with -Apply to delete the candidates (dist only with -IncludeDist)." }
 foreach ($g in $groups) {
-    $lines += ("{0,-8} {1,-8} candidates {2,5}  {3,12}  before {4,12}  after {5,12}{6}  skipped {7}  errors {8}  {9}" -f $g.group, $g.status,
-               $g.candidate_count, (& $gb $g.candidate_bytes), (& $gb $g.before_bytes), (& $gb $g.after_bytes),
-               $(if ($g.after_is_projection) { "*" } else { " " }), $g.skipped.Count, $g.errors.Count, $g.note)
+    $lines += ("{0,-13} {1,-8} candidates {2,5}  {3,12}  before {4,12}  after {5,12}{6}  uncertain {7}  skipped {8}  errors {9}  {10}" -f
+               $g.group, $g.status, $g.candidate_count, (& $gb $g.candidate_bytes), (& $gb $g.before_bytes), (& $gb $g.after_bytes),
+               $(if ($g.after_is_projection) { "*" } else { " " }), $g.kept_uncertain.Count, $g.skipped.Count, $g.errors.Count, $g.note)
 }
-$lines += ("TOTAL    candidates {0,5}  {1,12}  before {2,12}  after {3,12}  deleted {4} ({5})" -f $tot.candidate_count, (& $gb $tot.candidate_bytes),
-           (& $gb $tot.before_bytes), (& $gb $tot.after_bytes), $tot.deleted_count, (& $gb $tot.deleted_bytes))
-if (-not $Apply) { $lines += "* after = projection if applied (logs: archives add their compressed size)" }
+$lines += ("TOTAL         candidates {0,5}  {1,12}  before {2,12}  after {3,12}  deleted {4} ({5})  kept_uncertain {6} ({7})" -f
+           $tot.candidate_count, (& $gb $tot.candidate_bytes), (& $gb $tot.before_bytes), (& $gb $tot.after_bytes), $tot.deleted_count,
+           (& $gb $tot.deleted_bytes), $tot.kept_uncertain_count, (& $gb $tot.kept_uncertain_bytes))
+if (-not $Apply) { $lines += "* after = projection if applied (logs: archives add their compressed size; dist = prune-artifacts.ps1 plan, not in the totals)" }
+foreach ($u in $uncertain) { $lines += ("kept_uncertain  {0,-13} {1,12}  {2}  - {3}" -f $u.group, (& $gb $u.bytes), $u.path, $u.reason) }
+foreach ($w in @($report.worktrees)) {
+    if ($w.can_remove) { $lines += "worktree_can_remove  $($w.path)  (branch $($w.branch), version $($w.version))" }
+    else { $lines += "worktree_kept  $($w.path)  ($($w.reason))" }
+}
+foreach ($e in @($report.errors)) { $lines += "error: $e" }
 try {
     New-Item -ItemType Directory -Force -Path $outDir | Out-Null
     if ($Script:InstallHistory) {

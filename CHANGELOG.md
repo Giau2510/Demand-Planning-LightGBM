@@ -5,6 +5,44 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.4.8 (SO-line cache + spike flags v3 + spike excess; spike cleaning switch OFF)
+
+Owner rules 07-08/11/2026 (spike cleaning v3 + E4, B3 of the decision log). Schema 13 (migration
+`0013_spike_lines.sql`, additive: `so_lines_cache`, `spike_flag_lines`, `demand_excess_daily`). With the switch OFF
+(default) every forecast number, the published runs, the daily Excel and the night timing are those of 1.4.7; the fixed
+forecast_used rule is unchanged.
+
+* **Nightly job `SPIKE_LINES`** (`backend/app/spike_lines.py`, one per day, child process, 45 min limit, free commit
+  >= 3 GB): read-only BigQuery read of the SO lines (`bq/connector.fetch_so_lines`: the D-1 source, filters and
+  exact-duplicate rule; one row = day x FC x SKU x so_code x customer, source rows summed; dry run first, refused above
+  min(5 GB, `maximum_bytes_billed`); about **3.1 GB scanned per night**, the source has no date pruning) into
+  `so_lines_cache` (210 days, the only pruned table: a re-readable working copy, owner 08/11), then the spike flags of
+  the lines (`ml/sel2/spike.py`, logic v3, H180; first run: every cached line; later nights: D-30 .. D-1 recomputed,
+  older stored lines only get their next purchase day) and the excess as of D (level 1, E4 = `spike_e4_n`). Separate
+  from D-1 (never delays it); a failure = job FAILED + one WARNING alert `SPIKE_LINES_FAILED`, nothing else.
+  Scheduling: switch OFF -> after today's forecast refresh (every other plan exactly as 1.4.7); switch ON -> right
+  after D-1, the refresh and the trainings wait for it at most 45 minutes. CLI `spike-lines --date D [--initial]
+  [--dry-run] [--yes]`.
+* **Switch `sel2_pipeline.spike_cleaning`** (OFF): ON -> the SEL2 LightGBM training (as of its origin) and candidates
+  (as of D) read the demand minus the excess; TSB / DOW4 / AVG7 read the cleaned daily demand; actuals, groups, open
+  hours and scope stay raw; run detail `spike_cleaning` (e4_n, excess total), `config_version` includes the switch only
+  when ON. Flags missing / too old -> no cleaning + flag `SPIKE_CLEANING_SKIPPED` (+ WARNING alert); flags of an earlier
+  night -> cleaning + flag `SPIKE_FLAGS_STALE`.
+* **Customer ids** are stored in `so_lines_cache` / `spike_flag_lines` and therefore in the database backups; never in
+  logs, job results, alerts or reports.
+* `data-check`: `so_lines_cache_matches_demand` (WARN, per day x SKU x FC of the cache window) and the spike checks.
+* **Periodic cleanup** (`scripts/ops/don_dep_dinh_ky.ps1`, owner rules 08/11/2026; DRY RUN unless `-Apply`; when
+  unsure an entry is KEPT and listed): daily Excel folders kept 30 days (was 90), retired `_bo` versions deleted after
+  3 days when a newer version of the day exists; concluded experiments (`scripts/ops/don_dep_ket_luan.txt`) lose their
+  intermediate data and superseded `_vN` files (code / text / final Excel kept); install folders and `dist` packages:
+  only the current and the previous version are kept (newer versions never deleted; `dist` packages now deleted with
+  `-Apply` alone); `%TEMP%\DemandForecast-deploy-*` older than 1 day deleted; backups: the newest pre-install backup
+  of the current and previous version + every backup of the last 7 days are kept (replaces 7 manual / 7 cli / 30
+  days). New wrapper `don_dep_current.ps1` runs the script of the installed version (`current.txt`) with the lists of
+  `<project>\scripts\ops`; `register-don-dep-task.ps1` registers it by default.
+* `data-check` `export_files_exist` checks the newest Excel of each day of the last 30 days only (retired / cleaned
+  files are expected to be gone).
+
 ## 1.4.7 (web pages: 20 days + target-date filter, C4)
 
 Owner approval 08/11/2026 ~11:00 (C4, approved for now - layout to be optimised later). UI and read-only API only: no

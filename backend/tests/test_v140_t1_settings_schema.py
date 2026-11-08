@@ -159,7 +159,8 @@ def test_fresh_install_without_a_stored_section_reads_the_pipeline_on(tmp_path):
     # a fresh database (the conftest switch is not applied to it): migrations write no setting, get() = the default
     fresh = tmp_path / "fresh.db"
     res = db.migrate(fresh)
-    assert res["from"] == 0 and res["to"] == 12 and res["applied"][-1] == "0012_sel2_pipeline.sql"
+    assert res["from"] == 0 and res["to"] == 13 and res["applied"][-2:] == ["0012_sel2_pipeline.sql",   # 1.4.8: + 0013
+                                                                         "0013_spike_lines.sql"]
     c = sqlite3.connect(fresh)
     try:
         assert c.execute("SELECT COUNT(*) FROM app_settings WHERE section='sel2_pipeline'").fetchone()[0] == 0
@@ -209,7 +210,7 @@ def test_migration_creates_the_tables_and_writes_nothing():
 
 def test_migrating_twice_is_idempotent():
     again = db.migrate()
-    assert again["applied"] == [] and again["to"] == 12
+    assert again["applied"] == [] and again["to"] == 13                  # 1.4.8: + 0013
 
 
 def test_candidate_train_runs_and_runs_constraints():
@@ -329,13 +330,15 @@ def test_migration_0012_on_a_131_database_keeps_every_existing_row(tmp_path):
     schema_before = sorted(c.execute("SELECT type, name, sql FROM sqlite_master").fetchall(), key=str)
     c.close()
     res = db.migrate(src)
-    assert res["applied"] == ["0012_sel2_pipeline.sql"] and res["to"] == 12
+    assert res["applied"] == ["0012_sel2_pipeline.sql", "0013_spike_lines.sql"] and res["to"] == 13   # 1.4.8: + 0013
     assert db.migrate(src)["applied"] == []                                # idempotent
     c = sqlite3.connect(src)
     assert {t: c.execute(f"SELECT * FROM {t} ORDER BY rowid").fetchall() for t in OLD_TABLES} == before
     assert len(before["demand_daily"]) == 30
     assert c.execute("SELECT COUNT(*) FROM app_settings WHERE section='sel2_pipeline'").fetchone()[0] == 0
     assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    from test_v148_spike import reverse_0013
+    reverse_0013(c)                                                        # 1.4.8: the newest migration first
     reverse_0012(c)                                                        # the reverse statements of the header
     c.commit()
     assert sorted(c.execute("SELECT type, name, sql FROM sqlite_master").fetchall(), key=str) == schema_before

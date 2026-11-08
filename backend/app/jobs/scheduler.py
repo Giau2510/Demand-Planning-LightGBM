@@ -39,6 +39,13 @@ its own switch (1.1.8, see jobs/flows.py) and is planned only when that switch i
   FORECAST_EXPORT       schedule.refresh_enabled: at export_deadline, ONE stale Excel of today when no SEL2 run is
                         published and no export exists (key FORECAST_EXPORT:<day>:STALE); from avg_reexport_time (None =
                         off) ONE job per day re-exporting when the AVG_DEMAND table changed (key FORECAST_EXPORT:<day>:AVG)
+  SPIKE_LINES           1.4.8 (SEL2 on, schedule.refresh_enabled, BIGQUERY, today's D-1 succeeded): ONE job per day (key
+                        SPIKE_LINES:<day>, never retried; spike_lines.py, child process): SO lines into so_lines_cache,
+                        spike flags, excess. sel2_pipeline.spike_cleaning False (default): planned only once today's
+                        FORECAST_REFRESH has finished (a SEL2 run of today published, or refresh_deadline passed) and no
+                        refresh / CANDIDATE_TRAIN is under way - every other plan exactly as 1.4.7. True: planned right
+                        after today's D-1; today's FORECAST_REFRESH and CANDIDATE_TRAIN (weekly and catch-up) wait while
+                        it is planned / PENDING / RUNNING, at most spike_lines.WAIT_MAX (45 min) after its row was created.
 
 Missed slots (machine off / app closed) are recorded as SKIPPED (MISSED_SLOT_NO_BACKFILL). For D0 the policy
 `d0_catchup_policy` decides: LATEST_ONCE = at most ONE catch-up snapshot of TODAY (stamped with the real time, flagged
@@ -161,18 +168,27 @@ def plan(now: datetime, sched, active_source: str, last_heartbeat: datetime | No
             actions.append({"action": "run", "job_type": "D1_SYNC", "key": k1, "trigger": "SCHEDULE",
                             "scheduled_for": vn_slot(today, sched.d1_signal_poll_start).isoformat(), "params": {}})
 
+    # ---- 1.4.8 SO-line step, spike cleaning ON: right after today's D-1, the refresh and the trainings wait for it
+    spikes = sel2.enabled and sched.refresh_enabled and active_source == "BIGQUERY"
+    spike_wait = (_plan_spike_lines_first(now, conn, existing, k1, actions, inflight)
+                  if spikes and sel2.spike_cleaning else False)
+
     # ---- 1.4.0 weekly training of the SEL2 candidates (before the refresh: on that day the refresh waits for it)
-    train_wait = (_plan_candidate_train(now, sel2, active_source, conn, existing, k1, actions, inflight)
+    train_wait = (_plan_candidate_train(now, sel2, active_source, conn, existing, k1, actions, inflight,
+                                        spike_wait=spike_wait)
                   if sel2.enabled and sched.train_enabled else False)
 
     # ---- 1.3.1 forecast refresh: planned first; a training due in the same tick waits for the next tick
     refresh_now = (_plan_refresh(now, sched, active_source, conn, existing, k1, actions, inflight,
-                                 sel2=sel2.enabled, train_wait=train_wait)
+                                 sel2=sel2.enabled, train_wait=train_wait or spike_wait)
                    if sched.refresh_enabled else False)
     if sel2.enabled and sched.refresh_enabled and active_source == "BIGQUERY":
         _plan_sel2_followups(now, sched, sel2, conn, existing, actions, inflight)
-    if sel2.enabled and sched.train_enabled:
+    if sel2.enabled and sched.train_enabled and not spike_wait:
         _plan_candidate_catchup(now, sel2, active_source, conn, existing, actions, inflight)
+    # ---- 1.4.8 SO-line step, spike cleaning OFF: only after today's forecast refresh (the Excel timing unchanged)
+    if spikes and not sel2.spike_cleaning:
+        _plan_spike_lines_after(now, sched, conn, existing, k1, actions, inflight, refresh_now)
 
     # ---- training + publish
     kt = f"TRAIN_PUBLISH:{today.isoformat()}"
@@ -343,10 +359,11 @@ def _plan_refresh(now: datetime, sched, active_source: str, conn, existing: dict
 
 
 def _plan_candidate_train(now: datetime, sel2, active_source: str, conn, existing: dict, k1: str, actions: list,
-                          inflight=()) -> bool:
+                          inflight=(), spike_wait: bool = False) -> bool:
     """1.4.0 CANDIDATE_TRAIN:<day> on ISO weekday sel2.retrain_weekday (origin = today) once today's D-1 succeeded
     (BIGQUERY only). True when today's FORECAST_REFRESH must wait for it: the training is planned in this tick or
-    PENDING / RUNNING / RETRY_WAIT (or in the workers) and prev_week_deadline has not passed."""
+    PENDING / RUNNING / RETRY_WAIT (or in the workers) and prev_week_deadline has not passed.
+    1.4.8 spike_wait (spike cleaning ON, today's SPIKE_LINES under way): not planned yet (the refresh waits as well)."""
     today = now.date()
     if today.isoweekday() != sel2.retrain_weekday or active_source != "BIGQUERY":
         return False
@@ -362,6 +379,8 @@ def _plan_candidate_train(now: datetime, sel2, active_source: str, conn, existin
         d1_ok = d1_success_today(conn, now) is not None
     if not d1_ok:
         return False
+    if spike_wait:
+        return before
     actions.append({"action": "run", "job_type": "CANDIDATE_TRAIN", "key": k, "trigger": "SCHEDULE",
                     "scheduled_for": now.replace(second=0, microsecond=0).isoformat(),
                     "params": {"origin": today.isoformat()}})
@@ -430,6 +449,59 @@ def _plan_candidate_catchup(now: datetime, sel2, active_source: str, conn, exist
     actions.append({"action": "run", "job_type": "CANDIDATE_TRAIN", "key": kc, "trigger": "SCHEDULE",
                     "scheduled_for": now.replace(second=0, microsecond=0).isoformat(),
                     "params": {"origin": origin.isoformat()}})
+
+
+def _d1_ok(conn, existing: dict, k1: str, now: datetime) -> bool:
+    if existing.get(k1, {}).get("status") == "SUCCEEDED":
+        return True
+    from .flows import d1_success_today
+    return d1_success_today(conn, now) is not None
+
+
+def _plan_spike_lines_first(now: datetime, conn, existing: dict, k1: str, actions: list, inflight=()) -> bool:
+    """1.4.8, spike cleaning ON: SPIKE_LINES:<day> once today's D-1 succeeded. True while today's FORECAST_REFRESH and
+    CANDIDATE_TRAIN must wait: the step is planned in this tick, in the workers before its row exists, or PENDING /
+    RUNNING less than spike_lines.WAIT_MAX after its row was created (then they go on: its failure never blocks)."""
+    from .. import spike_lines
+    k = spike_lines.job_key(now.date())
+    r = existing.get(k)
+    if r is not None:
+        at = parse_iso(r.get("created_at"))
+        return r["status"] in ("PENDING", "RUNNING") and at is not None and now_utc() - at < spike_lines.WAIT_MAX
+    if k in inflight:
+        return True
+    if not _d1_ok(conn, existing, k1, now):
+        return False
+    actions.append({"action": "run", "job_type": spike_lines.JOB_TYPE, "key": k, "trigger": "SCHEDULE",
+                    "scheduled_for": now.replace(second=0, microsecond=0).isoformat(),
+                    "params": {"business_date": now.date().isoformat()}})
+    return True
+
+
+def _plan_spike_lines_after(now: datetime, sched, conn, existing: dict, k1: str, actions: list, inflight=(),
+                            refresh_now: bool = False) -> None:
+    """1.4.8, spike cleaning OFF: SPIKE_LINES:<day> once today's FORECAST_REFRESH has finished - a SEL2 run of today is
+    published or refresh_deadline has passed - with no refresh attempt nor CANDIDATE_TRAIN planned, waiting, running or
+    in the workers, and today's D-1 succeeded. It changes no other decision."""
+    from .. import spike_lines
+    from ..ml.sel2 import jobs as sel2_jobs
+    day = now.date().isoformat()
+    k = spike_lines.job_key(now.date())
+    if k in existing or k in inflight or refresh_now or any(
+            a["action"] == "run" and a["job_type"] in ("FORECAST_REFRESH", "CANDIDATE_TRAIN") for a in actions):
+        return                  # a refresh (re-run) or a training planned in this tick goes first
+    busy = ("PENDING", "RUNNING", "RETRY_WAIT")
+    if any(x.startswith(runner.refresh_key(day, "")) or x.startswith("CANDIDATE_TRAIN:") for x in inflight) or any(
+            ((x.startswith("FORECAST_REFRESH:") and _refresh_day(x, v.get("created_at")) == day)
+             or x.startswith("CANDIDATE_TRAIN:")) and v["status"] in busy for x, v in existing.items()):
+        return
+    if not (sel2_jobs.published_run(conn, now.date()) or now > vn_slot(now.date(), sched.refresh_deadline)):
+        return
+    if not _d1_ok(conn, existing, k1, now):
+        return
+    actions.append({"action": "run", "job_type": spike_lines.JOB_TYPE, "key": k, "trigger": "SCHEDULE",
+                    "scheduled_for": now.replace(second=0, microsecond=0).isoformat(),
+                    "params": {"business_date": day}})
 
 
 def _plan_report(now: datetime, sched, conn, existing: dict, grace: timedelta, actions: list) -> None:

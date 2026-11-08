@@ -371,3 +371,34 @@ report_subdir) and `feature_table` (per-feature rules); new `model` keys `featur
 * 1.4.4 (no schema change): the forecast history page reads, from 04/11/2026, the published number of each run date (1.4.5: horizon 1 = target day = the run date; 1.4.4: horizon 2 = run date + 1; of the newest daily Excel of the day) from its sidecar file (section 7), never a number recomputed later; the Daily / Results pages of a run with an Excel use the forecast source configuration as of that file (today's table with the later `forecast_source_config_history` changes undone) and the AVG_DEMAND read + seller rule that file recorded (`export_runs.summary_json.avg`; when the read's rows were replaced by a later read of the same table - `avg_demand_daily` keeps the newest read per day and table - or the export did not record it: the newest read, API flag `AVG_READ_NOT_PINNED`). The pages and the history never write the database; a history request may write a missing / stale sidecar file (one rebuild per export at a time).
 * 1.4.4 `actual_daily` in SEL2 mode: the SEL2 `FORECAST_REFRESH` rewrites D-14 .. D-1 of the scope from `demand_daily` (`ml/sel2/jobs.actual_refresh` -> `daily_refresh.refresh_actual_daily`: one transaction, range clipped to the data window, rows of the range deleted and written again, no day outside the range touched). Retention: the 1.3.1 log retention (`apply_retention`) is not run in SEL2 mode, so `actual_daily` is kept without limit there - OWNER TO DECIDE (open point).
 * 1.4.5 (no schema change): the daily Excel writes `lightgbm_forecast` rounded at every horizon (below 0.2 -> 0, else rounded up; `raw_value` keeps the original; `forecast_used` unchanged); a new version renames the earlier version files of the day `du_bao_YYYYMMDD_vK_bo.xlsx` (never deleted) and updates their `export_runs.path` in the transaction of the new record (a file open in Excel keeps its name: flag `OLD_VERSION_RENAME_FAILED`); `export_runs.summary_json` gains `fallback` (FALLBACK shares) and `source_build` (open-hours / demand table build times as last recorded by the app).
+
+## 14. Spike cleaning (1.4.8, migration 0013, additive; switch OFF by default)
+
+* Tables and columns: [DATA-DICTIONARY.md](DATA-DICTIONARY.md) "1.4.8 tables". Code: `backend/app/ml/sel2/spike.py`
+  (port of the research `flags.flag_lines` logic v3 + `bt17.Excess`; equality tested in
+  `backend/tests/test_v148_spike.py`).
+* Settings `sel2_pipeline.spike_cleaning` (False) and `spike_e4_n` (4, 1..30). OFF: SEL2 reads nothing of the new
+  tables and the forecast numbers are those of 1.4.7 (the fields are part of the SEL2 `config_version` only when ON).
+  The nightly job `SPIKE_LINES` (`backend/app/spike_lines.py`, docs/03_van_hanh/SCHEDULER.md) fills the tables in
+  either state, so the flags are ready when the switch is turned on.
+* Pruning (owner instruction 08/11/2026): `so_lines_cache` is a re-readable working copy of the BigQuery source and is
+  pruned every night to its last 210 days (180 days of history + the 30 days of the E4 rule); `spike_flag_lines` and
+  `demand_excess_daily` are NEVER pruned. First run (empty cache): flags of every cached line; later nights: the lines
+  of D-30 .. D-1 are recomputed (full 180-day history), older stored lines keep their values and only get their next
+  purchase day (`next_day`, + `computed_for`) refreshed from the cache.
+* Customer ids: `so_lines_cache` and `spike_flag_lines` hold `customer_id` (the source's customer column), so the
+  database backups hold them too; they never appear in job results, alerts, logs or reports (only counts and keys).
+* BigQuery: one read-only query per night (dry run first, refused above min(5 GB, `maximum_bytes_billed`)); the
+  source has no date pruning for it, so each query scans about 3.1 GB (measured 07/11/2026) whatever the day range.
+* Lifecycle: SO lines of the BIGQUERY scope (one row = day x FC x SKU x so_code x customer_id, source rows summed) ->
+  `so_lines_cache` (working cache of the source, the only table pruned, to its last 210 days) -> flags per line (history
+  180 days, every statistic per customer x SKU x FC or per SKU x FC) -> the flagged lines in `spike_flag_lines`
+  (training data, never pruned; a run replaces the days it recomputed) -> excess per SKU x FC x day as of a day D
+  (lines of days < D only; T7 recomputed with the next purchase seen before D; E4 counted on D-30 .. D-1) ->
+  `demand_excess_daily` (derived, latest run only). The cleaned demand = demand - excess, clipped at 0, days < D only;
+  the stored `demand_daily` is never changed.
+* Invariants: flags and excess only of days before their run / as-of day (CHECK constraints); BIGQUERY scopes only;
+  `customer_id` '' = unknown customer (its own customer per order, never merged with a known one); quantity 0 is not a
+  purchase (ignored by the flags). `data-check` adds `spike_tables_scope`, `demand_excess_one_run`,
+  `demand_excess_within_demand` (WARN), `so_lines_cache_matches_demand` (WARN: per day x SKU x FC of the cache window
+  the summed lines differ from `demand_daily`; examples show keys and quantities only).

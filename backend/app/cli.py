@@ -43,6 +43,10 @@
                                             runs (default trigger cli; the app's jobs pass their own)
                                             sel2-* / sel2-export: an unexpected error prints {ok: false, code
                                             SEL2_INTERNAL_ERROR (SEL2_LOW_MEMORY for MemoryError), detail}, exit 1
+  spike-lines --date D [--initial] [--dry-run] [--yes]   1.4.8: SO lines of the BIGQUERY scope into so_lines_cache
+                                            (read-only BigQuery, < 5 GB per query), spike flags + excess of day D
+                                            (spike_lines.py). --dry-run: the BigQuery dry run only (estimated bytes);
+                                            without --yes: the database path and the read range only
 Exit codes: 0 ok, 1 problems, 2 refused (app running / unsafe), 3 storage error.
 """
 from __future__ import annotations
@@ -228,6 +232,12 @@ def main(argv=None) -> int:
     s2p.add_argument("--start", required=True, help="first forecast day (YYYY-MM-DD)")
     s2p.add_argument("--end", required=True, help="last forecast day (YYYY-MM-DD)")
     s2p.add_argument("--yes", action="store_true", help="write (without it: counts only, nothing written)")
+    # 1.4.8 SO-line cache + spike flags (spike_lines.py)
+    spl = sub.add_parser("spike-lines", help="1.4.8: SO lines (BigQuery, read-only) + spike flags + excess of a day")
+    spl.add_argument("--date", required=True, help="the run day D (data up to D-1, YYYY-MM-DD)")
+    spl.add_argument("--initial", action="store_true", help="read the whole cache window (210 days) again")
+    spl.add_argument("--dry-run", action="store_true", help="BigQuery dry run only: estimated bytes, nothing written")
+    spl.add_argument("--yes", action="store_true", help="read and write (without it: the plan only)")
     a = ap.parse_args(argv)
     from . import paths
     try:
@@ -362,6 +372,8 @@ def _run(a) -> int:
         return _sel2_export(a)
     if a.cmd == "sel2-published-backfill":
         return _sel2_published_backfill(a)
+    if a.cmd == "spike-lines":
+        return _spike_lines(a)
     if a.cmd.startswith("sel2-") and a.cmd != "sel2-avg-read":
         return _sel2(a)
     if a.cmd == "sel2-avg-read":
@@ -713,6 +725,43 @@ def _sel2(a) -> int:
                                   args["group_start"], args["group_end"])
         else:
             res = pipeline.bootstrap(args["days"])
+    except AppError as e:
+        print(json.dumps({"ok": False, **out, **e.to_dict()}, indent=2, ensure_ascii=False, default=str))
+        return 1
+    except Exception as e:  # noqa: BLE001 - printed as JSON for the job (never a bare traceback only)
+        return _sel2_unexpected(out, e)
+    print(json.dumps({"ok": True, **out, "result": res}, indent=2, ensure_ascii=False, default=str))
+    return 0
+
+
+def _spike_lines(a) -> int:
+    """1.4.8 `spike-lines --date D [--initial] [--dry-run] [--yes]` on the configured database. --dry-run: the
+    BigQuery dry run of the line read (estimated bytes), nothing written; without --yes (and without --dry-run): the
+    database path and the read range, nothing read or written. Exit 0 ok, 1 failed, 2 refused."""
+    from datetime import date
+    from . import paths
+    from . import spike_lines
+    from .messages import AppError
+    paths.ensure_storage()
+    out = {"db": str(paths.db_path()), "command": a.cmd, "dry_run": bool(a.dry_run or not a.yes)}
+    try:
+        d = date.fromisoformat(a.date)
+    except ValueError:
+        print(json.dumps({"ok": False, **out, "refused": "--date must be YYYY-MM-DD"}, indent=2, ensure_ascii=False))
+        return 2
+    out["args"] = {"date": str(d), "initial": a.initial}
+    try:
+        if not a.yes and not a.dry_run:
+            sk = spike_lines._scope_key()
+            first, start, end = spike_lines.read_range(sk, d, a.initial)
+            print(json.dumps({"ok": True, **out, "code": "SEL2_CONFIRM_REQUIRED", "scope_key": sk,
+                              "plan": {"cache_first_day": str(first), "read_start": str(start), "read_end": str(end)},
+                              "note": "plan only: add --yes to run (or --dry-run for the BigQuery estimate)"},
+                             indent=2, ensure_ascii=False, default=str))
+            return 0
+        from .logging_setup import setup_logging
+        setup_logging(console=False, filename=f"{a.cmd}.log")
+        res = spike_lines.run(d, initial=a.initial, dry_run=a.dry_run)
     except AppError as e:
         print(json.dumps({"ok": False, **out, **e.to_dict()}, indent=2, ensure_ascii=False, default=str))
         return 1

@@ -729,6 +729,13 @@ class Sel2PipelineSettings(BaseModel):
     # how the seller rows of a SKU x FC x day become one value: PENDING = not approved by the owner yet, SUM, MAX, or
     # SELLER:<CODE> (one seller only)
     avg_seller_rule: str = "PENDING"
+    # 1.4.8 spike cleaning (owner 08/11/2026; OFF by default, OFF = the numbers of 1.4.7: SEL2 does not read the
+    # tables of migration 0013, which the nightly SPIKE_LINES job fills in either state): when ON the SEL2 training data
+    # and candidate inputs read the demand minus the spike EXCESS of
+    # the SO lines as of each day (ml/sel2/spike.py, logic v3, level 1); spike_e4_n = E4 rule: a SKU x FC with flagged
+    # lines on >= N of the 30 days before the day is not cleaned. Part of config_version only when ON (store.config_version)
+    spike_cleaning: bool = False
+    spike_e4_n: int = Field(4, ge=1, le=30)
 
     @field_validator("fallback_model")
     @classmethod

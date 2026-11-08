@@ -34,6 +34,7 @@ HISTORY_SYNC_TRIGGERS = ("trg_dhl_no_delete", "trg_dhl_fixed", "trg_dcl_no_updat
 # 1.3.1 (migration 0011): the forecast refresh runs and values are immutable, the source-read records append-only
 REFRESH_TRIGGERS = ("trg_frr_no_update", "trg_frr_no_delete", "trg_frv_no_update", "trg_asr_no_update", "trg_asr_no_delete")
 REFRESH_RECENT_DAYS = 7         # the row checks of forecast_refresh_values cover the runs of the last 7 forecast days (size)
+EXPORT_KEEP_DAYS = 30           # 1.4.8: export_files_exist checks the newest Excel of the days the cleanup keeps (30 days)
 REFRESH_GROUPS = ("A", "B", "C")
 # 1.4.0 (migration 0012): the history of the forecast source is append-only
 SEL2_TRIGGERS = ("trg_fsch_no_update", "trg_fsch_no_delete")
@@ -174,17 +175,76 @@ def _sel2_checks(c, data_dir: Path | None) -> list[dict]:
               "OR h.changed_by IS NOT f.updated_by OR h.changed_at IS NOT f.updated_at LIMIT 50")))
     missing_files = []
     if data_dir is not None:
+        from .timeutil import today_vn
         base = Path(data_dir).resolve()
-        for rid, day, version, rel in _q(c, "SELECT id, forecast_date, version, path FROM export_runs "
-                                            "ORDER BY forecast_date, version"):
+        # 1.4.8 (owner cleanup rule 08/11/2026): the periodic cleanup keeps the daily Excel folders of the last
+        # EXPORT_KEEP_DAYS days and deletes retired versions (_bo); only the newest version of a kept day must exist
+        since = str(today_vn() - timedelta(days=EXPORT_KEEP_DAYS))
+        for rid, day, version, rel in _q(c, "SELECT id, forecast_date, version, path FROM export_runs e "
+                                            "WHERE forecast_date >= ? AND version = (SELECT MAX(version) FROM "
+                                            "export_runs x WHERE x.forecast_date = e.forecast_date) "
+                                            "ORDER BY forecast_date, version", (since,)):
             parts = [x for x in str(rel or "").replace("\\", "/").split("/") if x]
             p = base.joinpath(*parts).resolve() if parts else None
             if p is None or ".." in parts or not p.is_relative_to(base):
                 missing_files.append((rid, day, version, "path outside the data folder"))
             elif not p.is_file():
                 missing_files.append((rid, day, version, "missing"))
-    out.append(_check("export_files_exist", "every daily Excel recorded in export_runs exists in the data folder"
+    out.append(_check("export_files_exist", "the newest daily Excel of each forecast day of the last "
+                      f"{EXPORT_KEEP_DAYS} days recorded in export_runs exists in the data folder"
                       + ("" if data_dir is not None else " (skipped: no data folder given)"), missing_files, fail=False))
+    return out
+
+
+def _scopes(c, table: str) -> list[str]:
+    """The distinct scope_key of a table whose primary key starts with scope_key, by seeks (never a full scan)."""
+    out = []
+    while True:
+        r = c.execute(f"SELECT MIN(scope_key) FROM {table}" + (" WHERE scope_key > ?" if out else ""),
+                      (out[-1],) if out else ()).fetchone()
+        if r[0] is None:
+            return out
+        out.append(r[0])
+
+
+def _spike_checks(c) -> list[dict]:
+    """1.4.8 (migration 0013, ml/sel2/spike.py): the SO lines, spike flags and excess belong to BIGQUERY scopes only;
+    every excess row of a scope x level x E4 N is of one run (one as-of day); an excess day has a demand row of at least
+    that quantity (informative: the cleaning clips at 0). Day order (flags and excess before their run day), value
+    ranges and keys are CHECK / PRIMARY KEY constraints of the tables. Skipped before migration 0013."""
+    if not _q(c, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='spike_flag_lines'"):
+        return []
+    tables = ("so_lines_cache", "spike_flag_lines", "demand_excess_daily")
+    out = [_check("spike_tables_scope", "so_lines_cache, spike_flag_lines and demand_excess_daily hold BIGQUERY scopes "
+                  "only (the SO lines are read from BigQuery; sources never mixed)",
+                  [(t, s) for t in tables for s in _scopes(c, t) if not s.startswith("BIGQUERY:")])]
+    out.append(_check("demand_excess_one_run", "every demand_excess_daily row of a scope x level x e4_n has the same "
+                      "as-of day (the rows of the latest run only)",
+                      _q(c, "SELECT scope_key, level, e4_n, COUNT(DISTINCT asof) FROM demand_excess_daily "
+                            "GROUP BY 1, 2, 3 HAVING COUNT(DISTINCT asof) > 1")))
+    out.append(_check(
+        "demand_excess_within_demand",
+        "every demand_excess_daily row has a demand_daily row of its day with qty >= the excess (else the cleaned "
+        "demand is clipped at 0: SO lines and demand rows of that day differ)",
+        _q(c, "SELECT x.scope_key, x.d, x.sku_code, x.fc_code, x.level, x.e4_n, x.excess, d.qty FROM demand_excess_daily x "
+              "LEFT JOIN demand_daily d ON d.scope_key = x.scope_key AND d.order_date = x.d AND d.sku_id = x.sku_code "
+              "AND d.fc_id = x.fc_code WHERE d.qty IS NULL OR d.qty < x.excess - 1e-6 LIMIT 50"), fail=False))
+    # 1.4.8 C-2: the SO-line read uses the D-1 filters, so per day x SKU x FC of the cache window (first .. last cached
+    # day of the scope) the summed lines equal the stored demand; both directions, keys and quantities only
+    diff = []
+    for s in _scopes(c, "so_lines_cache"):
+        lo, hi = _q(c, "SELECT MIN(order_date), MAX(order_date) FROM so_lines_cache WHERE scope_key=?", (s,))[0]
+        diff += _q(c, "WITH l AS (SELECT order_date AS d, sku_code AS sku, fc_code AS fc, SUM(qty) AS q FROM "
+                      "so_lines_cache WHERE scope_key=? GROUP BY 1, 2, 3), m AS (SELECT order_date AS d, sku_id AS sku, "
+                      "fc_id AS fc, qty AS q FROM demand_daily WHERE scope_key=? AND order_date BETWEEN ? AND ?) "
+                      "SELECT ?, l.d, l.sku, l.fc, l.q, m.q FROM l LEFT JOIN m ON m.d = l.d AND m.sku = l.sku AND "
+                      "m.fc = l.fc WHERE ABS(l.q - COALESCE(m.q, 0)) > 1e-6 UNION ALL "
+                      "SELECT ?, m.d, m.sku, m.fc, NULL, m.q FROM m LEFT JOIN l ON l.d = m.d AND l.sku = m.sku AND "
+                      "l.fc = m.fc WHERE l.q IS NULL AND ABS(m.q) > 1e-6 ORDER BY 2, 3, 4", (s, s, lo, hi, s, s))
+    out.append(_check("so_lines_cache_matches_demand", "per day x SKU x FC of the cache window the summed SO lines of "
+                      "so_lines_cache equal demand_daily of the BIGQUERY scope (same D-1 filters; a difference = late "
+                      "data, a D-1 not reloaded, or a source change; examples: scope, day, SKU, FC, lines qty, demand qty)",
+                      diff, fail=False))
     return out
 
 
@@ -535,6 +595,7 @@ def _run(c, db_path: Path, models_dir: Path | None) -> dict:
     out.extend(_refresh_checks(c))
     # 1.4.0: the daily Excel paths are relative to the data folder (= the parent of the models folder)
     out.extend(_sel2_checks(c, Path(models_dir).parent if models_dir is not None else None))
+    out.extend(_spike_checks(c))          # 1.4.8
     model_bad = []
     if models_dir is not None:
         for rid, mv, mp, sha in _q(c, "SELECT id, model_version, model_path, model_sha256 FROM training_runs "

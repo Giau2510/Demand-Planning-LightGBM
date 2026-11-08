@@ -141,6 +141,8 @@ def finish_train(run_id: str, model: str, origin, models: dict, info: dict, data
               "decisions": info["decisions"], "config_fingerprint": info.get("config_fingerprint"),
               "flags": info.get("flags", []), "label_start": info.get("label_start"), "label_end": info.get("label_end"),
               "n_origins": info.get("n_origins"), "n_rows_positive": info.get("n_rows_positive")}
+    if info.get("spike_cleaning") is not None:          # 1.4.8: only when spike cleaning is ON
+        detail["spike_cleaning"] = info["spike_cleaning"]
     with db.tx() as c:
         c.execute("UPDATE candidate_train_runs SET status='SUCCEEDED', data_as_of=?, config_json=?, fingerprint=?, "
                   "model_files_json=?, n_rows=?, n_series=?, n_features=?, train_seconds=?, finished_at=?, detail_json=? "
@@ -297,6 +299,8 @@ def config_version(sel2_cfg) -> str:
     keys = ("p_threshold", "window_days", "min_days", "fallback_model", "group_mode", "group_fixed_start",
             "group_fixed_end", "open_hours_lag_days", "tsb_alpha", "tsb_beta", "tsb_start")
     dump = {k: getattr(sel2_cfg, k) for k in keys}
+    if getattr(sel2_cfg, "spike_cleaning", False):      # 1.4.8: only when ON, so OFF keeps the 1.4.6 value
+        dump.update(spike_cleaning=True, spike_e4_n=int(sel2_cfg.spike_e4_n))
     return CONFIG_PREFIX + hashlib.sha256(json.dumps(dump, sort_keys=True, default=str).encode()).hexdigest()[:12]
 
 

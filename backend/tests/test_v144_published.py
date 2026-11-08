@@ -362,7 +362,14 @@ def test_backfill_cli_dry_run_by_default(sel2_on, capsys):
 
 
 def test_no_schema_change_in_1_4_4():
-    assert max(v for v, _ in db.available_migrations()) == 12
+    # 1.4.4 added no migration: the newest one of 1.4.4 is still 0012 (1.4.0), unchanged (sha256 of its text, LF, = the
+    # file at tag v1.4.4); the next migration is 0013 of 1.4.8 (spike lines), nothing in between
+    import hashlib
+    mig = db.available_migrations()
+    assert [p.name for v, p in mig if v >= 12] == ["0012_sel2_pipeline.sql", "0013_spike_lines.sql"]
+    p12 = dict(mig)[12]
+    assert hashlib.sha256(p12.read_bytes().replace(b"\r\n", b"\n")).hexdigest() == \
+        "32635573dbedd777b4073db5066b2c5e32d4a8d65ac03ee039213dac08698908"
 
 
 # ------------------------------------------------------------------ T2-fix4: sidecars under <export root>\.published

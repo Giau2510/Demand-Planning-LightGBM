@@ -1373,6 +1373,112 @@ def fetch_daily(start: date, end: date, snap: dict | None = None, context: str =
             "source_batch_id": max(bids) if bids else None, "estimated_bytes": res["estimated_bytes"]}
 
 
+# ------------------------------------------------------------------ 1.4.8 SO lines (spike cleaning, spike_lines.py)
+LINES_MAX_BYTES = 5_000_000_000     # owner rule 08/11/2026: every SO-line query < 5 GB, whatever maximum_bytes_billed is
+LINES_PAGE_ROWS = 50_000
+
+
+def _lines_sql(bq, snap: dict | None = None) -> str:
+    """SO lines of [@start, @end]: one row = order day x FC x SKU x so_code x customer, the source rows summed (n_rows).
+    Same source relation, day expression, row filter and exclusions as the D-1 aggregate (_daily_sql): the valid-line
+    rule of _REASON (SKU, FC, quantity present, quantity >= 0) and, unless the policy is KEEP, the exact-duplicate rule
+    (rows that are not pending orders and are identical in every compared column are kept once - the D-1 DROP_EXACT
+    rule; with BLOCK such a window is not loaded by D-1 at all). So per day x SKU x FC the sum equals the demand D-1
+    stores. The kept row of a duplicate group is the first by its full value INCLUDING the customer (deterministic).
+    No order code -> so_code ''; no / blank customer -> customer_id '' (unknown customer)."""
+    od = _order_date_expr(bq)
+    rel = _rel(bq, snap)
+    cust = (f"NULLIF(TRIM(CAST(`{bq.customer_id_column}` AS STRING)), '')" if bq.customer_id_column
+            else "CAST(NULL AS STRING)")
+    al = _aliases(bq, with_refs=True)
+    cols = ", ".join(al) + ", _order_date, _cust"
+    kept = f"SELECT {cols} FROM src"
+    if bq.exact_duplicate_policy != "KEEP":
+        cmp = ", ".join(c["alias"] for c in dup_columns(bq))
+        kept = (f"SELECT {cols} FROM src WHERE _pend UNION ALL SELECT {cols} FROM (SELECT {cols}, ROW_NUMBER() OVER ("
+                f"PARTITION BY TO_JSON_STRING(STRUCT({cmp})) ORDER BY TO_JSON_STRING(STRUCT({cols}))) AS _rn "
+                f"FROM src WHERE NOT _pend) WHERE _rn = 1")
+    oid = "CAST(order_id AS STRING)" if _col(bq, "order_id") else "CAST(NULL AS STRING)"
+    return f"""WITH src AS (
+  SELECT {_select_list(bq, True)}, {od} AS _order_date, {_pending_src_expr(bq)} AS _pend, {cust} AS _cust
+  FROM {rel} WHERE {od} BETWEEN @start AND @end{_partition_filter(bq, "start", "end", snap)}
+), kept AS (
+  {kept}
+)
+SELECT _order_date AS order_date, CAST(fc_id AS STRING) AS fc_code, CAST(sku_id AS STRING) AS sku_code,
+  COALESCE({oid}, '') AS so_code, COALESCE(_cust, '') AS customer_id, SUM(order_qty) AS qty, COUNT(*) AS n_rows
+FROM kept WHERE sku_id IS NOT NULL AND fc_id IS NOT NULL AND order_qty IS NOT NULL AND order_qty >= 0
+GROUP BY 1, 2, 3, 4, 5"""
+
+
+def fetch_so_lines(start: date, end: date, sink=None, snap: dict | None = None, dry_run_only: bool = False) -> dict:
+    """1.4.8 read-only SO-line read of [start, end] (clipped to the read floor, read_range): dry run first, refused
+    above min(LINES_MAX_BYTES, bigquery.maximum_bytes_billed) (BQ_QUERY_TOO_EXPENSIVE), the query capped at the same
+    bytes; rows streamed page by page to sink(list of (order_date, fc_code, sku_code, so_code, customer_id, qty,
+    n_rows)) in batches of LINES_PAGE_ROWS (never all held). No DML / DDL. Returns counts and the estimated bytes."""
+    bq = ss.get("bigquery")
+    _require_config(bq)
+    snap = _snap(snap)
+    floor, _ = read_range(bq, end)
+    start = max(start, floor)
+    cap = min(LINES_MAX_BYTES, int(bq.maximum_bytes_billed))
+    sql = "-- df:so_lines\n" + _lines_sql(bq, snap)
+    params = [("start", "DATE", start), ("end", "DATE", end)]
+    client = _client(bq)
+    from_lib = _client_factory is None
+    if from_lib:
+        from google.cloud import bigquery
+        qp = [bigquery.ScalarQueryParameter(n, t, v) for n, t, v in params]
+        dry = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False, query_parameters=qp)
+        cfg = bigquery.QueryJobConfig(maximum_bytes_billed=cap, query_parameters=qp)
+    else:
+        dry = {"dry_run": True, "params": params}
+        cfg = {"dry_run": False, "params": params, "maximum_bytes_billed": cap}
+    try:
+        est = int(client.query(sql, job_config=dry).total_bytes_processed or 0)
+    except Exception as e:
+        err = _map_error(e)
+        if err.code == "BQ_AUTH_EXPIRED" and bq.oauth_enabled:
+            oauth.mark_revoked(err.detail)
+        raise err from e
+    out = {"window": {"start": str(start), "end": str(end)}, "estimated_bytes": est, "cap_bytes": cap,
+           "rows": 0, "qty": 0.0, "source_rows": 0}
+    if est > cap:
+        raise AppError("BQ_QUERY_TOO_EXPENSIVE", 413, detail=f"{est} bytes > {cap}", estimated_bytes=est)
+    if dry_run_only or start > end:
+        return out
+    t0 = time.monotonic()
+    try:
+        job = client.query(sql, job_config=cfg)
+        it = (job.result(timeout=bq.query_timeout_seconds, page_size=LINES_PAGE_ROWS) if from_lib
+              else job.result(timeout=bq.query_timeout_seconds))
+        batch = []
+        for r in it:
+            r = dict(r.items()) if hasattr(r, "items") else dict(r)
+            q = _num(r.get("qty")) or 0.0
+            batch.append((str(r["order_date"])[:10], str(r["fc_code"]), str(r["sku_code"]), r.get("so_code") or "",
+                          r.get("customer_id") or "", q, int(r.get("n_rows") or 1)))
+            out["rows"] += 1
+            out["qty"] += q
+            out["source_rows"] += batch[-1][6]
+            if len(batch) >= LINES_PAGE_ROWS:
+                if sink is not None:
+                    sink(batch)
+                batch = []
+        if batch and sink is not None:
+            sink(batch)
+    except AppError:
+        raise
+    except Exception as e:
+        err = _map_error(e)
+        if err.code == "BQ_AUTH_EXPIRED" and bq.oauth_enabled:
+            oauth.mark_revoked(err.detail)
+        raise err from e
+    log.info("bq query", extra={"ctx": {"kind": "so_lines", "estimated_bytes": est, "rows": out["rows"],
+                                        "seconds": round(time.monotonic() - t0, 2)}})
+    return out
+
+
 # ------------------------------------------------------------------ D0 (today)
 def fetch_d0(day: date, cutoff=None, snap: dict | None = None) -> dict:
     """Cumulative quantity per SKU x FC for `day` (1.2.1: the D-0 feed's own mapping, see d0_feed). `cutoff` is kept

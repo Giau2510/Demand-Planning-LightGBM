@@ -177,6 +177,62 @@ def _tuples(keys: pd.DataFrame) -> list:
     return list(zip(keys["sku_code"], keys["fc_code"]))
 
 
+# ------------------------------------------------------------------ 1.4.8 spike cleaning (sel2_pipeline.spike_cleaning)
+FLAG_SPIKE_SKIPPED = "SPIKE_CLEANING_SKIPPED"
+FLAG_SPIKE_STALE = "SPIKE_FLAGS_STALE"      # cleaned with flags of an earlier run (computed_for < the day): usable
+SPIKE_LEVEL = 1
+
+
+def _spike(s, scope_key: str, d: date, inputs: data.Inputs, purpose: str) -> dict | None:
+    """Spike EXCESS as of d (ml/sel2/spike.py, level 1, E4 N = spike_e4_n) from the stored spike_flag_lines, keyed by
+    inputs.keys. None when spike_cleaning is False: nothing of the spike module is imported or run (1.4.7 numbers).
+    Flags missing or too old to decide the day (Excess raises) -> no cleaning: {"skipped": True} + ONE WARNING alert
+    SPIKE_CLEANING_SKIPPED per purpose x day; never a failure. Flags of an earlier run (latest computed_for < d, e.g.
+    tonight's SPIKE_LINES failed) still clean, flagged SPIKE_FLAGS_STALE (the lines of the days since are not cleaned).
+    Actuals, groups, open status and the scope stay raw."""
+    if not s.spike_cleaning:
+        return None
+    from . import spike
+    info = {"spike_cleaning": True, "level": SPIKE_LEVEL, "e4_n": int(s.spike_e4_n), "asof": str(d)}
+    try:
+        with db.read() as c:
+            fl = spike.read_flags(c, scope_key)
+        if fl.empty:
+            raise ValueError("no spike flags stored")
+        info["flags_computed_for"] = str(fl["computed_for"].max().date())
+        ex = spike.Excess(fl, keys=inputs.keys)
+        k, g, e = ex.cells_asof(d, SPIKE_LEVEL, s.spike_e4_n)
+        cells = ex.cells_frame(d, SPIKE_LEVEL, s.spike_e4_n)
+    except Exception as err:  # noqa: BLE001 - the run goes on with the raw demand
+        info.update(skipped=True, reason=f"{type(err).__name__}: {err}"[:300])
+        log.warning("sel2 spike cleaning skipped", extra={"ctx": {"purpose": purpose, "asof": str(d),
+                                                                   "reason": info["reason"]}})
+        try:
+            with db.tx() as c:
+                done = c.execute("SELECT 1 FROM alerts WHERE code=? AND params_json LIKE ? LIMIT 1",
+                                 (FLAG_SPIKE_SKIPPED, f'%"{purpose}:{d}"%')).fetchone()
+                if not done:
+                    db.alert(c, "WARNING", FLAG_SPIKE_SKIPPED, {"run": f"{purpose}:{d}", "reason": info["reason"]},
+                             "scope", scope_key)
+        except Exception:  # noqa: BLE001 - the flag of the run stays
+            log.warning("sel2 spike alert not written", exc_info=True)
+        return info
+    info.update(skipped=False, stale=info["flags_computed_for"] < str(d), excess_total=round(float(e.sum()), 3),
+                excess_cells=int(len(e)))
+    info["_clean"] = (k, g, e, cells)
+    return info
+
+
+def _spike_flags(info: dict | None) -> list:
+    if info is None:
+        return []
+    return [FLAG_SPIKE_SKIPPED] if info["skipped"] else ([FLAG_SPIKE_STALE] if info.get("stale") else [])
+
+
+def _spike_public(info: dict | None) -> dict | None:
+    return None if info is None else {k: v for k, v in info.items() if not k.startswith("_")}
+
+
 # ------------------------------------------------------------------ training
 def train_week(origin: date, models=None, cancel=None, inputs: data.Inputs | None = None, scope_key=None,
                job_id=None) -> dict:
@@ -190,6 +246,7 @@ def train_week(origin: date, models=None, cancel=None, inputs: data.Inputs | Non
 
 def _train_week(s, origin, models, cancel, inputs, scope_key, job_id) -> dict:
     out = {"origin": str(origin), "trained": [], "skipped": []}
+    sp, frame = None, None
     for m in models or TRAIN_ORDER:
         with db.read() as c:
             if store.succeeded_train(c, scope_key, m, origin):
@@ -198,12 +255,24 @@ def _train_week(s, origin, models, cancel, inputs, scope_key, job_id) -> dict:
         _memory_gate()
         if inputs is None:
             inputs = load(scope_key, origin, s)
+        if frame is None:
+            frame = inputs.frame
+            # 1.4.8: spike cleaning ON -> the training labels / features read the demand minus the excess as of origin
+            sp = _spike(s, scope_key, origin, inputs, "train")
+            if sp is not None and not sp["skipped"]:
+                from . import spike
+                frame = spike.clean_frame(inputs.frame, sp["_clean"][3], origin)
+            if sp is not None:
+                out["spike_cleaning"] = _spike_public(sp)
         keys = _tuples(inputs.scope_keys(origin))
         rid = store.start_train(scope_key, m, origin, job_id)
         t = time.monotonic()
         try:
             with mapped(TRAIN_FAILED):
-                trained, info = lgbm.train(inputs.frame, origin, keys, lgbm.CANDIDATE_SPECS[m], cancel)
+                trained, info = lgbm.train(frame, origin, keys, lgbm.CANDIDATE_SPECS[m], cancel)
+            if sp is not None:
+                info["spike_cleaning"] = _spike_public(sp)
+                info["flags"] = list(info.get("flags") or []) + _spike_flags(sp)
             data_as_of = str(lgbm.rows_before(inputs.frame, origin)["od"].max().date())
             store.finish_train(rid, m, origin, trained, info, data_as_of, time.monotonic() - t)
         except BaseException as e:
@@ -231,6 +300,16 @@ def candidates_for_day(d: date, inputs: data.Inputs | None = None, scope_key=Non
     keys = _tuples(sk)
     origin = origin_of(d, s.retrain_weekday)
     cands, train_ids, flags, detail = {}, {}, {}, {}
+    # 1.4.8 spike cleaning ON: the LightGBM candidates read the frame and TSB / DOW4 / AVG7 the daily demand minus the
+    # excess as of d (scope, open hours raw); OFF: the inputs as they are (nothing of the spike module runs)
+    frame, daily_all = inputs.frame, inputs.daily
+    sp = _spike(s, scope_key, d, inputs, "day")
+    sp_flags = _spike_flags(sp)
+    if sp is not None and not sp["skipped"]:
+        from . import spike
+        k_, g_, e_, cells = sp["_clean"]
+        frame = spike.clean_frame(inputs.frame, cells, d)
+        daily_all = spike.clean_daily(inputs.daily, k_, g_, e_, d)
     for m in TRAIN_ORDER:
         fl = []
         with db.read() as c:
@@ -242,17 +321,19 @@ def candidates_for_day(d: date, inputs: data.Inputs | None = None, scope_key=Non
             raise Sel2Error(NO_MODEL, detail=f"{m}: no training of origin {origin} nor {origin - timedelta(days=7)}")
         models, trained = store.load_train(run)
         with mapped(MISSING_FORECAST):
-            f = lgbm.forecast(inputs.frame, d, keys, models, lgbm.CANDIDATE_SPECS[m], trained)
+            f = lgbm.forecast(frame, d, keys, models, lgbm.CANDIDATE_SPECS[m], trained)
         v = select.two_stage_value(f["prob"], f["qty"], s.p_threshold) if "prob" in f else f["value"]
         name = NAME[m]
         cands[name] = _long([k[0] for k in f["keys"]], [k[1] for k in f["keys"]], v)
         train_ids[name] = run["id"]
         run_flags = json.loads(run["detail_json"] or "{}").get("flags", [])
-        flags[name] = fl + list(run_flags)
+        flags[name] = fl + list(run_flags) + sp_flags
         detail[name] = {"origin": run["origin_date"]}
+        if sp is not None:
+            detail[name]["spike_cleaning"] = _spike_public(sp)
     g = inputs.g(d)
     m = inputs.scope_mask(d)
-    daily, om = inputs.daily[m, :g], simple.open_mask(inputs.oh[m, :g])
+    daily, om = daily_all[m, :g], simple.open_mask(inputs.oh[m, :g])
     g_tsb = inputs.g(date.fromisoformat(s.tsb_start))
     with mapped(MISSING_FORECAST):
         tsb = simple.tsb(daily, om, g, g_tsb, s.tsb_alpha, s.tsb_beta)
@@ -263,10 +344,15 @@ def candidates_for_day(d: date, inputs: data.Inputs | None = None, scope_key=Non
     cands["DOW4"] = _long(sk["sku_code"], sk["fc_code"], dow4)
     cands["AVG7"] = _long(sk["sku_code"], sk["fc_code"], np.repeat(avg7[:, None], H, axis=1))
     for nm in ("TSB", "DOW4", "AVG7"):
-        flags[nm] = []
+        flags[nm] = list(sp_flags)
+        if sp is not None:
+            detail[nm] = {"spike_cleaning": _spike_public(sp)}
     n = store.write_day(scope_key, d, d - timedelta(days=1), cands, train_ids, flags, job_id, detail)
-    return {"forecast_date": str(d), "status": "STORED", "rows": n, "series": len(sk),
-            "flags": sorted({x for v in flags.values() for x in v})}
+    out = {"forecast_date": str(d), "status": "STORED", "rows": n, "series": len(sk),
+           "flags": sorted({x for v in flags.values() for x in v})}
+    if sp is not None:
+        out["spike_cleaning"] = _spike_public(sp)
+    return out
 
 
 def _long(sku, fc, values) -> pd.DataFrame:
@@ -319,6 +405,11 @@ def select_and_publish(d: date, publish: bool = True, history_start: date | None
         detail = {"pipeline": "SEL2", "flags": run_flags, "methods": out["methods"], "ok_series": out["ok"],
                   "group_mode": mode, "history_start": str(history_start) if history_start else None,
                   "inputs": inputs.detail, "candidate_runs": {r["model"]: r["id"] for r in runs}}
+        if s.spike_cleaning:            # 1.4.8: recorded only when ON (OFF: the detail of 1.4.7)
+            sp = next((x for x in (json.loads(r["detail_json"] or "{}").get("spike_cleaning") for r in runs) if x),
+                      None)
+            detail["spike_cleaning"] = sp or {"spike_cleaning": True, "e4_n": int(s.spike_e4_n),
+                                              "note": "candidates stored without spike information"}
         out["run_id"], out["values"] = store.publish(scope_key, d, sel, groups, run_flags, mv,
                                                      store.config_version(s), trigger, job_id, detail)
         out["model_version"] = mv

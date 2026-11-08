@@ -570,3 +570,18 @@ RUNNING > 12 h), `forecast_source_config_history` (config = latest history row),
 models folder to locate the data folder).
 
 1.4.4 (no table, no schema change): the history sidecar of each daily Excel version, `<export root>\.published\YYYYMMDD\du_bao_YYYYMMDD_vN.h2.json.gz` (outside the day folder) (gzip JSON: `export_run_id`, `forecast_date`, `horizons` = [1] (1.4.5, target = forecast day; [2] up to 1.4.4, rebuilt when read), `sha256_of_xlsx` = `export_runs.sha256`, `columns`, `rows` = [sku_code, fc_code, target_date, forecast_used, forecast_source, fallback_reason] per SKU x FC, `flags` = rows_without_number / rows_fractional / rebuilt_from_xlsx when rebuilt from an xlsx). Derived from the xlsx and rebuildable; not in the database backups. `export_runs.flags` may contain `SIDECAR_WRITE_FAILED`. `actual_daily` (1.3.1 table) is also written in SEL2 mode by the `FORECAST_REFRESH` job (D-14 .. D-1). `export_runs.summary_json.avg` (source_table, source_kind, completed_at, rule) is the AVG_DEMAND read the Daily / Results pages pin for that run (API flag `AVG_READ_NOT_PINNED` when it can no longer be used). 1.4.5: `export_runs.summary_json.fallback` (window, sku_fc_in_scope, sku_fc_open_in_window, sku_fc_fallback, fallback_no_open_day, fallback_with_open_day, pct_all, pct_open) and `summary_json.source_build` (open_hours_table, open_hours_last_day, open_hours_built_at = `aux_source_reads.source_modified`, demand_table, demand_built_at = `demand_sync_runs.source_version` of the newest D1_SYNC, built_first, text = the TOM_TAT line `open_hours_lag_note`); `rename_failed_versions` when an earlier version kept its name.
+
+## 1.4.8 tables (migration 0013)
+
+Spike cleaning (`backend/app/ml/sel2/spike.py`). Nothing is written into them while `sel2_pipeline.spike_cleaning` =
+False (the default). All WITHOUT ROWID.
+
+| Table | Key | Columns |
+|---|---|---|
+| `so_lines_cache` | scope_key, order_date, fc_code, sku_code, so_code, customer_id (index scope_key, fc_code, sku_code, order_date) | qty (sum of the source rows of the line, >= 0), n_rows (source rows summed, >= 1), loaded_at (UTC); so_code / customer_id '' = none in the source; pruned to the last 210 days |
+| `spike_flag_lines` | scope_key, logic (v3), history_days, d, fc_code, sku_code, so_code, customer_id | qty (> 0), group_code (A / B / C, NULL = none), min_qty, n_prev, cust_med, gap_med, n_gaps, next_day (NULL = none seen), kept (normal part; excess = qty - kept), T1, T2, T4, T7 (0/1; T7 as of computed_for), n_signals_raw (>= 1), exc_wholesale, exc_periodic, exc_demand, is_regular (0/1), computed_for (run day, > d; data up to the day before), computed_at; never pruned |
+| `demand_excess_daily` | scope_key, d, fc_code, sku_code, level (1..3), e4_n (1..30) | excess (> 0), asof (> d: lines before it only), computed_at; the rows of the latest run |
+
+`data-check` (1.4.8) adds: `spike_tables_scope` (BIGQUERY scopes only), `demand_excess_one_run` (one as-of day per
+scope x level x e4_n), `demand_excess_within_demand` (WARN: an excess day without a demand row of at least that
+quantity).
