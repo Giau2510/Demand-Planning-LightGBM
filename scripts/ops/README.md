@@ -107,12 +107,20 @@ exist and the installed script has these parameters.
 | backups | `<project>\backups` zips (+ `.sha256` / `config-*`) except: newest overall, last 7 days, per current / previous version the newest `*-pre-<ver without dots>.zip`, the newest backup before its install and those within 20 min before it. |
 | exports | day folders outside the 30 newest AND older than 30 days; `du_bao_<day>_v<K>_bo.xlsx` of kept days older than 3 days while a newer `du_bao_<day>_v<M>.xlsx` (M > K) exists (else kept_uncertain; a `_TAM` file does not count). |
 | logs | files older than 30 days, archived to `logs-archive-YYYYMM.zip` first (unchanged). |
-| tmp | `D:\Buymed\tmp` entries older than 1 day not used by a process (unchanged). |
+| tmp | `D:\Buymed\tmp` entries older than `-TmpMinAgeHours` (default 24) not used by a process (unchanged); names in `-TmpKeep` are kept. |
 | deploy_temp | `%TEMP%\DemandForecast-deploy-*` older than 1 day, not on a process command line. |
 | reports | packaged folders: data files outside `package*` (unchanged); folders in `don_dep_ket_luan.txt`: .parquet .pkl .npz .npy .log .tmp .feather and `_v<N>` files with a higher plain `_v<M>` (code / text .py .ps1 .sql .ipynb .sh .R .bat .md .json .txt .yaml .yml always kept; lettered `_v3b` variants and matches inside `package*` -> kept_uncertain); `don_dep_giu.txt` wins. |
 | installs | version folders other than current / previous; newer than current, not x.y.z or named in a scheduled task action -> kept_uncertain; used by a process -> kept; current.txt re-read before each deletion. The whole group is skipped (nothing selected) when the scheduled tasks or the process list cannot be read. |
 | dist_versions | `DemandForecast-<ver>*` in `<project>\dist` and `<project>\worktrees\*\dist` of versions older than current other than previous / `-DistKeep` (newer -> kept_uncertain). **Behaviour change 08/11: deleted with `-Apply` alone** (no `-IncludeDist` needed). |
 | dist | `prune-artifacts.ps1` plan (deleted only with `-Apply -IncludeDist -DistKeep`), not in the totals. |
+| claude_temp | only when named in `-Groups` (never in the default run / weekly task): `%TEMP%\claude\<project>\<GUID>` session folders of finished sessions = not in `-ClaudeKeep` (session id or a prefix of >= 8 characters) AND folder older than `-ClaudeMinAgeHours` (default 24) AND its transcript `%USERPROFILE%\.claude\projects\<project>\<id>.jsonl` / `<id>\**` (when present; `-ClaudeProjectsRoot`) older than that too AND not named (folder or session id) on a process command line AND no database file in use; re-checked right before deletion. `-ClaudeTempRoot` must be a folder named `claude`. |
+
+`-Groups a,b` runs only the named groups (unknown name -> exit 2). A `-TmpKeep` / `-ClaudeKeep` entry that matches no
+entry / session folder -> exit 2 (typo guard). tmp candidates are re-checked right before deletion (processes, age, DB in
+use). Owner-approved run 08/11:
+`don_dep_dinh_ky.ps1 -Groups tmp,claude_temp -TmpMinAgeHours 12 -TmpKeep src148 -ClaudeKeep 145cefda,85d15b29 -Apply`;
+with `-Apply` the `.txt` report lists every candidate as `deleted <group> <GB> <path>` or
+`NOT deleted <group> <path> - <reason>`.
 
 Info only: `worktree_can_remove` lines for `<project>\worktrees\*` that are clean, on a remote-tracking branch, tagged
 `v<version>` and installed (removal: `archive_worktree.py`). current.txt unreadable -> backups / installs / dist_versions

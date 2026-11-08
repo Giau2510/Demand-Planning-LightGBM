@@ -862,3 +862,279 @@ def test_task_action_versions_helper(tmp_path: Path):
     assert code == 0, out
     got = [ln.strip() for ln in out.splitlines() if ln.strip().startswith("[")]
     assert got == [f"[{w}]" for _, w in cases], (got, out)
+
+
+# ------------------------------------------------------------------ 08/11/2026 -Groups, -TmpKeep / -TmpMinAgeHours, claude_temp
+
+OLD_GROUPS = ["backups", "exports", "logs", "tmp", "deploy_temp", "reports", "installs", "dist_versions", "dist"]
+
+
+def _txt(out: str) -> list[str]:
+    """Lines of the .txt report written next to the json report."""
+    lines = [ln.strip()[len("Report: "):] for ln in out.splitlines() if ln.strip().startswith("Report: ")]
+    assert lines, out
+    return Path(lines[-1][:-len(".json")] + ".txt").read_text(encoding="utf-8-sig").splitlines()
+
+
+def _sid(prefix: str) -> str:
+    """A session id (GUID form) with a fixed 8-character prefix; the rest is random, so no real process names it."""
+    import uuid
+    u = uuid.uuid4().hex
+    return f"{prefix}-{u[:4]}-{u[4:8]}-{u[8:12]}-{u[12:24]}"
+
+
+def _sleeper(*extra: str, env: dict | None = None, code: str = "import time; time.sleep(300)") -> subprocess.Popen:
+    return subprocess.Popen([sys.executable, "-c", code, *extra], env=env, stdout=subprocess.PIPE)
+
+
+def _stop(*procs: subprocess.Popen) -> None:
+    for p in procs:
+        p.kill()
+        p.wait()
+
+
+def test_default_run_never_selects_claude_temp_and_groups_claude_temp_uses_temp_claude(tree):
+    """Default run (the weekly task) = every old group, never claude_temp, even with -Apply; -Groups claude_temp without
+    -ClaudeTempRoot cleans %TEMP%\\claude of the child PowerShell (a temporary folder here) and nothing else."""
+    t = tree
+    sess = t["la"].parent / "TEMP" / "claude" / "d--proj" / _sid("a0a0a0a0")
+    old = datetime.now() - timedelta(days=3)
+    _set_times(t["la"].parent, [(_file(sess / "tasks" / "out.txt"), old), (sess / "tasks", old), (sess, old)])
+    cp = ["-ClaudeProjectsRoot", str(t["la"].parent / "projects")]      # never the real %USERPROFILE%\.claude\projects
+    code, out = _run(CLEANUP, _args(t, *cp), t["la"])
+    assert code == 0, out
+    rep = _report(out)
+    assert _list(rep["groups_selected"]) == OLD_GROUPS
+    assert list(_groups(rep)) == OLD_GROUPS
+    code, out = _run(CLEANUP, _args(t, *cp, "-Apply"), t["la"])
+    assert code == 0, out
+    rep = _report(out)
+    assert "claude_temp" not in _groups(rep) and _list(rep["groups_selected"]) == OLD_GROUPS
+    assert (sess / "tasks" / "out.txt").is_file()
+    code, out = _run(CLEANUP, _args(t, "-Groups", "claude_temp", *cp, "-Apply"), t["la"])
+    assert code == 0, out
+    rep = _report(out)
+    assert _list(rep["groups_selected"]) == ["claude_temp"] and list(_groups(rep)) == ["claude_temp"]
+    assert _n(rep["claude_temp_root"]) == _n(t["la"].parent / "TEMP" / "claude")
+    assert {_n(c["path"]) for c in _list(_groups(rep)["claude_temp"]["candidates"]) if c.get("deleted")} == {_n(sess)}
+    assert not sess.exists() and sess.parent.is_dir()
+    _assert_untouched(t)
+
+
+def test_groups_tmp_apply_touches_nothing_outside_the_tmp_root(tree):
+    t = tree
+    code, out = _run(CLEANUP, _args(t, "-Groups", "tmp", "-Apply"), t["la"])
+    assert code == 0, out
+    rep = _report(out)
+    assert _list(rep["groups_selected"]) == ["tmp"] and list(_groups(rep)) == ["tmp"]
+    g = _groups(rep)["tmp"]
+    assert {_n(c["path"]) for c in _list(g["candidates"]) if c.get("deleted")} == t["exp"]["tmp"]
+    for c in t["exp"]["tmp"]:
+        assert not os.path.lexists(c), c
+    for name, want in t["exp"].items():                  # backups / exports / logs / reports / installs / ... all still there
+        if name != "tmp":
+            for c in want:
+                assert os.path.exists(c), (name, c)
+    assert not list((t["proj"] / "logs").glob("logs-archive-*.zip"))
+    _assert_untouched(t)
+    lines = _txt(out)
+    assert "groups=tmp" in lines[0]
+    for c in t["exp"]["tmp"]:
+        assert any(ln.startswith("deleted tmp ") and _n(ln).endswith(c) for ln in lines), (c, lines)
+
+
+def test_unknown_group_or_bad_options_are_refused_and_nothing_is_deleted(tree):
+    t = tree
+    cp = ["-ClaudeProjectsRoot", str(t["la"].parent / "projects")]
+    other = _file(t["la"].parent / "notclaude" / "p" / _sid("a5a5a5a5") / "x.txt")       # a session-like folder, wrong root name
+    tc = _file(t["la"].parent / "TEMP" / "claude" / "p" / _sid("a6a6a6a6") / "x.txt")
+    _set_times(t["la"].parent, [(other, NOW - timedelta(days=5)), (other.parent, NOW - timedelta(days=5)),
+                                (tc, NOW - timedelta(days=5)), (tc.parent, NOW - timedelta(days=5))])
+    bad = [["-Groups", "tmp,bogus"], ["-Groups", "claude"], ["-TmpMinAgeHours", "0"], ["-ClaudeMinAgeHours", "0"],
+           ["-Groups", "tmp", "-TmpKeep", "a\\b"], ["-Groups", "tmp", "-TmpKeep", ".."],
+           ["-Groups", "claude_temp", "-ClaudeKeep", "145cefd"], ["-Groups", "claude_temp", "-ClaudeKeep", "abc"],
+           ["-Groups", "claude_temp", "-ClaudeKeep", "zzzzzzzz"], ["-Groups", "claude_temp", "-ClaudeKeep", "0badcafe,12"]]
+    msgs = ["unknown group bogus", "unknown group claude", "-TmpMinAgeHours must be at least 1",
+            "-ClaudeMinAgeHours must be at least 1", "-TmpKeep: an entry name", "-TmpKeep: an entry name",
+            "-ClaudeKeep: a session id", "-ClaudeKeep: a session id", "-ClaudeKeep: a session id", "-ClaudeKeep: a session id"]
+    for args, msg in zip(bad, msgs):
+        code, out = _run(CLEANUP, _args(t, *args, *cp, "-Apply"), t["la"])
+        assert code == 2, (args, out)
+        assert msg in " ".join(out.split()) and "Nothing done" in out, (args, out)
+    # -ClaudeTempRoot = a parent of the project / a drive root: refused only when claude_temp is selected
+    code, out = _run(CLEANUP, _args(t, "-Groups", "claude_temp", "-ClaudeTempRoot", str(t["proj"].parent), *cp, "-Apply"),
+                     t["la"])
+    assert code == 2 and "-ClaudeTempRoot" in out and "refused" in out, out
+    code, out = _run(CLEANUP, _args(t, "-Groups", "claude_temp", "-ClaudeTempRoot", str(t["proj"])[:3], *cp), t["la"])
+    assert code == 2 and "a drive root" in out, out
+    # leaf name not "claude" (a folder holding an old session-like folder): refused, nothing deleted
+    code, out = _run(CLEANUP, _args(t, "-Groups", "claude_temp", "-ClaudeTempRoot", str(t["la"].parent / "notclaude"), *cp,
+                                    "-Apply"), t["la"])
+    assert code == 2 and "not a folder named claude" in out and "Nothing done" in out, out
+    # a well-formed -ClaudeKeep id that matches no session folder (typo guard): refused, the old session stays
+    code, out = _run(CLEANUP, _args(t, "-Groups", "claude_temp", "-ClaudeKeep", "a6a6a6a6,99999999", *cp, "-Apply"), t["la"])
+    assert code == 2 and "-ClaudeKeep: no session folder 99999999" in " ".join(out.split()) and "Nothing done" in out, out
+    # a -TmpKeep name that matches no entry under -TmpRoot (typo guard): refused, the tmp candidates stay
+    code, out = _run(CLEANUP, _args(t, "-Groups", "tmp", "-TmpKeep", "old_copy,old_copyy", "-Apply"), t["la"])
+    assert code == 2 and "-TmpKeep: no entry old_copyy" in " ".join(out.split()) and "Nothing done" in out, out
+    assert other.is_file() and tc.is_file()
+    for c in set().union(*t["exp"].values()):
+        assert os.path.exists(c), c
+    _assert_untouched(t)
+    assert not (t["proj"] / "logs" / "don_dep").exists()
+    code, out = _run(CLEANUP, _args(t, "-Groups", "TMP", "-ClaudeTempRoot", str(t["proj"].parent)), t["la"])
+    assert code == 0, out                                  # group names are case-insensitive; claude root not checked
+    assert _list(_report(out)["groups_selected"]) == ["tmp"]
+
+
+def test_tmp_keep_and_min_age_hours(tmp_path: Path):
+    la, proj, tmpr = tmp_path / "LA", tmp_path / "proj", tmp_path / "tmproot"
+    (proj / "scripts").mkdir(parents=True)
+    la.mkdir()
+    now = datetime.now().replace(microsecond=0)
+    h30, h7, h5 = now - timedelta(hours=30), now - timedelta(hours=7), now - timedelta(hours=5)
+    a_old, b_mid, c_young = tmpr / "a_old", tmpr / "b_mid.txt", tmpr / "c_young.txt"
+    keep_dir, keep_file = tmpr / "keepme", tmpr / "KeepFile.txt"
+    _set_times(tmp_path, [(_file(a_old / "x.db"), h30), (a_old, h30), (_file(b_mid), h7), (_file(c_young), h5),
+                          (_file(keep_dir / "y.db"), h30), (keep_dir, h30), (_file(keep_file), h30)])
+    base = ["-ProjectRoot", str(proj), "-TmpRoot", str(tmpr), "-Groups", "tmp"]
+    code, out = _run(CLEANUP, base, la)                   # default 24 h, no -TmpKeep
+    assert code == 0, out
+    rep = _report(out)
+    assert rep["tmp_min_age_hours"] == 24 and _list(rep["tmp_keep"]) == []
+    assert _cands(_groups(rep)["tmp"]) == {_n(a_old), _n(keep_dir), _n(keep_file)}
+    code, out = _run(CLEANUP, base + ["-TmpMinAgeHours", "6"], la)     # 7 h old in, 5 h old out
+    assert code == 0, out
+    assert _cands(_groups(_report(out))["tmp"]) == {_n(a_old), _n(b_mid), _n(keep_dir), _n(keep_file)}
+    code, out = _run(CLEANUP, base + ["-TmpMinAgeHours", "8"], la)     # 7 h old now too young
+    assert code == 0, out
+    assert _n(b_mid) not in _cands(_groups(_report(out))["tmp"])
+    code, out = _run(CLEANUP, base + ["-TmpMinAgeHours", "6", "-TmpKeep", "keepme,KEEPFILE.TXT,missing", "-Apply"], la)
+    assert code == 2 and "-TmpKeep: no entry missing" in " ".join(out.split()) and "Nothing done" in out, out   # typo guard
+    assert a_old.is_dir() and b_mid.is_file() and keep_dir.is_dir() and keep_file.is_file()
+    code, out = _run(CLEANUP, base + ["-TmpMinAgeHours", "6", "-TmpKeep", "keepme,KEEPFILE.TXT", "-Apply"], la)
+    assert code == 0, out
+    rep = _report(out)
+    assert rep["tmp_min_age_hours"] == 6 and _list(rep["tmp_keep"]) == ["keepme", "KEEPFILE.TXT"]
+    g = _groups(rep)["tmp"]
+    assert _cands(g) == {_n(a_old), _n(b_mid)}
+    skips = _skips(rep)
+    assert skips[_n(keep_dir)] == "kept by -TmpKeep" and skips[_n(keep_file)] == "kept by -TmpKeep"
+    assert not a_old.exists() and not b_mid.exists()
+    assert (keep_dir / "y.db").is_file() and keep_file.is_file() and c_young.is_file()
+    lines = _txt(out)
+    for p in (a_old, b_mid):
+        assert any(ln.startswith("deleted tmp ") and _n(ln).endswith(_n(p)) for ln in lines), (p, lines)
+    assert not any(_n(keep_dir) in _n(ln) and ln.startswith(("deleted", "NOT deleted")) for ln in lines), lines
+
+
+def test_claude_temp_selects_only_finished_session_folders(tmp_path: Path):
+    """<root>\\<project>\\<GUID> older than the limit and not used by any process: deleted. Kept: -ClaudeKeep (prefix),
+    a young session, a session folder or session id on a running process command line, non-GUID folders,
+    bash-edit-diff, files under the root, a GUID folder directly under the root. A session folder with a file held open
+    (no db file, path not on any command line) is a candidate that cannot be deleted: listed as NOT deleted."""
+    la, proj, root = tmp_path / "LA", tmp_path / "proj", tmp_path / "claude"
+    (proj / "scripts").mkdir(parents=True)
+    la.mkdir()
+    now = datetime.now().replace(microsecond=0)
+    old, young = now - timedelta(days=2), now - timedelta(hours=2)
+    pr = root / "d--Buymed-Lightgbm-AI"
+    s = {k: pr / _sid(p) for k, p in (("old", "a1a1a1a1"), ("old2", "a2a2a2a2"), ("keep", "0badcafe"), ("young", "b1b1b1b1"),
+                                       ("used", "c1c1c1c1"), ("sid", "d1d1d1d1"), ("lock", "e1e1e1e1"))}
+    s["other"] = root / "other-project" / _sid("a3a3a3a3")
+    s["fresh"] = pr / _sid("b2b2b2b2")              # old folder, transcript <sid>.jsonl written just now
+    s["freshsub"] = pr / _sid("b3b3b3b3")           # old folder and transcript, a subagent transcript written just now
+    cp = tmp_path / "projects"                      # -ClaudeProjectsRoot (never the real profile)
+    for k in ("old", "old2", "other", "fresh", "freshsub", "lock"):
+        tr = _file(cp / ("other-proj" if k == "other" else "D--Buymed-Lightgbm-AI") / f"{s[k].name}.jsonl", b"{}\n")
+        if k != "fresh":
+            os.utime(tr, (old.timestamp(), old.timestamp()))
+    sub = _file(cp / "D--Buymed-Lightgbm-AI" / s["freshsub"].name / "subagents" / "x.jsonl", b"{}\n")
+    os.utime(_file(cp / "D--Buymed-Lightgbm-AI" / s["old"].name / "subagents" / "y.jsonl", b"{}\n"),
+             (old.timestamp(), old.timestamp()))
+    times: list[tuple[Path, datetime]] = []
+    for k, d in s.items():
+        t = young if k == "young" else old
+        times += [(_file(d / "tasks" / "b.output"), t), (d / "tasks", t), (d, t)]
+    ignored = [_file(pr / "notaguid" / "x.txt"), _file(pr / "bash-edit-diff" / "d.diff"), _file(root / "bash-edit-diff" / "e.diff"),
+               _file(root / "root_file.txt"), _file(root / _sid("f1f1f1f1") / "z.txt"),
+               _file(pr / "a4a4a4a4-0000-4000-8000-00000000000" / "w.txt")]       # 11 hex chars at the end: not a GUID
+    for p in ignored:
+        times += [(p, old), (p.parent, old)]
+    _set_times(tmp_path, times)
+    base = ["-ProjectRoot", str(proj), "-TmpRoot", str(tmp_path / "tmproot"), "-Groups", "tmp,claude_temp",
+            "-ClaudeTempRoot", str(root), "-ClaudeKeep", "0BADCAFE", "-ClaudeProjectsRoot", str(cp)]
+    lock_file = s["lock"] / "tasks" / "b.output"
+    procs = [_sleeper(str(s["used"] / "tasks" / "b.output")), _sleeper("--resume", s["sid"].name),
+             _sleeper(env={**os.environ, "DF_LOCK": str(lock_file)},
+                      code="import os, time; f = open(os.environ['DF_LOCK'], 'rb'); print('ok', flush=True); time.sleep(300)")]
+    try:
+        assert procs[2].stdout.readline().strip() == b"ok"
+        code, out = _run(CLEANUP, base, la)
+        assert code == 0, out
+        rep = _report(out)
+        assert _list(rep["groups_selected"]) == ["tmp", "claude_temp"] and _list(rep["claude_keep"]) == ["0badcafe"]
+        assert rep["claude_min_age_hours"] == 24
+        g = _groups(rep)["claude_temp"]
+        assert g["status"] == "ok", g
+        want = {_n(s[k]) for k in ("old", "old2", "other", "lock")}
+        assert _cands(g) == want, g
+        assert {c["session_id"] for c in _list(g["candidates"])} == {s[k].name for k in ("old", "old2", "other", "lock")}
+        skips = _skips(rep)
+        assert skips[_n(s["keep"])] == "kept by -ClaudeKeep (0badcafe)"
+        assert "used by running process" in skips[_n(s["used"])] and str(procs[0].pid) in skips[_n(s["used"])]
+        assert "used by running process" in skips[_n(s["sid"])] and str(procs[1].pid) in skips[_n(s["sid"])]
+        assert _n(s["young"]) not in skips
+        for k in ("fresh", "freshsub"):
+            assert "session transcript written" in skips[_n(s[k])] and "kept" in skips[_n(s[k])], (k, skips)
+        # a 1-hour limit makes the 2-hour-old session a candidate (dry run)
+        code, out = _run(CLEANUP, base + ["-ClaudeMinAgeHours", "1"], la)
+        assert code == 0, out
+        assert _cands(_groups(_report(out))["claude_temp"]) == want | {_n(s["young"])}
+        code, out = _run(CLEANUP, base + ["-Apply"], la)
+        assert code == 1, out                                # the held file: deletion error
+        rep = _report(out)
+        g = _groups(rep)["claude_temp"]
+        done = {_n(s[k]) for k in ("old", "old2", "other")}
+        assert {_n(c["path"]) for c in _list(g["candidates"]) if c.get("deleted")} == done
+        for k in ("old", "old2", "other"):
+            assert not s[k].exists(), k
+        for k in ("keep", "young", "used", "sid", "fresh", "freshsub"):
+            assert (s[k] / "tasks" / "b.output").is_file(), k
+        assert sub.is_file()                                  # transcripts are only read
+        assert lock_file.is_file()
+        for p in ignored:
+            assert p.is_file(), p
+        assert any(_n(e).startswith(_n(s["lock"]) + ":") for e in _list(g["errors"])), g["errors"]
+        lines = _txt(out)
+        for k in ("old", "old2", "other"):
+            assert any(ln.startswith("deleted claude_temp ") and _n(ln).endswith(_n(s[k])) for ln in lines), (k, lines)
+        nd = [ln for ln in lines if _n(ln).startswith(_n(f"NOT deleted claude_temp {s['lock']} - error: "))]
+        assert len(nd) == 1, lines
+        for k in ("keep", "young", "used", "sid", "fresh", "freshsub"):        # never candidates: no deleted / NOT deleted line
+            assert not any(s[k].name in ln and ln.startswith(("deleted", "NOT deleted")) for ln in lines), (k, lines)
+    finally:
+        _stop(*procs)
+    # once the file is closed the folder goes on the next run
+    code, out = _run(CLEANUP, base + ["-Apply"], la)
+    assert code == 0, out
+    assert not s["lock"].exists() and (s["keep"] / "tasks" / "b.output").is_file()
+    assert (s["fresh"] / "tasks" / "b.output").is_file() and (s["freshsub"] / "tasks" / "b.output").is_file()
+    # the transcripts age: both sessions go (the transcripts themselves stay)
+    for f in [cp / "D--Buymed-Lightgbm-AI" / f"{s['fresh'].name}.jsonl", sub]:
+        os.utime(f, (old.timestamp(), old.timestamp()))
+    code, out = _run(CLEANUP, base + ["-Apply"], la)
+    assert code == 0, out
+    assert not s["fresh"].exists() and not s["freshsub"].exists() and sub.is_file()
+
+
+def test_claude_temp_missing_root_is_skipped(tmp_path: Path):
+    la, proj = tmp_path / "LA", tmp_path / "proj"
+    (proj / "scripts").mkdir(parents=True)
+    la.mkdir()
+    code, out = _run(CLEANUP, ["-ProjectRoot", str(proj), "-TmpRoot", str(tmp_path / "tmproot"), "-Groups", "claude_temp",
+                               "-ClaudeTempRoot", str(tmp_path / "claude"), "-ClaudeProjectsRoot", str(tmp_path / "projects"),
+                               "-Apply"], la)
+    assert code == 0, out
+    g = _groups(_report(out))["claude_temp"]
+    assert g["status"] == "skipped" and g["note"] == "folder not found" and g["candidate_count"] == 0

@@ -48,6 +48,12 @@ forecast_used rule is unchanged.
   of the current and previous version + every backup of the last 7 days are kept (replaces 7 manual / 7 cli / 30
   days). New wrapper `don_dep_current.ps1` runs the script of the installed version (`current.txt`) with the lists of
   `<project>\scripts\ops`; `register-don-dep-task.ps1` registers it by default.
+* **Cleanup script: scoped runs** (owner 08/11/2026 ~19:10): `don_dep_dinh_ky.ps1 -Groups <names>` runs only the named
+  groups (default unchanged); `tmp` gains `-TmpMinAgeHours` (default 24) and `-TmpKeep`; new group `claude_temp`
+  (finished Claude Code session folders `%TEMP%\claude\<project>\<GUID>`: folder and session transcript older than
+  `-ClaudeMinAgeHours`, `-ClaudeKeep`), run only when named in `-Groups`, never by the weekly task; a keep entry that
+  matches nothing refuses the run; tmp and claude_temp candidates are re-checked right before deletion; with `-Apply`
+  the `.txt` report lists every candidate as deleted or not deleted (with the reason).
 * `data-check` `export_files_exist` checks the newest Excel of each day of the last 30 days only (retired / cleaned
   files are expected to be gone).
 

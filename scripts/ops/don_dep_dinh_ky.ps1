@@ -18,8 +18,9 @@
                       %LOCALAPPDATA%\DemandForecast\storage.json (read only); unreadable -> group skipped.
              logs     <data> log folder and <project>\logs\** files older than 30 days: added to
                       logs-archive-YYYYMM.zip next to them (verified) BEFORE deletion; a file in use is never touched.
-             tmp      -TmpRoot (default D:\Buymed\tmp) entries older than 1 day (newest creation / last write time of the
-                      entry and, for a folder, of everything in it) that no running process names on its command line.
+             tmp      -TmpRoot (default D:\Buymed\tmp) entries older than -TmpMinAgeHours (default 24; newest creation /
+                      last write time of the entry and, for a folder, of everything in it) that no running process names on
+                      its command line and that hold no database file in use; names in -TmpKeep are never candidates.
              deploy_temp  %TEMP%\DemandForecast-deploy-* folders older than 1 day (same age rule as tmp) that no
                       running process names on its command line (the managed %TEMP%\DemandForecast-deploy\ is not touched).
              reports  <project>\reports\<folder> with a package* subfolder: data files (.parquet, .csv, .zip,
@@ -44,6 +45,20 @@
                       the current and the previous version are added to its -Keep. Not in the totals (dist_versions
                       covers dist\; its deletions are). prune-artifacts.ps1 is not run at all (plan or apply) while
                       anything under dist\ / release\ is a junction / symlink or unreadable (it recurses through junctions).
+             claude_temp  (owner 08/11; ONLY when named in -Groups, never in the default run / weekly task)
+                      -ClaudeTempRoot (default %TEMP%\claude, long path; leaf name must be "claude"): session folders
+                      <root>\<project>\<GUID> taken as finished when ALL hold: not in -ClaudeKeep (session ids, a prefix
+                      of >= 8 characters allowed); newest creation / last write time of everything inside older than
+                      -ClaudeMinAgeHours (default 24); the session transcript(s) -ClaudeProjectsRoot (default
+                      %USERPROFILE%\.claude\projects)\<any project>\<id>.jsonl and \<id>\** (when they exist) also older
+                      than that (a running session started with --resume names no id / path on its command line); no
+                      running process naming the folder (long, 8.3 or Git Bash form) or the session id; no database
+                      file in use (all checked again right before the deletion). Nothing else under the root (project
+                      folders themselves, bash-edit-diff, files) is ever selected. Root missing -> skipped.
+           -TmpKeep / -ClaudeKeep entries that match no entry / no session folder -> exit 2, nothing done (typo guard).
+           -Groups <names> (comma list allowed) runs only these groups: backups, exports, logs, tmp, deploy_temp,
+           reports, installs, dist_versions, dist, claude_temp; default = every group except claude_temp; an unknown
+           name -> exit 2, nothing done.
            Info only: <project>\worktrees\<name> git worktrees whose version is installed, whose HEAD is on a
            remote-tracking branch, whose tag v<version> exists and whose status is clean -> "worktree_can_remove"
            (never removed here: scripts\ops\archive_worktree.py).
@@ -56,15 +71,23 @@
            expanded first) or holding VERSION with current.txt next to it; a -TmpRoot that is a drive root or the
            project / data / %LOCALAPPDATA% folder or one of their parents.
            Report: <project>\logs\don_dep\don_dep-YYYYMMDD-HHMMSS.json (+ .txt): per group candidates (count, bytes),
-           kept_uncertain, before / after; totals. Exit 0 ok, 1 error, 2 refused.
+           kept_uncertain, before / after; totals. With -Apply the .txt lists every candidate: "deleted <group> <GB>
+           <path>" or "NOT deleted <group> <path> - <reason>". Exit 0 ok, 1 error, 2 refused.
            The weekly task should run scripts\ops\don_dep_current.ps1 (runs the script of the INSTALLED version).
 .EXAMPLE   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ops\don_dep_dinh_ky.ps1            (plan only)
            powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ops\don_dep_dinh_ky.ps1 -Apply     (delete)
            ... -Apply -IncludeDist -DistKeep 1.3.1      (also dist\ retention, keeping the 1.3.1 rollback package)
+           ... -Groups tmp,claude_temp -TmpKeep src148 -ClaudeKeep 145cefda,85d15b29          (plan of these 2 groups)
+           ... -Groups tmp,claude_temp -TmpKeep src148 -ClaudeKeep 145cefda,85d15b29 -Apply   (delete in these 2 only)
 #>
 param([string]$ProjectRoot = "", [switch]$Apply, [switch]$IncludeDist, [string[]]$DistKeep = @(),
       [string]$KeepListFile = "", [string]$ConcludedListFile = "",   # reports lists (default: next to this script)
-      [string]$TmpRoot = "D:\Buymed\tmp")       # owner rule: the only folder on D: this script cleans (tests pass their own)
+      [string]$TmpRoot = "D:\Buymed\tmp",       # owner rule: the only folder on D: this script cleans (tests pass their own)
+      [string[]]$Groups = @(),                  # default: every group except claude_temp
+      [int]$TmpMinAgeHours = 24, [string[]]$TmpKeep = @(),
+      [string]$ClaudeTempRoot = "",             # default %TEMP%\claude (tests pass their own)
+      [string[]]$ClaudeKeep = @(), [int]$ClaudeMinAgeHours = 24,
+      [string]$ClaudeProjectsRoot = "")         # session transcripts, default %USERPROFILE%\.claude\projects (read only)
 $ErrorActionPreference = "Stop"
 $Now = Get-Date
 $Today = $Now.Date
@@ -78,6 +101,27 @@ foreach ($v in $DistKeep) {
 if ($IncludeDist -and $DistKeep.Count -eq 0) {
     Write-Host "-IncludeDist needs -DistKeep <rollback version> (without it prune-artifacts.ps1 deletes the rollback package). Nothing done." -ForegroundColor Red
     exit 2
+}
+# -Groups / -TmpKeep / -ClaudeKeep: "a,b" (one string through -File) or an array, like -DistKeep
+$AllGroups = @("backups", "exports", "logs", "tmp", "deploy_temp", "reports", "installs", "dist_versions", "dist", "claude_temp")
+$Groups = @($Groups | ForEach-Object { "$_".Split(',') } | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ } | Sort-Object -Unique)
+foreach ($n in $Groups) {
+    if ($AllGroups -notcontains $n) { Write-Host "-Groups: unknown group $n (valid: $($AllGroups -join ', ')). Nothing done." -ForegroundColor Red; exit 2 }
+}
+# default run (weekly task): every group except claude_temp, which runs only when named
+$Selected = if ($Groups.Count) { @($AllGroups | Where-Object { $Groups -contains $_ }) } else { @($AllGroups | Where-Object { $_ -ne "claude_temp" }) }
+$TmpKeep = @($TmpKeep | ForEach-Object { "$_".Split(',') } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+foreach ($n in $TmpKeep) {
+    if ($n.IndexOfAny([char[]]@('\', '/', ':')) -ge 0 -or $n -eq "." -or $n -eq "..") {
+        Write-Host "-TmpKeep: an entry name directly under -TmpRoot expected, not a path: $n. Nothing done." -ForegroundColor Red; exit 2
+    }
+}
+$ClaudeKeep = @($ClaudeKeep | ForEach-Object { "$_".Split(',') } | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ })
+foreach ($n in $ClaudeKeep) {
+    if ($n -notmatch '^[0-9a-f][0-9a-f-]{7,35}$') { Write-Host "-ClaudeKeep: a session id (or a prefix of >= 8 characters) expected: $n. Nothing done." -ForegroundColor Red; exit 2 }
+}
+foreach ($h in @(@("-TmpMinAgeHours", $TmpMinAgeHours), @("-ClaudeMinAgeHours", $ClaudeMinAgeHours))) {
+    if ($h[1] -lt 1) { Write-Host "$($h[0]) must be at least 1 (hours): $($h[1]). Nothing done." -ForegroundColor Red; exit 2 }
 }
 Add-Type -Namespace DfCleanup -Name Native -MemberDefinition @'
 [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -269,6 +313,47 @@ foreach ($x in @($ProjectRoot, $DataDir, $LocalApp, $ProgDir)) {
 if ($tmpBad) {
     Write-Host "-TmpRoot $TmpRoot is ${tmpBad}: refused. Nothing done." -ForegroundColor Red
     exit 2
+}
+# -ClaudeTempRoot (claude_temp group): same refusals as -TmpRoot; checked only when the group is selected
+$ClaudeRoot = $null
+if ($ClaudeTempRoot) { $ClaudeRoot = Get-LongPath $ClaudeTempRoot }
+elseif ($env:TEMP -and [IO.Path]::IsPathRooted($env:TEMP)) { $ClaudeRoot = Get-LongPath (Join-Path $env:TEMP "claude") }
+if ($ClaudeRoot -and $Selected -contains "claude_temp") {
+    $cBad = $null
+    if ($ClaudeRoot.Length -le 3) { $cBad = "a drive root" }
+    foreach ($x in @($ProjectRoot, $DataDir, $LocalApp, $ProgDir)) {
+        if (-not $cBad -and $x -and (Test-Under $x $ClaudeRoot)) { $cBad = "$x or one of its parents" }
+    }
+    if (-not $cBad -and (Split-Path $ClaudeRoot -Leaf) -ine "claude") { $cBad = "not a folder named claude" }
+    if ($cBad) {
+        Write-Host "-ClaudeTempRoot $ClaudeRoot is ${cBad}: refused. Nothing done." -ForegroundColor Red
+        exit 2
+    }
+}
+$ProjRootClaude = $null
+if ($ClaudeProjectsRoot) { $ProjRootClaude = Get-LongPath $ClaudeProjectsRoot }
+elseif ($env:USERPROFILE -and [IO.Path]::IsPathRooted($env:USERPROFILE)) { $ProjRootClaude = Get-LongPath (Join-Path $env:USERPROFILE ".claude\projects") }
+
+# typo guard (owner 08/11, g1 copy): a -TmpKeep / -ClaudeKeep entry that matches nothing refuses the whole run
+if ($Selected -contains "tmp") {
+    foreach ($n in $TmpKeep) {
+        if (-not (Test-Path -LiteralPath (Join-Path $TmpRoot $n))) {
+            Write-Host "-TmpKeep: no entry $n under $TmpRoot (typo?). Nothing done." -ForegroundColor Red; exit 2
+        }
+    }
+}
+if ($Selected -contains "claude_temp" -and $ClaudeKeep.Count) {
+    $sids = @()
+    if ($ClaudeRoot -and (Test-Path -LiteralPath $ClaudeRoot -PathType Container)) {
+        foreach ($p in @(Get-ChildItem -LiteralPath $ClaudeRoot -Directory -Force | Where-Object { -not (Test-Reparse $_) })) {
+            $sids += @(Get-ChildItem -LiteralPath $p.FullName -Directory -Force | ForEach-Object { $_.Name.ToLowerInvariant() })
+        }
+    }
+    foreach ($n in $ClaudeKeep) {
+        if (@($sids | Where-Object { $_ -match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' -and $_.StartsWith($n) }).Count -eq 0) {
+            Write-Host "-ClaudeKeep: no session folder $n* under $ClaudeRoot\<project> (typo?). Nothing done." -ForegroundColor Red; exit 2
+        }
+    }
 }
 
 # never deleted, whatever a group finds (prefix match, case-insensitive, long paths: no 8.3 short names)
@@ -547,7 +632,8 @@ function Get-TmpGroup {
         $procs = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.CommandLine } |
                    ForEach-Object { [pscustomobject]@{ pid = $_.ProcessId; cmd = $_.CommandLine.ToLowerInvariant().Replace('/', '\') } })
     } catch { $g.status = "skipped"; $g.note = "process command lines unreadable: nothing selected"; return $g }
-    $limit = $Now.AddDays(-1)
+    $limit = $Now.AddHours(-$TmpMinAgeHours)
+    $g.note = "older than $TmpMinAgeHours h; -TmpKeep: $(if ($TmpKeep.Count) { $TmpKeep -join ', ' } else { 'none' })"
     foreach ($i in @(Get-ChildItem -LiteralPath $TmpRoot -Force)) {
         if (Test-Reparse $i) { Add-Skip $g $i.FullName "reparse point (junction / symlink): not followed, not deleted"; continue }
         # age = newest creation / last write time (a copied file keeps an old last write time); Get-Tree never
@@ -566,6 +652,7 @@ function Get-TmpGroup {
             }
         } else { $bytes = $i.Length }
         $g.before_bytes += $bytes
+        if (@($TmpKeep | Where-Object { $_ -ieq $i.Name }).Count) { Add-Skip $g $i.FullName "kept by -TmpKeep"; continue }
         if ($newest -ge $limit) { continue }
         $needles = @($i.FullName.ToLowerInvariant())
         if ($bash) { $needles += ($bash + "\" + $i.Name.ToLowerInvariant()) }
@@ -576,7 +663,8 @@ function Get-TmpGroup {
         $open = @($files | Where-Object { $_.Name -match '\.(db|sqlite|sqlite3)(-wal|-shm|-journal)?$' -and (Test-InUse $_.FullName) })
         if ($open.Count) { Add-Skip $g $i.FullName "database file in use ($($open[0].Name)): kept"; continue }
         $kind = if ($i.PSIsContainer) { "dir" } else { "file" }
-        [void](Add-Candidate $g $i.FullName $kind $bytes $newest "temporary entry older than 1 day, no running process uses it")
+        $c = Add-Candidate $g $i.FullName $kind $bytes $newest "temporary entry older than $TmpMinAgeHours h, no running process uses it"
+        if ($c) { $c["tmp_entry"] = $true }
     }
     return $g
 }
@@ -610,6 +698,81 @@ function Get-DeployTempGroup {
         if ($users.Count) { Add-Skip $g $i.FullName "used by running process(es) $($users -join ', '): kept"; continue }
         if ($tree.reparse.Count -or $tree.errors.Count) { Add-TreeIssues $g $tree; Add-Skip $g $i.FullName "contains a reparse point / unreadable entry: kept"; continue }
         [void](Add-Candidate $g $i.FullName "dir" $bytes $newest "deploy staging folder older than 1 day, no running process uses it")
+    }
+    return $g
+}
+
+# ------------------------------------------------------------------ finished Claude Code sessions in %TEMP%\claude
+$SessionRe = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+
+function Get-SessionUsers([string]$Path, [string]$Session) {
+    # pids naming the session folder (long / 8.3 / Git Bash form, Get-PathUsers) or the session id; $null = unreadable
+    $procs = Get-ProcLines
+    if ($null -eq $procs) { return $null }
+    $sid = $Session.ToLowerInvariant()
+    return @(@(Get-PathUsers $Path) + @($procs | Where-Object { $_.text.Contains($sid) } | ForEach-Object { $_.pid }) | Sort-Object -Unique)
+}
+
+function Get-TranscriptTime([string]$Session) {
+    # newest last write time of the session transcript <projects>\<any project>\<id>.jsonl and of <projects>\<any
+    # project>\<id>\** (subagent transcripts), READ ONLY; $null = none found. A session resumed with --resume names no
+    # id / path on its command line: its transcript is what shows it is still running.
+    if (-not $ProjRootClaude -or -not (Test-Path -LiteralPath $ProjRootClaude -PathType Container)) { return $null }
+    $newest = $null
+    foreach ($d in @(Get-ChildItem -LiteralPath $ProjRootClaude -Directory -Force | Where-Object { -not (Test-Reparse $_) })) {
+        $f = Join-Path $d.FullName "$Session.jsonl"
+        if (Test-Path -LiteralPath $f -PathType Leaf) {
+            $t = (Get-Item -LiteralPath $f -Force).LastWriteTime
+            if ($null -eq $newest -or $t -gt $newest) { $newest = $t }
+        }
+        $sd = Join-Path $d.FullName $Session
+        if (Test-Path -LiteralPath $sd -PathType Container) {
+            $tr = Get-Tree $sd
+            foreach ($x in $tr.files) { if ($null -eq $newest -or $x.LastWriteTime -gt $newest) { $newest = $x.LastWriteTime } }
+        }
+    }
+    return $newest
+}
+
+function Get-ClaudeTempGroup {
+    if (-not $ClaudeRoot) { $g = New-Group "claude_temp" @(); $g.status = "skipped"; $g.note = "TEMP not set and no -ClaudeTempRoot"; return $g }
+    $g = New-Group "claude_temp" @($ClaudeRoot)
+    if (-not (Test-GroupRoot $g $ClaudeRoot)) { $g.status = "skipped"; $g.note = "reparse point in path: nothing selected"; return $g }
+    if (-not (Test-Path -LiteralPath $ClaudeRoot -PathType Container)) { $g.status = "skipped"; $g.note = "folder not found"; return $g }
+    if ($null -eq (Get-ProcLines)) { $g.status = "skipped"; $g.note = "process command lines unreadable: nothing selected"; return $g }
+    $limit = $Now.AddHours(-$ClaudeMinAgeHours)
+    $trn = if ($ProjRootClaude -and (Test-Path -LiteralPath $ProjRootClaude -PathType Container)) { $ProjRootClaude } else { "none found ($ProjRootClaude): folder age only" }
+    $g.note = "session folders <project>\<GUID> older than $ClaudeMinAgeHours h (before = these folders only); transcripts: $trn; -ClaudeKeep: $(if ($ClaudeKeep.Count) { $ClaudeKeep -join ', ' } else { 'none' })"
+    # only <root>\<project>\<GUID>: files under the root, project folders themselves and non-GUID folders are ignored
+    foreach ($p in @(Get-ChildItem -LiteralPath $ClaudeRoot -Directory -Force)) {
+        if (Test-Reparse $p) { Add-Skip $g $p.FullName "reparse point (junction / symlink): not followed, not deleted"; continue }
+        foreach ($i in @(Get-ChildItem -LiteralPath $p.FullName -Directory -Force | Where-Object { $_.Name -match $SessionRe })) {
+            if (Test-Reparse $i) { Add-Skip $g $i.FullName "reparse point (junction / symlink): not followed, not deleted"; continue }
+            $tree = Get-Tree $i.FullName
+            $bytes = Get-Sum $tree.files
+            $g.before_bytes += $bytes
+            $sid = $i.Name.ToLowerInvariant()
+            $k = @($ClaudeKeep | Where-Object { $sid.StartsWith($_) })
+            if ($k.Count) { Add-Skip $g $i.FullName "kept by -ClaudeKeep ($($k[0]))"; continue }
+            $newest = $i.LastWriteTime
+            if ($i.CreationTime -gt $newest) { $newest = $i.CreationTime }
+            foreach ($lst in @($tree.files, $tree.dirs)) {
+                foreach ($x in $lst) {
+                    if ($x.LastWriteTime -gt $newest) { $newest = $x.LastWriteTime }
+                    if ($x.CreationTime -gt $newest) { $newest = $x.CreationTime }
+                }
+            }
+            if ($newest -ge $limit) { continue }
+            $tt = Get-TranscriptTime $sid
+            if ($null -ne $tt -and $tt -ge $limit) { Add-Skip $g $i.FullName "session transcript written $($tt.ToString('s')) (newer than $ClaudeMinAgeHours h): session may be running, kept"; continue }
+            $users = @(Get-SessionUsers $i.FullName $sid)
+            if ($users.Count) { Add-Skip $g $i.FullName "used by running process(es) $($users -join ', '): kept"; continue }
+            if ($tree.reparse.Count -or $tree.errors.Count) { Add-TreeIssues $g $tree; Add-Skip $g $i.FullName "contains a reparse point / unreadable entry: kept"; continue }
+            $open = @($tree.files | Where-Object { $_.Name -match '\.(db|sqlite|sqlite3)(-wal|-shm|-journal)?$' -and (Test-InUse $_.FullName) })
+            if ($open.Count) { Add-Skip $g $i.FullName "database file in use ($($open[0].Name)): kept"; continue }
+            $c = Add-Candidate $g $i.FullName "dir" $bytes $newest "finished Claude Code session: folder and transcript older than $ClaudeMinAgeHours h, no running process names it"
+            if ($c) { $c["session_id"] = $sid }
+        }
     }
     return $g
 }
@@ -893,6 +1056,39 @@ function Remove-Candidate($G, $C) {
             $users = @(Get-PathUsers $p)
             if ($users.Count) { Add-Skip $G $p "used by running process(es) $($users -join ', ') at deletion time: not deleted"; return }
         }
+        if ($C.Contains("session_id")) {
+            # claude_temp: process list read again, age and open database files checked again right before the deletion
+            $Script:ProcLines = $null
+            if ($null -eq (Get-ProcLines)) { Add-Skip $G $p "process list unreadable at deletion time: not deleted"; return }
+            $users = @(Get-SessionUsers $p $C.session_id)
+            if ($users.Count) { Add-Skip $G $p "used by running process(es) $($users -join ', ') at deletion time: not deleted"; return }
+            $t = Get-Tree $p
+            $limit = $Now.AddHours(-$ClaudeMinAgeHours)
+            $young = @($t.files.ToArray() + $t.dirs.ToArray() | Where-Object { $_.LastWriteTime -ge $limit -or $_.CreationTime -ge $limit })
+            if ($young.Count -or $it.LastWriteTime -ge $limit -or $it.CreationTime -ge $limit) { Add-Skip $G $p "changed after the plan (newer than $ClaudeMinAgeHours h) at deletion time: not deleted"; return }
+            $open = @($t.files | Where-Object { $_.Name -match '\.(db|sqlite|sqlite3)(-wal|-shm|-journal)?$' -and (Test-InUse $_.FullName) })
+            if ($open.Count) { Add-Skip $G $p "database file in use ($($open[0].Name)) at deletion time: not deleted"; return }
+            $tt = Get-TranscriptTime $C.session_id
+            if ($null -ne $tt -and $tt -ge $limit) { Add-Skip $G $p "session transcript written $($tt.ToString('s')) at deletion time: not deleted"; return }
+        }
+        if ($C.Contains("tmp_entry")) {
+            # tmp: process command lines read again (same needles as Get-TmpGroup), age and open database files
+            # checked again right before the deletion
+            $Script:ProcLines = $null
+            $procs = Get-ProcLines
+            if ($null -eq $procs) { Add-Skip $G $p "process list unreadable at deletion time: not deleted"; return }
+            $needles = @($p.ToLowerInvariant())
+            if ($p -match '^([A-Za-z]):\\(.*)$') { $needles += ("\" + $Matches[1] + "\" + $Matches[2]).ToLowerInvariant() }
+            $users = @($procs | Where-Object { $q = $_; @($needles | Where-Object { $q.text.Contains($_) }).Count -gt 0 } | ForEach-Object { $_.pid })
+            if ($users.Count) { Add-Skip $G $p "used by running process(es) $($users -join ', ') at deletion time: not deleted"; return }
+            $limit = $Now.AddHours(-$TmpMinAgeHours)
+            $all = @($it)
+            if ($it.PSIsContainer) { $t = Get-Tree $p; $all += $t.files.ToArray() + $t.dirs.ToArray() }
+            $young = @($all | Where-Object { $_.LastWriteTime -ge $limit -or $_.CreationTime -ge $limit })
+            if ($young.Count) { Add-Skip $G $p "changed after the plan (newer than $TmpMinAgeHours h) at deletion time: not deleted"; return }
+            $open = @($all | Where-Object { -not $_.PSIsContainer -and $_.Name -match '\.(db|sqlite|sqlite3)(-wal|-shm|-journal)?$' -and (Test-InUse $_.FullName) })
+            if ($open.Count) { Add-Skip $G $p "database file in use ($($open[0].Name)) at deletion time: not deleted"; return }
+        }
         if ($it.PSIsContainer) {
             $t = Get-Tree $p
             if ($t.reparse.Count -or $t.errors.Count) { Add-TreeIssues $G $t; Add-Skip $G $p "reparse point / unreadable entry at deletion time: not deleted"; return }
@@ -974,27 +1170,31 @@ $stamp = $Now.ToString("yyyyMMdd-HHmmss")
 $outDir = Join-Path $ProjectRoot "logs\don_dep"
 $report = [ordered]@{ tool = "scripts\ops\don_dep_dinh_ky.ps1"; mode = $mode; started_at = $Now.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
                       local_time = $Now.ToString("s"); project_root = $ProjectRoot; include_dist = [bool]$IncludeDist
-                      dist_keep = @($DistKeep); tmp_root = $TmpRoot
+                      dist_keep = @($DistKeep); tmp_root = $TmpRoot; groups_selected = @($Selected)
+                      tmp_min_age_hours = $TmpMinAgeHours; tmp_keep = @($TmpKeep); claude_temp_root = $ClaudeRoot
+                      claude_keep = @($ClaudeKeep); claude_min_age_hours = $ClaudeMinAgeHours
                       data_dir = $DataDir; storage_note = $Storage.note; current_version = $Inst.current
                       previous_version = $Inst.previous; install_note = $Inst.note; groups = @(); totals = $null
                       kept_uncertain = @(); worktrees = @(); errors = @(); exit_code = 0 }
-$groups = @()
+$results = @()
 # dist_versions before dist: its own deletions first, prune-artifacts.ps1 (-IncludeDist) afterwards
 $fns = [ordered]@{ "Get-BackupGroup" = "backups"; "Get-ExportGroup" = "exports"; "Get-LogGroup" = "logs"; "Get-TmpGroup" = "tmp"
                    "Get-DeployTempGroup" = "deploy_temp"; "Get-ReportGroup" = "reports"; "Get-InstallGroup" = "installs"
-                   "Get-DistVersionGroup" = "dist_versions"; "Get-DistGroup" = "dist" }
+                   "Get-DistVersionGroup" = "dist_versions"; "Get-DistGroup" = "dist"; "Get-ClaudeTempGroup" = "claude_temp" }
 foreach ($fn in @($fns.Keys)) {
-    try { $groups += , (& $fn) }
+    if ($Selected -notcontains $fns[$fn]) { continue }       # -Groups: the other groups are not computed at all
+    try { $results += , (& $fn) }
     catch {
         $gname = $fns[$fn]
         $g = New-Group $gname @()
         $g.status = "error"; [void]$g.errors.Add("line $($_.InvocationInfo.ScriptLineNumber): $($_.Exception.Message) $($_.ScriptStackTrace)")
-        $groups += , $g
+        $results += , $g
     }
 }
 if ($Apply) {
-    foreach ($g in $groups) {
+    foreach ($g in $results) {
         if ($g.status -ne "ok") { continue }
+        $g["applied"] = $true
         if ($g.group -eq "logs") { Invoke-LogArchive $g }
         elseif ($g.group -eq "dist") { Invoke-DistApply $g }
         else { foreach ($c in @($g.candidates)) { Remove-Candidate $g $c } }
@@ -1003,7 +1203,7 @@ if ($Apply) {
 $tot = [ordered]@{ before_bytes = 0L; candidate_count = 0; candidate_bytes = 0L; after_bytes = 0L; deleted_count = 0; deleted_bytes = 0L
                    kept_uncertain_count = 0; kept_uncertain_bytes = 0L }
 $uncertain = New-Object System.Collections.ArrayList
-foreach ($g in $groups) {
+foreach ($g in $results) {
     if ($Apply) { $g.after_bytes = $g.before_bytes - $g.deleted_bytes }
     elseif ($g.group -eq "dist" -and -not $IncludeDist) { $g.after_bytes = $g.before_bytes }
     else { $g.after_bytes = $g.before_bytes - $g.candidate_bytes }
@@ -1015,18 +1215,18 @@ foreach ($g in $groups) {
     $keys = if ($g.group -eq "dist") { @("deleted_count", "deleted_bytes") } else { @("before_bytes", "candidate_count", "candidate_bytes", "after_bytes", "deleted_count", "deleted_bytes") }
     foreach ($k in $keys) { $tot[$k] += $g[$k] }
 }
-$report.groups = $groups
+$report.groups = $results
 $report.totals = $tot
 $report.kept_uncertain = $uncertain
 try { $report.worktrees = Get-WorktreeInfo }
 catch { $report.errors += "worktree info: $($_.Exception.Message)" }
-$failed = @($groups | Where-Object { $_.status -eq "error" }).Count -gt 0
+$failed = @($results | Where-Object { $_.status -eq "error" }).Count -gt 0
 $report.exit_code = if ($failed) { 1 } else { 0 }
 
 $gb = { param($b) "{0:N3} GB" -f ($b / 1GB) }
-$lines = @("Don dep dinh ky / periodic cleanup  mode=$mode  $($Now.ToString('s'))  project=$ProjectRoot")
+$lines = @("Don dep dinh ky / periodic cleanup  mode=$mode  $($Now.ToString('s'))  project=$ProjectRoot  groups=$($Selected -join ',')")
 if (-not $Apply) { $lines += "DRY RUN: nothing deleted. Re-run with -Apply to delete the candidates (dist only with -IncludeDist)." }
-foreach ($g in $groups) {
+foreach ($g in $results) {
     $lines += ("{0,-13} {1,-8} candidates {2,5}  {3,12}  before {4,12}  after {5,12}{6}  uncertain {7}  skipped {8}  errors {9}  {10}" -f
                $g.group, $g.status, $g.candidate_count, (& $gb $g.candidate_bytes), (& $gb $g.before_bytes), (& $gb $g.after_bytes),
                $(if ($g.after_is_projection) { "*" } else { " " }), $g.kept_uncertain.Count, $g.skipped.Count, $g.errors.Count, $g.note)
@@ -1036,6 +1236,29 @@ $lines += ("TOTAL         candidates {0,5}  {1,12}  before {2,12}  after {3,12} 
            (& $gb $tot.deleted_bytes), $tot.kept_uncertain_count, (& $gb $tot.kept_uncertain_bytes))
 if (-not $Apply) { $lines += "* after = projection if applied (logs: archives add their compressed size; dist = prune-artifacts.ps1 plan, not in the totals)" }
 foreach ($u in $uncertain) { $lines += ("kept_uncertain  {0,-13} {1,12}  {2}  - {3}" -f $u.group, (& $gb $u.bytes), $u.path, $u.reason) }
+if ($Apply) {
+    # owner 08/11: every candidate of an APPLY run in the .txt, deleted or not (with the reason)
+    foreach ($g in $results) {
+        foreach ($c in @($g.candidates)) {
+            if ($c.Contains("deleted") -and $c.deleted) { $lines += ("deleted {0} {1} {2}" -f $g.group, (& $gb $c.bytes), $c.path); continue }
+            $why = $null
+            $sk = @($g.skipped | Where-Object { $_.path -eq $c.path })
+            if ($sk.Count) { $why = $sk[$sk.Count - 1].reason }
+            if (-not $why) {
+                $pre = @("$($c.path):")
+                if ($c.Contains("archive")) { $pre += "$($c.archive):" }
+                $er = @($g.errors | Where-Object { $e = "$_"; @($pre | Where-Object { $e.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0 })
+                if ($er.Count) { $why = "error: $($er[$er.Count - 1])" }
+            }
+            if (-not $why) {
+                $why = if (-not $g.Contains("applied")) { "group not applied (status $($g.status))" }
+                       elseif ($g.group -eq "dist" -and -not $IncludeDist) { "dist: deleted only with -IncludeDist" }
+                       else { "no reason recorded" }
+            }
+            $lines += ("NOT deleted {0} {1} - {2}" -f $g.group, $c.path, $why)
+        }
+    }
+}
 foreach ($w in @($report.worktrees)) {
     if ($w.can_remove) { $lines += "worktree_can_remove  $($w.path)  (branch $($w.branch), version $($w.version))" }
     else { $lines += "worktree_kept  $($w.path)  ($($w.reason))" }
