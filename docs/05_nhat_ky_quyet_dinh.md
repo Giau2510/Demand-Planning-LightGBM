@@ -671,3 +671,21 @@ Căn cứ (`reports\release-1.4.5-20261107`):
   - `lightgbm_forecast` là số nguyên.
   - FALLBACK 37,27 % trên tất cả SKU×kho / 16,89 % trên SKU×kho có mở bán.
   - Có dòng nhắc giờ mở bán; C8 tự chuyển 4 mã sang LIGHTGBM.
+
+## 08/11/2026 07:25 – ĐÃ TỰ DUYỆT: cài 1.4.6 + push github/1.4.6 + tag v1.4.6 (`4d33cf4`)
+
+Căn cứ (`reports\release-1.4.6-20261108`):
+* **Test:** lần 2 đạt. Lần 1 lỗi 1 test cũ chưa tính bước `giai_thich`; đã sửa test.
+* **Review:** reviewer 2 lượt, không có lỗi nghiêm trọng; các điểm nên sửa đã sửa.
+* **Sao lưu + thử khôi phục:** đạt (`backup-20261108-052515-pre-146.zip`).
+* **Cài:** 06:12–07:04; UPGRADE OK. App dừng khoảng 13 phút.
+* **Kiểm tra sau cài:** đạt.
+* **Excel 08/11 v2:** 1.175.300 dòng; 0 dòng sai quy tắc; tách mã đúng; is_stale 0.
+  - Chưa có sheet GIAI_THICH: lượt chạy 08/11 do 1.4.5 công bố. Sheet có từ file 09/11.
+* **data-check:** 0 FAIL. Các WARN đều đã có từ trước:
+  - open_hours_window_ready 2.734;
+  - forecast_series_meta 1;
+  - finalized_days_changed 310;
+  - history_source_drift 296;
+  - export_files_exist 2.
+* **Push:** nhánh github/1.4.6 và tag v1.4.6 cùng ở `4d33cf4`.
