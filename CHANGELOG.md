@@ -5,7 +5,20 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
-## 1.4.6 (unreleased) (daily Excel: sheet GIAI_THICH explaining the number of day D)
+## 1.4.7 (web pages: 20 days + target-date filter, C4)
+
+Owner approval 08/11/2026 ~11:00 (C4, approved for now - layout to be optimised later). UI and read-only API only: no
+schema change (schema 12), no change to any forecast number, to the daily Excel or to the fixed forecast_used rule.
+Screenshots before / after and the page-vs-Excel check (1,174,380 / 1,174,380 rows, 20 / 20 daily totals):
+`reports/1.4.6-ui/`.
+
+* **Kết quả dự báo** (Results): horizon 1..20; days 8..20 labelled "Ước tính theo tuần"; column `Cách tính`; filter
+  from date - to date (`api/sel2_view.py`, `api/daily_routes.py`).
+* **Dự báo hằng ngày** (Daily forecast): date filter, day 1..20 selector, column `Cách tính`.
+* **Lịch sử**: the from date - to date fields are always shown.
+* Menu, page names and the 17 other pages unchanged.
+
+## 1.4.6 (08/11/2026) (daily Excel: sheet GIAI_THICH explaining the number of day D)
 
 Owner decision 06/11/2026 21:20 (C3). No schema change (schema 12). The fixed forecast_used rule (CLAUDE.md) and every
 cell of the sheets `DU_BAO_<fc_code>` / `CONFIG` are unchanged; TOM_TAT only gets lines at its end when the new sheet

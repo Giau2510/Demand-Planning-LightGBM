@@ -698,3 +698,20 @@ Căn cứ (`reports\release-1.4.6-20261108`):
 * **Chưa cài** (không kịp trước 12:00). App không lưu dòng đơn theo customer_id, nên cần đường dữ liệu dòng SO + bảng mới.
 * **Đề xuất xác nhận trên mẫu 10 %** trước khi làm 1.4.7, vì mẫu nhỏ. Chờ chủ dự án.
 * **Báo cáo:** `reports\backtest-ngay1-7-20261107\v3_mau015\`; báo cáo gộp `reports\bao-cao\BAO_CAO_20261108_0950.md`.
+
+## 08/11/2026 11:00 – Chủ dự án: TỔNG HỢP 08/11 (thay mọi prompt lẻ trước đó)
+
+Ghi nguyên ý các quyết định (bản tóm tắt cũng ở `CLAUDE.md`, mục "Tổng hợp 08/11/2026 ~11:00"):
+* **A. Quy tắc cố định mới:**
+  - Mọi tính năng làm thay đổi dữ liệu học hoặc số dự báo phải có CÔNG TẮC CẤU HÌNH, MẶC ĐỊNH TẮT; tắt thì kết quả TRÙNG TUYỆT ĐỐI bản đang chạy; chỉ bật khi đã kiểm chứng đạt. Không thay đổi nào được ảnh hưởng D-1, làm mới dự báo, xuất file đúng giờ.
+  - Worktree: chỉ trong `D:\Buymed\Lightgbm AI\worktrees\`, tối đa 1 worktree làm việc; xong phiên bản (cài + push) thì gỡ ngay; gói cài mỗi bản chỉ giữ 1 bản trong `dist\`.
+  - Báo cáo chat định kỳ 07:00 và 19:00 (không còn 12:00).
+* **B. Test xác nhận làm sạch đột biến 1–7:** L0 / N=4 / N=5, mẫu 10 %, chấm tháng 7–10 + cả kỳ, THEO_SKU + thống kê theo SKU. Quy tắc chọn như cũ.
+* **C. Đường dữ liệu dòng đơn → bản 1.4.8**, cài với công tắc `spike_cleaning` TẮT (`spike_e4_n` = 4); bước riêng sau D-1, không sửa D-1; 3 phép chứng minh trước khi cài. B đạt → tự bật, học lại, kiểm file sáng hôm sau; B không đạt → giữ tắt, dừng hướng làm sạch đột biến.
+* **D. Giao diện C4 ĐÃ DUYỆT (tạm)** → bản 1.4.7 chỉ C4, cài hôm nay.
+* **E. Dọn dung lượng** theo các quy tắc của prompt; xoá sau khi B xong; không chắc thì giữ.
+* **F.** D1 nạp 2025 (chưa học), D2 học lại mỗi ngày (chỉ báo).
+* **G. Danh sách cải tiến** (chưa làm): phần vượt đột biến tính trên BigQuery khi lên máy chủ công ty; gộp main ~11/11 (báo trước); Tết tháng 12 bằng 2025; tối ưu giao diện C4; test giao diện chập chờn; tắt lịch trên máy này khi máy chủ công ty chạy.
+
+Đã làm ngay:
+* 11:02: bắt đầu test B qua runner `DemandForecastRunnerB10` (`reports\bt-runner-17b10-20261108\plan.json`, kết quả `reports\backtest-ngay1-7-20261107\v3_mau10\`).
