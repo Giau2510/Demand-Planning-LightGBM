@@ -18,16 +18,24 @@ forecast_used rule is unchanged.
   min(5 GB, `maximum_bytes_billed`); about **3.1 GB scanned per night**, the source has no date pruning) into
   `so_lines_cache` (210 days, the only pruned table: a re-readable working copy, owner 08/11), then the spike flags of
   the lines (`ml/sel2/spike.py`, logic v3, H180; first run: every cached line; later nights: D-30 .. D-1 recomputed,
-  older stored lines only get their next purchase day) and the excess as of D (level 1, E4 = `spike_e4_n`). Separate
+  from the day of the last flag run after a gap of more than 30 nights, older stored lines only get their next purchase day; the full derivation runs until it has once finished for the
+  scope, so a night whose flags failed heals the next night; `--initial` refuses once flags exist unless `--reflag`)
+  and the excess as of D (level 1, E4 = `spike_e4_n`). Separate
   from D-1 (never delays it); a failure = job FAILED + one WARNING alert `SPIKE_LINES_FAILED`, nothing else.
   Scheduling: switch OFF -> after today's forecast refresh (every other plan exactly as 1.4.7); switch ON -> right
-  after D-1, the refresh and the trainings wait for it at most 45 minutes. CLI `spike-lines --date D [--initial]
+  after D-1, the refresh and the trainings wait for it at most 45 minutes after it was planned. It runs in its own
+  scheduler worker (D-0 and the exports never queue behind it), is a heavy job (one heavy job at a time) and its cache
+  / flag writes are short 7-day transactions. CLI `spike-lines --date D [--initial [--reflag]]
   [--dry-run] [--yes]`.
 * **Switch `sel2_pipeline.spike_cleaning`** (OFF): ON -> the SEL2 LightGBM training (as of its origin) and candidates
   (as of D) read the demand minus the excess; TSB / DOW4 / AVG7 read the cleaned daily demand; actuals, groups, open
   hours and scope stay raw; run detail `spike_cleaning` (e4_n, excess total), `config_version` includes the switch only
-  when ON. Flags missing / too old -> no cleaning + flag `SPIKE_CLEANING_SKIPPED` (+ WARNING alert); flags of an earlier
-  night -> cleaning + flag `SPIKE_FLAGS_STALE`.
+  when ON. Flags of an earlier night (at most 7 days old) -> cleaning with the excess as of the night they were
+  computed for, flag `SPIKE_FLAGS_STALE`; flags missing, older or undecidable -> no cleaning + flag
+  `SPIKE_CLEANING_SKIPPED` (+ WARNING alert). Only flags of days in the data window are read.
+* **Rollback** of 1.4.8: restore the pre-upgrade backup (the application refuses a database newer than it knows;
+  writes made after the upgrade are lost), or - approved separately, on the database itself - drop the 3 new
+  tables (`demand_excess_daily`, `spike_flag_lines`, `so_lines_cache`) and the `schema_migrations` row 13.
 * **Customer ids** are stored in `so_lines_cache` / `spike_flag_lines` and therefore in the database backups; never in
   logs, job results, alerts or reports.
 * `data-check`: `so_lines_cache_matches_demand` (WARN, per day x SKU x FC of the cache window) and the spike checks.

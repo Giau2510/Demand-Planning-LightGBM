@@ -254,8 +254,11 @@ Khi `sel2_pipeline.enabled` = True (mặc định). `False` = công tắc khẩn
   `sel2-bootstrap [--days 35]`, `sel2-replay --from D --to D --out DIR [--copy-ok]` (chỉ trên BẢN SAO DB, không công
   bố: với `--yes` cần `copy_info.json` cạnh `app.db` hoặc `--copy-ok`, nếu không `SEL2_REPLAY_NOT_A_COPY`).
   `sel2-avg-read --date` chỉ nhận hôm nay (`AVG_CURRENT_ONLY_TODAY`); ngày đã qua dùng `--hist-from` / `--hist-to`.
+- 1.4.8 `SPIKE_LINES` chạy trong luồng riêng của scheduler (D-0 / xuất Excel không phải xếp hàng sau nó), là job nặng
+  (mỗi lúc một job nặng); mọi lỗi (kể cả TIMEOUT, thiếu bộ nhớ) = FAILED + một cảnh báo WARNING, không thử lại.
 - 1.4.8 `SPIKE_LINES` khi `sel2_pipeline.spike_cleaning` BẬT: `FORECAST_REFRESH` và `CANDIDATE_TRAIN` (tuần và bù) chờ
-  job này khi nó đã lên lịch / PENDING / RUNNING, tối đa 45 phút tính từ lúc tạo dòng job, rồi chạy tiếp (lỗi của nó
+  job này khi nó đã lên lịch / đang xếp hàng / PENDING / RUNNING, tối đa 45 phút tính từ lúc lên lịch (hoặc tạo dòng
+  job), rồi chạy tiếp (lỗi của nó
   không bao giờ chặn). Khi TẮT (mặc định): mọi quyết định lịch khác giữ nguyên như 1.4.7 (kiểm thử so từng tick với
   bộ lập lịch 1.4.7). CLI: `spike-lines --date D [--initial] [--dry-run] [--yes]` (`--dry-run`: chỉ ước tính byte
   BigQuery; không `--yes`: chỉ in kế hoạch).

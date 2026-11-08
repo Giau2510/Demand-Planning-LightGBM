@@ -230,21 +230,29 @@ def _spike_checks(c) -> list[dict]:
               "LEFT JOIN demand_daily d ON d.scope_key = x.scope_key AND d.order_date = x.d AND d.sku_id = x.sku_code "
               "AND d.fc_id = x.fc_code WHERE d.qty IS NULL OR d.qty < x.excess - 1e-6 LIMIT 50"), fail=False))
     # 1.4.8 C-2: the SO-line read uses the D-1 filters, so per day x SKU x FC of the cache window (first .. last cached
-    # day of the scope) the summed lines equal the stored demand; both directions, keys and quantities only
-    diff = []
+    # day of the scope) the summed lines equal the stored demand. One pass over each table per scope (lines and demand
+    # rows unioned, grouped once): mismatching cells counted, their distinct days counted, the first 50 as examples
+    # (scope, day, SKU, FC, lines qty or None, demand qty or None); keys and quantities only, never a customer id
+    n_cells = n_days = 0
+    examples = []
     for s in _scopes(c, "so_lines_cache"):
         lo, hi = _q(c, "SELECT MIN(order_date), MAX(order_date) FROM so_lines_cache WHERE scope_key=?", (s,))[0]
-        diff += _q(c, "WITH l AS (SELECT order_date AS d, sku_code AS sku, fc_code AS fc, SUM(qty) AS q FROM "
-                      "so_lines_cache WHERE scope_key=? GROUP BY 1, 2, 3), m AS (SELECT order_date AS d, sku_id AS sku, "
-                      "fc_id AS fc, qty AS q FROM demand_daily WHERE scope_key=? AND order_date BETWEEN ? AND ?) "
-                      "SELECT ?, l.d, l.sku, l.fc, l.q, m.q FROM l LEFT JOIN m ON m.d = l.d AND m.sku = l.sku AND "
-                      "m.fc = l.fc WHERE ABS(l.q - COALESCE(m.q, 0)) > 1e-6 UNION ALL "
-                      "SELECT ?, m.d, m.sku, m.fc, NULL, m.q FROM m LEFT JOIN l ON l.d = m.d AND l.sku = m.sku AND "
-                      "l.fc = m.fc WHERE l.q IS NULL AND ABS(m.q) > 1e-6 ORDER BY 2, 3, 4", (s, s, lo, hi, s, s))
-    out.append(_check("so_lines_cache_matches_demand", "per day x SKU x FC of the cache window the summed SO lines of "
-                      "so_lines_cache equal demand_daily of the BIGQUERY scope (same D-1 filters; a difference = late "
-                      "data, a D-1 not reloaded, or a source change; examples: scope, day, SKU, FC, lines qty, demand qty)",
-                      diff, fail=False))
+        rows = _q(c, "WITH x AS (SELECT d, sku, fc, SUM(lq) AS lq, SUM(mq) AS mq FROM (SELECT order_date AS d, sku_code "
+                     "AS sku, fc_code AS fc, qty AS lq, NULL AS mq FROM so_lines_cache WHERE scope_key=? UNION ALL "
+                     "SELECT order_date, sku_id, fc_id, NULL, qty FROM demand_daily WHERE scope_key=? AND order_date "
+                     "BETWEEN ? AND ?) GROUP BY 1, 2, 3 HAVING ABS(COALESCE(SUM(lq), 0) - COALESCE(SUM(mq), 0)) > 1e-6) "
+                     "SELECT ?, d, sku, fc, lq, mq, COUNT(*) OVER (), DENSE_RANK() OVER (ORDER BY d DESC) FROM x "
+                     "ORDER BY d, sku, fc LIMIT 50", (s, s, lo, hi, s))
+        if rows:
+            n_cells += rows[0][6]
+            n_days += rows[0][7]
+            examples += [tuple(r[:6]) for r in rows]
+    chk = _check("so_lines_cache_matches_demand", "per day x SKU x FC of the cache window the summed SO lines of "
+                 "so_lines_cache equal demand_daily of the BIGQUERY scope (same D-1 filters; a difference = late data, a "
+                 "D-1 not reloaded, or a source change; examples: scope, day, SKU, FC, lines qty, demand qty)",
+                 n_cells, fail=False)
+    chk.update(days=n_days, examples=[list(x) for x in examples[:50]])
+    out.append(chk)
     return out
 
 

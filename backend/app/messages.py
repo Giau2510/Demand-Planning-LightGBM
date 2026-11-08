@@ -538,6 +538,8 @@ CATALOG: dict[str, tuple[str, str]] = {
                            "Tonight's SO-line read and spike flagging step failed — D-1, the forecast refresh and the Excel file run as usual; see the SPIKE_LINES job."),
     "SPIKE_LINES_NO_CUSTOMER": ("Chưa cấu hình cột mã khách hàng (bigquery.customer_id_column) — không đọc dòng đơn SO để đánh dấu đơn đột biến.",
                                 "The customer column (bigquery.customer_id_column) is not set — the SO lines for the spike flags are not read."),
+    "SPIKE_LINES_REFLAG_REQUIRED": ("Phạm vi này đã có dấu đột biến (dữ liệu học của làm sạch đột biến) — --initial chỉ chạy kèm --reflag (tính lại toàn bộ dấu của các dòng trong bộ nhớ đệm).",
+                                    "This scope already has spike flags (training data of the spike cleaning) — --initial runs only with --reflag (derives the flags of every cached line again)."),
     "SPIKE_CLEANING_SKIPPED": ("Làm sạch đơn đột biến đang bật nhưng chưa có dấu đột biến đủ mới cho ngày này — lần chạy dùng số bán gốc (không làm sạch).",
                                "Spike cleaning is on but no recent enough spike flags exist for this day — the run uses the raw demand (no cleaning)."),
 }

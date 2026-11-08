@@ -43,7 +43,8 @@
                                             runs (default trigger cli; the app's jobs pass their own)
                                             sel2-* / sel2-export: an unexpected error prints {ok: false, code
                                             SEL2_INTERNAL_ERROR (SEL2_LOW_MEMORY for MemoryError), detail}, exit 1
-  spike-lines --date D [--initial] [--dry-run] [--yes]   1.4.8: SO lines of the BIGQUERY scope into so_lines_cache
+  spike-lines --date D [--initial [--reflag]] [--dry-run] [--yes]   1.4.8: SO lines of the BIGQUERY scope into
+                                            so_lines_cache
                                             (read-only BigQuery, < 5 GB per query), spike flags + excess of day D
                                             (spike_lines.py). --dry-run: the BigQuery dry run only (estimated bytes);
                                             without --yes: the database path and the read range only
@@ -237,6 +238,9 @@ def main(argv=None) -> int:
     spl.add_argument("--date", required=True, help="the run day D (data up to D-1, YYYY-MM-DD)")
     spl.add_argument("--initial", action="store_true", help="read the whole cache window (210 days) again")
     spl.add_argument("--dry-run", action="store_true", help="BigQuery dry run only: estimated bytes, nothing written")
+    spl.add_argument("--reflag", action="store_true", help="derive the spike flags of every cached line again "
+                                                             "(re-derivation of training flags; needed with --initial "
+                                                             "once the scope has flags)")
     spl.add_argument("--yes", action="store_true", help="read and write (without it: the plan only)")
     a = ap.parse_args(argv)
     from . import paths
@@ -749,7 +753,7 @@ def _spike_lines(a) -> int:
     except ValueError:
         print(json.dumps({"ok": False, **out, "refused": "--date must be YYYY-MM-DD"}, indent=2, ensure_ascii=False))
         return 2
-    out["args"] = {"date": str(d), "initial": a.initial}
+    out["args"] = {"date": str(d), "initial": a.initial, "reflag": a.reflag}
     try:
         if not a.yes and not a.dry_run:
             sk = spike_lines._scope_key()
@@ -761,7 +765,7 @@ def _spike_lines(a) -> int:
             return 0
         from .logging_setup import setup_logging
         setup_logging(console=False, filename=f"{a.cmd}.log")
-        res = spike_lines.run(d, initial=a.initial, dry_run=a.dry_run)
+        res = spike_lines.run(d, initial=a.initial, dry_run=a.dry_run, reflag=a.reflag)
     except AppError as e:
         print(json.dumps({"ok": False, **out, **e.to_dict()}, indent=2, ensure_ascii=False, default=str))
         return 1

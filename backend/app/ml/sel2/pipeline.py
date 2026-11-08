@@ -181,28 +181,35 @@ def _tuples(keys: pd.DataFrame) -> list:
 FLAG_SPIKE_SKIPPED = "SPIKE_CLEANING_SKIPPED"
 FLAG_SPIKE_STALE = "SPIKE_FLAGS_STALE"      # cleaned with flags of an earlier run (computed_for < the day): usable
 SPIKE_LEVEL = 1
+SPIKE_STALE_MAX_DAYS = 7        # flags of a run at most this many days before the day still clean (as of their run)
 
 
 def _spike(s, scope_key: str, d: date, inputs: data.Inputs, purpose: str) -> dict | None:
     """Spike EXCESS as of d (ml/sel2/spike.py, level 1, E4 N = spike_e4_n) from the stored spike_flag_lines, keyed by
     inputs.keys. None when spike_cleaning is False: nothing of the spike module is imported or run (1.4.7 numbers).
-    Flags missing or too old to decide the day (Excess raises) -> no cleaning: {"skipped": True} + ONE WARNING alert
-    SPIKE_CLEANING_SKIPPED per purpose x day; never a failure. Flags of an earlier run (latest computed_for < d, e.g.
-    tonight's SPIKE_LINES failed) still clean, flagged SPIKE_FLAGS_STALE (the lines of the days since are not cleaned).
-    Actuals, groups, open status and the scope stay raw."""
+    Only flags of days >= the data window start of the inputs are read. Flags of an earlier run (latest computed_for
+    cf < d, e.g. tonight's SPIKE_LINES failed) at most SPIKE_STALE_MAX_DAYS old: the excess as of cf (the data end those
+    flags know: lines < cf, T7 / E4 judged on cf) cleans the days < cf, flagged SPIKE_FLAGS_STALE. Flags missing, older,
+    or still undecidable (Excess raises) -> no cleaning: {"skipped": True} + ONE WARNING alert SPIKE_CLEANING_SKIPPED
+    per purpose x day; never a failure. Actuals, groups, open status and the scope stay raw."""
     if not s.spike_cleaning:
         return None
     from . import spike
     info = {"spike_cleaning": True, "level": SPIKE_LEVEL, "e4_n": int(s.spike_e4_n), "asof": str(d)}
     try:
         with db.read() as c:
-            fl = spike.read_flags(c, scope_key)
+            fl = spike.read_flags(c, scope_key, start=inputs.window_start)
         if fl.empty:
             raise ValueError("no spike flags stored")
-        info["flags_computed_for"] = str(fl["computed_for"].max().date())
+        cf = fl["computed_for"].max().date()
+        info["flags_computed_for"] = str(cf)
+        asof = min(d, cf)
+        if (d - asof).days > SPIKE_STALE_MAX_DAYS:
+            raise ValueError(f"spike flags computed for {cf}: more than {SPIKE_STALE_MAX_DAYS} days before {d}")
+        info["excess_asof"] = str(asof)
         ex = spike.Excess(fl, keys=inputs.keys)
-        k, g, e = ex.cells_asof(d, SPIKE_LEVEL, s.spike_e4_n)
-        cells = ex.cells_frame(d, SPIKE_LEVEL, s.spike_e4_n)
+        k, g, e = ex.cells_asof(asof, SPIKE_LEVEL, s.spike_e4_n)
+        cells = ex.cells_frame(asof, SPIKE_LEVEL, s.spike_e4_n)
     except Exception as err:  # noqa: BLE001 - the run goes on with the raw demand
         info.update(skipped=True, reason=f"{type(err).__name__}: {err}"[:300])
         log.warning("sel2 spike cleaning skipped", extra={"ctx": {"purpose": purpose, "asof": str(d),
@@ -217,7 +224,7 @@ def _spike(s, scope_key: str, d: date, inputs: data.Inputs, purpose: str) -> dic
         except Exception:  # noqa: BLE001 - the flag of the run stays
             log.warning("sel2 spike alert not written", exc_info=True)
         return info
-    info.update(skipped=False, stale=info["flags_computed_for"] < str(d), excess_total=round(float(e.sum()), 3),
+    info.update(skipped=False, stale=asof < d, excess_total=round(float(e.sum()), 3),
                 excess_cells=int(len(e)))
     info["_clean"] = (k, g, e, cells)
     return info

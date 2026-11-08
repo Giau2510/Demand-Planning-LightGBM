@@ -461,7 +461,8 @@ def _d1_ok(conn, existing: dict, k1: str, now: datetime) -> bool:
 def _plan_spike_lines_first(now: datetime, conn, existing: dict, k1: str, actions: list, inflight=()) -> bool:
     """1.4.8, spike cleaning ON: SPIKE_LINES:<day> once today's D-1 succeeded. True while today's FORECAST_REFRESH and
     CANDIDATE_TRAIN must wait: the step is planned in this tick, in the workers before its row exists, or PENDING /
-    RUNNING less than spike_lines.WAIT_MAX after its row was created (then they go on: its failure never blocks)."""
+    RUNNING less than spike_lines.WAIT_MAX after its row was created or, still queued, after it was planned (inflight
+    given as a dict key -> submission time); then they go on: its failure never blocks."""
     from .. import spike_lines
     k = spike_lines.job_key(now.date())
     r = existing.get(k)
@@ -469,7 +470,8 @@ def _plan_spike_lines_first(now: datetime, conn, existing: dict, k1: str, action
         at = parse_iso(r.get("created_at"))
         return r["status"] in ("PENDING", "RUNNING") and at is not None and now_utc() - at < spike_lines.WAIT_MAX
     if k in inflight:
-        return True
+        at = inflight.get(k) if isinstance(inflight, dict) else None
+        return at is None or now_utc() - at < spike_lines.WAIT_MAX
     if not _d1_ok(conn, existing, k1, now):
         return False
     actions.append({"action": "run", "job_type": spike_lines.JOB_TYPE, "key": k, "trigger": "SCHEDULE",
@@ -537,7 +539,10 @@ class Scheduler:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="df-job")
+        # 1.4.8: SPIKE_LINES runs in its own worker: D0 / FORECAST_EXPORT / ... never queue behind it in the pool
+        self._spike_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="df-spike")
         self._inflight: set[str] = set()
+        self._inflight_at: dict[str, object] = {}       # key -> UTC time it was submitted (planned)
         self._lock = threading.Lock()
         self.last_tick: str | None = None
         self.started_at: str | None = None
@@ -561,6 +566,7 @@ class Scheduler:
     def stop(self) -> None:
         self._stop.set()
         self._pool.shutdown(wait=False, cancel_futures=True)
+        self._spike_pool.shutdown(wait=False, cancel_futures=True)
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -616,7 +622,7 @@ class Scheduler:
             last_hb = parse_iso(json.loads(hb["value_json"])["at"]) if hb else None
             general = ss.get("general", c)
             with self._lock:
-                inflight = frozenset(self._inflight)
+                inflight = {k: self._inflight_at.get(k) for k in self._inflight}   # read only, with planned time
             actions = plan(now, sched, general.active_source, last_hb, c, first_seen, inflight)
         with db.tx() as c:
             c.execute("INSERT INTO sync_state(name, value_json, updated_at) VALUES ('scheduler_heartbeat', ?, ?) "
@@ -643,7 +649,8 @@ class Scheduler:
                 if a["key"] in self._inflight:
                     continue
                 self._inflight.add(a["key"])
-            fut = self._pool.submit(self._run, a)
+                self._inflight_at[a["key"]] = now_utc()
+            fut = (self._spike_pool if a["job_type"] == "SPIKE_LINES" else self._pool).submit(self._run, a)
             futures.append(fut)
         if wait:
             for f in futures:
@@ -676,6 +683,7 @@ class Scheduler:
         finally:
             with self._lock:
                 self._inflight.discard(a["key"])
+                self._inflight_at.pop(a["key"], None)
 
     def status(self) -> dict:
         return {"running": bool(self._thread and self._thread.is_alive()), "started_at": self.started_at,

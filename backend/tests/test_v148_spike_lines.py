@@ -293,6 +293,141 @@ def test_data_check_warns_per_day_series_when_cache_and_demand_differ(sel2_on):
         c.execute("UPDATE demand_daily SET qty = qty + 1 WHERE order_date=? AND sku_id='S00'", (str(D - timedelta(days=3)),))
         c.execute("DELETE FROM so_lines_cache WHERE order_date=? AND sku_code='S02'", (str(D - timedelta(days=2)),))
     r = chk()
-    assert r["status"] == "WARN" and r["count"] == 2
+    assert r["status"] == "WARN" and r["count"] == 2 and r["days"] == 2
     assert r["examples"][0] == [scope, str(D - timedelta(days=3)), "S00", "FC1", 6.0, 7.0]
     assert all(len(x) == 6 and not {"C1", "C2", "C3"} & set(map(str, x)) for x in r["examples"])   # no customer id
+
+
+# ------------------------------------------------------------------ fix loop 1 (R1, DR3, R3/DR4, R7, R9)
+def test_full_reflag_is_decided_from_the_flag_state_and_heals_a_failed_night(sel2_on, monkeypatch):
+    from app.ml.sel2 import spike
+    scope = _configure()
+    _seed_db(scope, end=D + timedelta(days=2))
+    _fake()
+    real = spike.flag_lines
+    monkeypatch.setattr(spike, "flag_lines", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("flags failed")))
+    with pytest.raises(RuntimeError):
+        spike_lines.run(D)                                     # cache loaded, flags failed
+    assert _count("SELECT COUNT(*) FROM so_lines_cache") == 210 * 12
+    with db.read() as c:
+        assert spike_lines.full_done(c, scope) is None
+    monkeypatch.setattr(spike, "flag_lines", real)
+    r2 = spike_lines.run(D + timedelta(days=1))               # incremental read, but the flags are derived in full
+    assert r2["read_start"] != r2["cache_first_day"] and r2["flags"]["full"]
+    assert r2["flags"]["written_from"] == r2["cache_first_day"]
+    r3 = spike_lines.run(D + timedelta(days=2))
+    assert not r3["flags"]["full"]
+
+
+def test_initial_refused_once_flags_exist_unless_reflag(sel2_on, capsys):
+    scope = _configure()
+    _seed_db(scope, end=D + timedelta(days=1))
+    _fake()
+    spike_lines.run(D)
+    with pytest.raises(AppError) as e:
+        spike_lines.run(D + timedelta(days=1), initial=True)
+    assert e.value.code == "SPIKE_LINES_REFLAG_REQUIRED"
+    r = spike_lines.run(D + timedelta(days=1), initial=True, reflag=True)
+    assert r["flags"]["full"] and r["read_start"] == r["cache_first_day"]
+    assert cli.main(["spike-lines", "--date", str(D + timedelta(days=1)), "--initial", "--yes"]) == 1
+    assert json.loads(capsys.readouterr().out)["code"] == "SPIKE_LINES_REFLAG_REQUIRED"
+
+
+def test_writes_are_short_transactions_another_connection_writes_between(sel2_on, monkeypatch):
+    import sqlite3
+    from app import paths
+    scope = _configure()
+    _seed_db(scope, end=D)
+    _fake()
+    done = []
+
+    def other_writer():
+        c = sqlite3.connect(str(paths.db_path()), timeout=0.2)
+        try:
+            c.execute("INSERT INTO sync_state(name, value_json, updated_at) VALUES (?, '{}', 'x')", (f"t{len(done)}",))
+            c.commit()
+        finally:
+            c.close()
+        done.append(1)
+    monkeypatch.setattr(spike_lines, "_on_chunk", other_writer)
+    spike_lines.run(D)
+    assert len(done) == 30 + 30                                # 210 cache days and 210 flag days in 7-day chunks
+    assert _count("SELECT COUNT(*) FROM so_lines_cache") == 210 * 12
+
+
+def test_runner_timeout_is_failed_with_a_warning_never_retried(sel2_on, monkeypatch):
+    import time
+    from app.jobs import resources, runner
+    real = resources.snapshot
+    monkeypatch.setattr(resources, "snapshot", lambda: {**real(), "commit_avail": 1 << 50})
+    monkeypatch.setattr(runner, "job_timeout", lambda jt, sched: 0.2)
+    spike_lines.set_child_runner(lambda a, t: (time.sleep(1), {"ok": True, "exit_code": 0,
+                                                               "result": {"status": "DONE"}})[1])
+    try:
+        row = runner.execute("SPIKE_LINES", spike_lines.job_key(D), "MANUAL", None, {"business_date": str(D)})
+    finally:
+        time.sleep(1.2)
+        spike_lines.set_child_runner(None)
+    assert row["status"] == "FAILED" and row["next_attempt_at"] is None and "TIMEOUT" in row["error"]
+    with db.read() as c:
+        al = db.rows(c, "SELECT level, code FROM alerts")
+    assert al == [{"level": "WARNING", "code": "SPIKE_LINES_FAILED"}]
+    assert "SPIKE_LINES" in runner.HEAVY_TYPES
+
+
+def test_next_day_refresh_never_takes_next_day_from_the_cache_for_lines_before_it(sel2_on):
+    scope = _configure()
+    _seed_db(scope, end=D + timedelta(days=1))
+    _fake()
+    spike_lines.run(D)
+    before = D - timedelta(days=300)
+    _stored_flag(scope, before, "S00", "C9")                  # customer without a purchase in the cache
+    _stored_flag(scope, before, "S01", "C1", next_day=str(before + timedelta(days=3)))
+    spike_lines.run(D + timedelta(days=1))
+    with db.read() as c:
+        r = {x["sku_code"]: x for x in db.rows(c, "SELECT sku_code, next_day, computed_for FROM spike_flag_lines "
+                                                  "WHERE d=?", (str(before),))}
+    # no next_day taken from the cache; the T7 data end moves (no later purchase), so Excess stays decidable
+    assert r["S00"]["next_day"] is None and r["S00"]["computed_for"] == str(D + timedelta(days=1))
+    assert r["S01"]["next_day"] == str(before + timedelta(days=3))
+    assert r["S01"]["computed_for"] == str(before + timedelta(days=1))
+
+
+def test_cli_initial_with_reflag_rederives_every_flag(sel2_on, capsys):
+    """fix loop 1: --reflag reaches spike_lines.run through the CLI (exit 0, flags derived in full from the first
+    cached day) once the scope has flags."""
+    scope = _configure()
+    _seed_db(scope, end=D + timedelta(days=1))
+    _fake()
+    spike_lines.run(D)
+    capsys.readouterr()
+    assert cli.main(["spike-lines", "--date", str(D + timedelta(days=1)), "--initial", "--reflag", "--yes"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] and out["args"]["reflag"] is True and out["result"]["reflag"] is True
+    res = out["result"]
+    assert res["flags"]["full"] and res["read_start"] == res["cache_first_day"]
+    assert res["flags"]["written_from"] == res["cache_first_day"]
+
+
+def test_a_night_after_a_gap_of_more_than_30_days_flags_every_line_since_the_last_run(sel2_on, monkeypatch):
+    """review R-148b: no flag run for 40 nights -> the next night writes flags from the day of the last flag run (not
+    only the last 30 days), so a spike in the gap is flagged; the marker keeps the day of the last run."""
+    scope = _configure()
+    _seed_db(scope, end=D)
+    _fake()
+    spike_lines.run(D)
+    d2 = D + timedelta(days=41)
+    monkeypatch.setitem(globals(), "SPIKE", (D + timedelta(days=5), "S01", "FC1"))     # a spike inside the gap
+    _seed_db(scope, start=D + timedelta(days=1), end=d2)
+    r2 = spike_lines.run(d2)
+    assert not r2["flags"]["full"] and r2["flags"]["written_from"] == str(D)
+    with db.read() as c:
+        gap = db.rows(c, "SELECT computed_for FROM spike_flag_lines WHERE d=? AND sku_code='S01' AND customer_id='C1'",
+                      (str(D + timedelta(days=5)),))
+        mark = spike_lines.full_done(c, scope)
+    assert gap == [{"computed_for": str(d2)}]
+    assert mark["last_computed_for"] == str(d2) and mark["computed_for"] == str(D)
+    d3 = d2 + timedelta(days=1)
+    _seed_db(scope, start=d3, end=d3)
+    r3 = spike_lines.run(d3)                                                          # next night: back to 30 days
+    assert r3["flags"]["written_from"] == str(d3 - timedelta(days=30))

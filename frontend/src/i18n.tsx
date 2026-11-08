@@ -647,6 +647,7 @@ export const DICT: Record<string, [string, string]> = {
   "job.D1_SYNC": ["Đồng bộ lịch sử D-1", "D-1 history sync"],
   "job.D0_SYNC": ["Đồng bộ D0 (snapshot)", "D0 sync (snapshot)"],
   "job.TRAIN_PUBLISH": ["Huấn luyện & publish", "Train & publish"],
+  "job.SPIKE_LINES": ["Đọc dòng đơn SO & đánh dấu đơn đột biến", "SO lines read & spike flags"],
   "job.trigger.SCHEDULE": ["Lịch", "Schedule"],
   "job.trigger.CATCH_UP": ["Chạy bù", "Catch-up"],
   "job.trigger.MANUAL": ["Thủ công", "Manual"],

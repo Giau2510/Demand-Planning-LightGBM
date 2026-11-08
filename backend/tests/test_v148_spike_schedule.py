@@ -185,3 +185,51 @@ def test_tick_runs_the_step_through_the_runner(monkeypatch):
                                 "scheduled_for": None, "params": {"business_date": "2026-11-03"}})
     assert seen == [("SPIKE_LINES", "SPIKE_LINES:2026-11-03", "SCHEDULE", None, {"business_date": "2026-11-03"})]
     assert "SPIKE_LINES" in runner.JOB_TYPES and runner.FLOW_FLAG["SPIKE_LINES"] == "refresh_enabled"
+
+
+# ------------------------------------------------------------------ fix loop 1 (R2, R5)
+def test_a_d0_slot_is_dispatched_while_spike_lines_runs(monkeypatch):
+    import threading
+    from app.jobs import runner
+    release, ran = threading.Event(), []
+
+    def execute(job_type, key, *a):
+        ran.append(job_type)
+        if job_type in ("SPIKE_LINES", "FORECAST_EXPORT"):
+            release.wait(10)
+    monkeypatch.setattr(runner, "execute", execute)
+    acts = [{"action": "run", "job_type": jt, "key": f"{jt}:x", "trigger": "SCHEDULE", "scheduled_for": None,
+             "params": {}} for jt in ("SPIKE_LINES", "FORECAST_EXPORT")]
+    monkeypatch.setattr(scheduler, "plan", lambda *a, **k: list(acts))
+    s = scheduler.Scheduler()
+    try:
+        s.tick(now=_at(TUE, "06:00"))
+        acts[:] = [{"action": "run", "job_type": "D0_SYNC", "key": "D0_SYNC:x", "trigger": "SCHEDULE",
+                    "scheduled_for": None, "params": {}}]
+        s.tick(now=_at(TUE, "08:00"))
+        for _ in range(100):
+            if "D0_SYNC" in ran:
+                break
+            threading.Event().wait(0.05)
+        assert "D0_SYNC" in ran                       # the 2 pool workers: FORECAST_EXPORT + D0, SPIKE_LINES apart
+    finally:
+        release.set()
+        s.stop()
+
+
+def test_on_a_queued_step_bounds_the_wait_by_its_planned_time(on):
+    from datetime import timedelta
+    from app.timeutil import now_utc
+    sched = _sched(refresh_enabled=True)
+    _freeze(_at(TUE, "05:10"))
+    _d1_ok(day=TUE)
+    k = f"SPIKE_LINES:{TUE}"
+    _freeze(_at(TUE, "05:40"))
+    with db.read() as c:
+        acts = scheduler.plan(_at(TUE, "05:40"), sched, "BIGQUERY", None, c,
+                              inflight={k: now_utc() - timedelta(minutes=30)})
+    assert _of(acts) == []                                                  # queued 30 min: still waits
+    with db.read() as c:
+        acts = scheduler.plan(_at(TUE, "05:40"), sched, "BIGQUERY", None, c,
+                              inflight={k: now_utc() - timedelta(minutes=46)})
+    assert len(_of(acts)) == 1                                              # queued 46 min: goes on

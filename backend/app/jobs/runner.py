@@ -22,7 +22,8 @@ log = logging.getLogger("df.jobs")
 OWNER = f"pid{os.getpid()}-{secrets.token_hex(3)}"
 # jobs that build the whole panel / train boosters: never two at the same time in this process (RAM of a desktop PC)
 # 1.3.1: FORECAST_REFRESH (daily forecast refresh with the model in use) builds a whole panel too
-HEAVY_TYPES = ("TRAIN_PUBLISH", "FORECAST_EXTEND", "FORECAST_REFRESH", "CANDIDATE_TRAIN")
+HEAVY_TYPES = ("TRAIN_PUBLISH", "FORECAST_EXTEND", "FORECAST_REFRESH", "CANDIDATE_TRAIN",
+               "SPIKE_LINES")      # 1.4.8: the SO-line child (cache read, flags of every line)
 # memory guard: a heavy job starts when the commit headroom is at least this factor x the largest private-memory growth
 # measured on the last runs of the same job type (no absolute threshold: the figure comes from this machine's own runs)
 MEMORY_MARGIN = 1.25
@@ -532,6 +533,14 @@ def _log_resources_now(jid: str, job_type: str, r: dict) -> None:
 def _fail(row: dict, attempt: int, sched, code: str, detail: str, retry: bool = True,
           result_json: str | None = None) -> dict:
     extra = {"result_json": result_json} if result_json is not None else {}
+    if row["job_type"] == "SPIKE_LINES":
+        # 1.4.8: any failure of the SO-line step (timeout, memory, error) is FAILED + ONE WARNING alert, never retried
+        _update(row["id"], status="FAILED", reason_code="SPIKE_LINES_FAILED", error=f"{code}: {detail}"[:2000],
+                finished_at=now_iso(), next_attempt_at=None, **extra)
+        with db.tx() as c:
+            db.alert(c, "WARNING", "SPIKE_LINES_FAILED", {"job_id": row["id"], "cause": code}, "job", row["id"])
+        log.warning("job failed", extra={"ctx": {"job_id": row["id"], "code": code}})
+        return _row(row["id"])
     if retry and attempt < sched.max_attempts:
         delay = min(sched.retry_base_seconds * (2 ** (attempt - 1)), sched.retry_max_seconds)
         _update(row["id"], status="RETRY_WAIT", reason_code=code, error=detail[:2000],

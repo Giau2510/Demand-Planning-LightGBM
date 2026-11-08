@@ -383,13 +383,20 @@ report_subdir) and `feature_table` (per-feature rules); new `model` keys `featur
   either state, so the flags are ready when the switch is turned on.
 * Pruning (owner instruction 08/11/2026): `so_lines_cache` is a re-readable working copy of the BigQuery source and is
   pruned every night to its last 210 days (180 days of history + the 30 days of the E4 rule); `spike_flag_lines` and
-  `demand_excess_daily` are NEVER pruned. First run (empty cache): flags of every cached line; later nights: the lines
+  `demand_excess_daily` are NEVER pruned. Until a full flag run of the scope has finished (sync_state `spike_flags_full:<scope>`; or `--reflag`): flags of every cached line (a night whose cache load worked but whose flags failed is healed the next night); later nights: the lines
   of D-30 .. D-1 are recomputed (full 180-day history), older stored lines keep their values and only get their next
   purchase day (`next_day`, + `computed_for`) refreshed from the cache.
 * Customer ids: `so_lines_cache` and `spike_flag_lines` hold `customer_id` (the source's customer column), so the
   database backups hold them too; they never appear in job results, alerts, logs or reports (only counts and keys).
 * BigQuery: one read-only query per night (dry run first, refused above min(5 GB, `maximum_bytes_billed`)); the
   source has no date pruning for it, so each query scans about 3.1 GB (measured 07/11/2026) whatever the day range.
+* Line identity (DR1, stated honestly): one cache row = day x FC x SKU x so_code x customer_id with the source rows
+  summed. Source rows WITHOUT an order code AND without a customer of one SKU x FC x day therefore form ONE line
+  (so_code '' and customer_id ''), the same grouping as the research extract the backtest used
+  (reports/don-dot-bien/code/extract.py); such a line is its own unknown customer (never regular, no T1 / T7).
+* Writes: the BigQuery rows are staged and grouped in a TEMP table, then the cache days are replaced in
+  transactions of 7 days and pruned in their own transaction; flags are written in 7-day transactions (no long
+  write lock on the database).
 * Lifecycle: SO lines of the BIGQUERY scope (one row = day x FC x SKU x so_code x customer_id, source rows summed) ->
   `so_lines_cache` (working cache of the source, the only table pruned, to its last 210 days) -> flags per line (history
   180 days, every statistic per customer x SKU x FC or per SKU x FC) -> the flagged lines in `spike_flag_lines`

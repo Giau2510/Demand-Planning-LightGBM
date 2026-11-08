@@ -6,12 +6,15 @@ run(D) (child process `python -m app.cli spike-lines --date D --yes`, the server
   a. SO lines of the BIGQUERY scope into so_lines_cache (read-only BigQuery, connector.fetch_so_lines: dry run first,
      each query < 5 GB): first run (empty cache, or --initial) the CACHE_DAYS days D-210 .. D-1, later from the last
      cached day - data_policy.late_data_lookback_days to D-1 (clipped to the read floor of the data window). The rows
-     of the read days are replaced in ONE transaction (staged in a TEMP table first, so no write lock is held while
-     BigQuery streams), and the cache days before D-210 are pruned (a re-readable working copy of the source; owner
+     of the read days are replaced in short transactions of WRITE_DAYS days (staged in a TEMP table first, so no write
+     lock is held while BigQuery streams), and the cache days before D-210 are pruned (a re-readable working copy of the source; owner
      08/11/2026). spike_flag_lines and demand_excess_daily are never pruned.
-  b. spike flags (ml/sel2/spike.flag_lines, logic v3, H180), day0 = the first cached day, end = data_end = D-1. First
-     run (cache empty / --initial): every cached line, written for [first cached day, D-1]. Later nights (orchestrator
-     decision 08/11): only the lines of [D-30, D-1] recomputed and replaced (always the full 180-day history); stored
+  b. spike flags (ml/sel2/spike.flag_lines, logic v3, H180), day0 = the first cached day, end = data_end = D-1. Until
+     a full flag run of the scope has finished (sync_state marker spike_flags_full:<scope>; also with --reflag): every
+     cached line, written for [first cached day, D-1] (a night whose cache load worked but whose flags failed is healed
+     the next night). Later nights (orchestrator
+     decision 08/11): only the lines of [D-30, D-1] recomputed and replaced (always the full 180-day history; after a
+     gap of more than 30 nights without a flag run: from the day of the last flag run, marker last_computed_for); stored
      lines before D-30 keep every value, only their next purchase day (next_day NULL -> first later purchase of the
      same customer x SKU x FC in the cache) and computed_for are refreshed, so Excess decides T7 as of any later day.
      Series are processed in chunks of whole SKUs (exact: every statistic is per series or customer x series). Open
@@ -24,6 +27,7 @@ ids stay in so_lines_cache / spike_flag_lines only (never in logs, results or al
 from __future__ import annotations
 
 import gc
+import json
 import logging
 from datetime import date, timedelta
 
@@ -43,6 +47,9 @@ MIN_COMMIT_MB = 3072            # free commit needed to start the child (= pipel
 RECENT_DAYS = 30                # later nights: flags of the lines of the last 30 days recomputed (full history)
 CHUNK_LINES = 1_500_000         # SO lines per flag_lines call (whole SKUs)
 ALERT = "SPIKE_LINES_FAILED"
+WRITE_DAYS = 7                  # days per write transaction (cache replace, flag writes): no long write lock
+FULL_MARK = "spike_flags_full:"     # sync_state name prefix: the first full flag run of the scope finished (+ scope)
+_on_chunk = None                # tests: called between two write transactions
 LEVEL = 1
 _child_runner = None            # tests: fn(args, timeout) -> dict (the child's JSON), never a real child
 
@@ -79,9 +86,23 @@ def read_range(scope_key: str, d: date, initial: bool = False) -> tuple[date, da
     return first, max(first, date.fromisoformat(last[:10]) - timedelta(days=lb)), end
 
 
+def _day_chunks(start: date, end: date, days: int = WRITE_DAYS):
+    a = start
+    while a <= end:
+        b = min(a + timedelta(days=days - 1), end)
+        yield a, b
+        a = b + timedelta(days=1)
+
+
+def _between_chunks() -> None:
+    if _on_chunk is not None:
+        _on_chunk()
+
+
 def load_lines(scope_key: str, start: date, end: date, first: date) -> dict:
-    """a. read [start, end] from BigQuery into a TEMP table, then replace those cache days and prune the days before
-    first in one transaction."""
+    """a. read [start, end] from BigQuery into a TEMP table and group it there (no lock on the database), then replace
+    the cache days in short transactions of WRITE_DAYS days, oldest first (a failure leaves whole days, old or new),
+    then prune the days before first in its own transaction."""
     from .bq import connector
     c = db.connect()
     try:
@@ -95,18 +116,26 @@ def load_lines(scope_key: str, start: date, end: date, first: date) -> dict:
         res = connector.fetch_so_lines(start, end, sink)
         ws, we = res["window"]["start"], res["window"]["end"]
         at = now_iso()
+        # one cache row per line: a line the source returns twice (never expected: GROUP BY) is summed, not lost
+        c.execute("CREATE TEMP TABLE _slc_lines AS SELECT order_date, fc_code, sku_code, so_code, customer_id, "
+                  "SUM(qty) AS qty, SUM(n_rows) AS n_rows FROM temp._slc_stage GROUP BY order_date, fc_code, sku_code, "
+                  "so_code, customer_id")
+        c.execute("DROP TABLE temp._slc_stage")
+        c.execute("CREATE INDEX temp._slc_lines_d ON _slc_lines(order_date)")
+        deleted = inserted = 0
+        for a, b in _day_chunks(date.fromisoformat(ws), date.fromisoformat(we)):
+            with db.tx(c):
+                deleted += c.execute("DELETE FROM so_lines_cache WHERE scope_key=? AND order_date BETWEEN ? AND ?",
+                                     (scope_key, str(a), str(b))).rowcount
+                inserted += c.execute(
+                    "INSERT INTO so_lines_cache(scope_key, order_date, fc_code, sku_code, so_code, customer_id, qty, "
+                    "n_rows, loaded_at) SELECT ?, order_date, fc_code, sku_code, so_code, customer_id, qty, n_rows, ? "
+                    "FROM temp._slc_lines WHERE order_date BETWEEN ? AND ?", (scope_key, at, str(a), str(b))).rowcount
+            _between_chunks()
         with db.tx(c):
-            deleted = c.execute("DELETE FROM so_lines_cache WHERE scope_key=? AND order_date BETWEEN ? AND ?",
-                                (scope_key, ws, we)).rowcount
-            # one cache row per line: a line the source returns twice (never expected: GROUP BY) is summed, not lost
-            inserted = c.execute(
-                "INSERT INTO so_lines_cache(scope_key, order_date, fc_code, sku_code, so_code, customer_id, qty, n_rows, "
-                "loaded_at) SELECT ?, order_date, fc_code, sku_code, so_code, customer_id, SUM(qty), SUM(n_rows), ? "
-                "FROM temp._slc_stage GROUP BY order_date, fc_code, sku_code, so_code, customer_id",
-                (scope_key, at)).rowcount
             pruned = c.execute("DELETE FROM so_lines_cache WHERE scope_key=? AND order_date < ?",
                                (scope_key, str(first))).rowcount
-        c.execute("DROP TABLE temp._slc_stage")
+        c.execute("DROP TABLE temp._slc_lines")
     finally:
         c.close()
     return {"window": res["window"], "estimated_bytes": res["estimated_bytes"], "cap_bytes": res["cap_bytes"],
@@ -173,27 +202,47 @@ def _sku_chunks(conn, scope_key: str) -> list[tuple[str, str]]:
     return out
 
 
-def _refresh_next_day(c, scope_key: str, before: date, d: date) -> int:
-    """Stored flagged lines of days < before whose next purchase was not seen yet (next_day NULL, known customer): the
-    first later purchase day (qty > 0, < d) of the same customer x SKU x FC in the cache, and computed_for = d (the
-    data end of next_day: Excess decides T7 as of a day from it). Every other column stays as stored. No commit."""
+def _refresh_next_day(c, scope_key: str, first: date, before: date, d: date) -> int:
+    """Stored flagged lines of days first (first cached day) .. before-1 whose next purchase was not seen yet (next_day
+    NULL, known customer): the first later purchase day (qty > 0, < d) of the same customer x SKU x FC in the cache,
+    and computed_for = d (the data end of next_day: Excess decides T7 as of a day from it). Every other column stays as
+    stored. Lines of days before the cache never get a next_day from it; one still without a next purchase only gets
+    computed_for = d when the cache holds no later purchase of its customer x SKU x FC either (its next purchase would
+    have been found while its day was cached, so none happened before d): its T7 stays decidable after it left the
+    cache. Returns the next_day updates. No commit."""
     from .ml.sel2 import spike
-    return c.execute(
+    n = c.execute(
         "UPDATE spike_flag_lines SET next_day = (SELECT MIN(l.order_date) FROM so_lines_cache l WHERE "
         "l.scope_key = spike_flag_lines.scope_key AND l.fc_code = spike_flag_lines.fc_code AND "
         "l.sku_code = spike_flag_lines.sku_code AND l.customer_id = spike_flag_lines.customer_id AND "
         "l.order_date > spike_flag_lines.d AND l.order_date < ? AND l.qty > 0), computed_for = ?, computed_at = ? "
-        "WHERE scope_key = ? AND logic = ? AND history_days = ? AND d < ? AND next_day IS NULL AND customer_id <> '' "
-        "AND computed_for < ?",
-        (str(d), str(d), now_iso(), scope_key, spike.LOGIC, spike.HISTORY_DAYS, str(before), str(d))).rowcount
+        "WHERE scope_key = ? AND logic = ? AND history_days = ? AND d >= ? AND d < ? AND next_day IS NULL AND "
+        "customer_id <> '' AND computed_for < ?",
+        (str(d), str(d), now_iso(), scope_key, spike.LOGIC, spike.HISTORY_DAYS, str(first), str(before),
+         str(d))).rowcount
+    c.execute(
+        "UPDATE spike_flag_lines SET computed_for = ?, computed_at = ? WHERE scope_key = ? AND logic = ? AND "
+        "history_days = ? AND d < ? AND next_day IS NULL AND customer_id <> '' AND computed_for < ? AND NOT EXISTS ("
+        "SELECT 1 FROM so_lines_cache l WHERE l.scope_key = spike_flag_lines.scope_key AND "
+        "l.fc_code = spike_flag_lines.fc_code AND l.sku_code = spike_flag_lines.sku_code AND "
+        "l.customer_id = spike_flag_lines.customer_id AND l.order_date > spike_flag_lines.d AND l.order_date < ? AND "
+        "l.qty > 0)", (str(d), now_iso(), scope_key, spike.LOGIC, spike.HISTORY_DAYS, str(first), str(d), str(d)))
+    return n
 
 
-def compute_flags(scope_key: str, d: date, full: bool = False) -> dict:
-    """b. flags of the cached lines (data up to d-1), day0 = the first cached day. full (first run / --initial): every
-    cached line, written for [first cached day, d-1] (the early days with a shorter history, as the research's fixed
-    start). Otherwise only the lines of [d-RECENT_DAYS, d-1] are recomputed and replaced (they have the full 180-day
-    history in the 210-day cache); the stored lines before only get their next purchase day (_refresh_next_day).
-    c. excess as of d."""
+def full_done(conn, scope_key: str) -> dict | None:
+    """The marker of the first full flag run of the scope (sync_state), None before it."""
+    r = conn.execute("SELECT value_json FROM sync_state WHERE name=?", (FULL_MARK + scope_key,)).fetchone()
+    return json.loads(r[0]) if r else None
+
+
+def compute_flags(scope_key: str, d: date, full: bool | None = None) -> dict:
+    """b. flags of the cached lines (data up to d-1), day0 = the first cached day. full (None = decided from the FLAG
+    state: no finished full run of the scope yet, full_done; True = --reflag): every cached line, written for [first
+    cached day, d-1] (the early days with a shorter history, as the research's fixed start), then the marker. Otherwise
+    only the lines of [d-RECENT_DAYS, d-1] are recomputed and replaced (they have the full 180-day history in the 210-day
+    cache); the stored lines of the cache days before only get their next purchase day (_refresh_next_day). Writes in
+    transactions of WRITE_DAYS days. c. excess as of d."""
     from .ml.sel2 import spike
     s = ss.get("sel2_pipeline")
     end = d - timedelta(days=1)
@@ -203,9 +252,15 @@ def compute_flags(scope_key: str, d: date, full: bool = False) -> dict:
         if first is None:
             return {"flagged_lines": 0, "note": "no cached SO line"}
         first = date.fromisoformat(first[:10])
+        mark = full_done(c, scope_key)
+        if full is None:
+            full = mark is None
         chunks = _sku_chunks(c, scope_key)
         od = _open_days(c, first, end)
-    w0 = first if full else max(first, d - timedelta(days=RECENT_DAYS))
+    # a night after a gap (no flag run for > RECENT_DAYS days): from the day of the last flag run, so no cached line is
+    # left without flags (review R-148b)
+    last = date.fromisoformat(mark.get("last_computed_for", mark["computed_for"])) if mark else d
+    w0 = first if full else max(first, min(d - timedelta(days=RECENT_DAYS), last))
     groups = _groups(scope_key, d, first)
     parts, n_lines = [], 0
     for lo, hi in chunks:
@@ -224,9 +279,21 @@ def compute_flags(scope_key: str, d: date, full: bool = False) -> dict:
         del L, fl
         gc.collect()
     fl = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=list(spike.OUT_COLS))
+    written = next_days = 0
+    for a, b in _day_chunks(w0, end):
+        with db.tx() as c:
+            written += spike.write_flags(c, scope_key, fl, d, a, b)
+        _between_chunks()
+    if not full:
+        val = {**mark, "last_computed_for": str(max(d, last))}
+        with db.tx() as c:
+            next_days = _refresh_next_day(c, scope_key, first, w0, d)
+    else:
+        val = {"computed_for": str(d), "first_day": str(first), "last_computed_for": str(d)}
     with db.tx() as c:
-        written = spike.write_flags(c, scope_key, fl, d, w0, end)
-        next_days = 0 if full else _refresh_next_day(c, scope_key, w0, d)
+        c.execute("INSERT INTO sync_state(name, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(name) DO "
+                  "UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at",
+                  (FULL_MARK + scope_key, json.dumps(val), now_iso()))
     del fl, parts
     gc.collect()
     with db.read() as c:
@@ -241,8 +308,11 @@ def compute_flags(scope_key: str, d: date, full: bool = False) -> dict:
             "level": LEVEL, "e4_n": s.spike_e4_n, "groups_weeks": int(groups["computed_for"].nunique()) if len(groups) else 0}
 
 
-def run(d: date | None = None, initial: bool = False, dry_run: bool = False) -> dict:
-    """The step of day d (default today, Vietnam): a + b + c; dry_run = the BigQuery dry run of a only (no write)."""
+def run(d: date | None = None, initial: bool = False, dry_run: bool = False, reflag: bool = False) -> dict:
+    """The step of day d (default today, Vietnam): a + b + c; dry_run = the BigQuery dry run of a only (no write).
+    initial = read the whole cache window again: refused (SPIKE_LINES_REFLAG_REQUIRED) when the scope already has
+    flags, unless reflag. reflag = derive the flags of every cached line again (training data of the cleaning: the
+    stored flags of the cache days are replaced)."""
     from .bq import connector
     d = d or today_vn()
     if not ss.get("sel2_pipeline").enabled:
@@ -251,15 +321,20 @@ def run(d: date | None = None, initial: bool = False, dry_run: bool = False) -> 
     if not bq.customer_id_column:
         raise AppError("SPIKE_LINES_NO_CUSTOMER", 409, detail="bigquery.customer_id_column is not set")
     scope_key = _scope_key()
+    if initial and not reflag and not dry_run:
+        with db.read() as c:
+            if c.execute("SELECT 1 FROM spike_flag_lines WHERE scope_key=? LIMIT 1", (scope_key,)).fetchone():
+                raise AppError("SPIKE_LINES_REFLAG_REQUIRED", 409, detail="the scope already has spike flags: "
+                               "--initial re-derives them only with --reflag")
     first, start, end = read_range(scope_key, d, initial)
     out = {"business_date": str(d), "scope_key": scope_key, "cache_first_day": str(first), "read_start": str(start),
-           "read_end": str(end), "initial": initial}
+           "read_end": str(end), "initial": initial, "reflag": reflag}
     if dry_run:
         r = connector.fetch_so_lines(start, end, None, dry_run_only=True)
         return {**out, "status": "DRY_RUN", "estimated_bytes": r["estimated_bytes"], "cap_bytes": r["cap_bytes"],
                 "estimated_gb": round(r["estimated_bytes"] / 1e9, 3)}
     out["lines"] = load_lines(scope_key, start, end, first)
-    out["flags"] = compute_flags(scope_key, d, full=start == first)
+    out["flags"] = compute_flags(scope_key, d, full=True if reflag else None)
     out["status"] = "DONE"
     return out
 

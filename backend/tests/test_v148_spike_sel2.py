@@ -156,3 +156,45 @@ def test_on_flags_of_an_earlier_run_still_clean_with_the_stale_flag(ready):
     c = pipeline.candidates_for_day(D, scope_key=SCOPE)
     assert "SPIKE_FLAGS_STALE" in c["flags"] and "SPIKE_CLEANING_SKIPPED" not in c["flags"]
     assert c["spike_cleaning"]["stale"] and c["spike_cleaning"]["excess_total"] == 48.0
+
+
+def test_on_stale_flags_use_the_excess_as_of_their_run_and_expire_after_7_days(ready):
+    ss.update("sel2_pipeline", {"spike_cleaning": True})
+    pipeline.train_week(ORIGIN, scope_key=SCOPE)
+    inputs = pipeline.load(SCOPE, D)
+    s = ss.get("sel2_pipeline")
+    _flag_row(day=date(2026, 10, 10), computed_for=D - timedelta(days=8))
+    sp = pipeline._spike(s, SCOPE, D, inputs, "day")
+    assert sp["skipped"] and "more than 7 days" in sp["reason"]
+    _flag_row(computed_for=D - timedelta(days=2))
+    sp = pipeline._spike(s, SCOPE, D, inputs, "day")
+    assert not sp["skipped"] and sp["stale"] and sp["excess_asof"] == str(D - timedelta(days=2))
+    assert pipeline._spike_flags(sp) == ["SPIKE_FLAGS_STALE"]
+    # the excess as of the flags' run day = a fresh Excess as of that day
+    with db.read() as c:
+        ex = spike.Excess(spike.read_flags(c, SCOPE), keys=inputs.keys)
+    pd.testing.assert_frame_equal(sp["_clean"][3], ex.cells_frame(D - timedelta(days=2), 1, 4))
+
+
+def test_on_flags_before_the_data_window_are_not_read(ready):
+    """fix loop 1: _spike reads only the flags of days >= inputs.window_start. A flagged line before the window (one
+    that would add excess, one whose T7 decision is still pending and would make Excess raise) changes nothing."""
+    ss.update("sel2_pipeline", {"spike_cleaning": True})
+    pipeline.train_week(ORIGIN, scope_key=SCOPE)
+    inputs = pipeline.load(SCOPE, D)
+    s = ss.get("sel2_pipeline")
+    _flag_row()
+    base = pipeline._spike(s, SCOPE, D, inputs, "day")
+    assert not base["skipped"] and base["excess_total"] == 48.0
+    out = date.fromisoformat(inputs.window_start) - timedelta(days=1)
+    _flag_row(day=out, qty=80.0)                                         # would add 78 of excess if read
+    pend = {"d": pd.Timestamp(out - timedelta(days=1)), "fc_code": "FC1", "sku_code": "S02", "so_code": "SO9",
+            "customer_id": "C2", "qty": 50.0, "group_code": "B", "min_qty": 5.0, "n_prev": 5, "cust_med": 2.0,
+            "gap_med": 30.0, "n_gaps": 3, "next_day": pd.NaT, "kept": 2.0, "T1": 1, "T2": 0, "T4": 0, "T7": 0,
+            "n_signals_raw": 1, "exc_wholesale": False, "exc_periodic": False, "exc_demand": False,
+            "is_regular": True}
+    with db.tx() as c:                                                   # T7 pending, computed long before D
+        spike.write_flags(c, SCOPE, pd.DataFrame([pend]), out, out - timedelta(days=1), out - timedelta(days=1))
+    sp = pipeline._spike(s, SCOPE, D, inputs, "day")
+    assert not sp["skipped"] and sp["excess_total"] == 48.0 and sp["excess_cells"] == base["excess_cells"]
+    pd.testing.assert_frame_equal(sp["_clean"][3], base["_clean"][3])
