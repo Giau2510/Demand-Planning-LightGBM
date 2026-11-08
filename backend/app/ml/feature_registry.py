@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 
+from . import extra_features
 from . import feature_catalog as cat
 from .features import CUSTOMER, OPEN_HOURS, WEEKDAY, discount_on, feature_names, weekday_on
 
@@ -54,6 +55,10 @@ REASONS = {
                           "Mandatory for the BigQuery source; every demand row of the data window has valid open hours."),
     "MANDATORY_NOT_READY": ("Bắt buộc với nguồn BigQuery nhưng có dòng nhu cầu của cửa sổ dữ liệu chưa có giờ mở bán hợp lệ — huấn luyện dừng (OPEN_HOURS_INVALID), không tự điền giá trị.",
                             "Mandatory for the BigQuery source, but some demand rows of the data window have no valid open hours — training stops (OPEN_HOURS_INVALID); nothing is filled in."),
+    # 1.3.2: the same-period-last-year / deal features follow model.feature_set (not a group switch)
+    "FEATURE_SET_ON": ("Có trong bộ biến model.feature_set đang chọn.", "Part of the selected feature set (model.feature_set)."),
+    "FEATURE_SET_OFF": ("Không có trong bộ biến model.feature_set đang chọn (CHOT = như 1.3.1).",
+                        "Not part of the selected feature set (model.feature_set; CHOT = as in 1.3.1)."),
     "NOT_IN_SOURCE": ("Nguồn đang chọn không có cột giờ mở bán (chỉ BigQuery D-1 có) — không áp dụng.",
                       "The selected source has no open-hours column (only the BigQuery D-1 source has it) — not applicable."),
 }
@@ -267,6 +272,33 @@ def model_feature_entry(name: str, mcfg, decisions: dict | None, n_rows: int | N
     }
 
 
+def extra_feature_entry(name: str, mcfg, n_rows: int | None) -> dict:
+    """1.3.2: registry entry of a same-period-last-year / deal feature (ml/extra_features.py): ACTIVE when the configured
+    feature set has it (and the scope has demand rows), DISABLED otherwise. Never part of all_model_features (the 1.3.1
+    list); the training adds them through model.feature_set."""
+    d = cat.describe(name)
+    ly = name in extra_features.LY_NAMES
+    if name in extra_features.extra_names(mcfg):
+        status, reason = ("ACTIVE", "FEATURE_SET_ON") if n_rows else ("UNAVAILABLE", "NO_DATA_IN_SCOPE")
+    else:
+        status, reason = "DISABLED", "FEATURE_SET_OFF"
+    return {
+        "feature_key": name, "kind": "MODEL", "feature_group": "DEMAND_HISTORY" if ly else "PRICE_PROMOTION",
+        "catalog_group": d["group"], "display_name": {"vi": d["vi"]["name"], "en": d["en"]["name"]},
+        "description": {"vi": d["vi"]["formula"], "en": d["en"]["formula"]}, "data_type": "float",
+        "source_name": ("demand_daily từ data_policy.extended_history_start_date (model.ly_history_start)" if ly else
+                        "deals (bigquery.deal_table_id) + demand_deal_daily (bigquery.deal_code_column) + open_hours_daily"),
+        "source_column": "qty" if ly else None, "internal_field": "order_qty" if ly else None, "required": False,
+        "switch": "feature_set",
+        "default_or_missing_policy": {"vi": d["vi"]["missing"], "en": d["en"]["missing"]},
+        "aggregation_rule": "Công thức đăng ký trước E1 / E2 (reports/backtest-2025-deal-20261030).",
+        "time_availability": "Chỉ dữ liệu biết tại 00:00 của mốc dự báo (giờ Việt Nam); chỉ model DIRECT.",
+        "effective_from": None, "effective_to": None, "created_at": "2026-10-30", "updated_at": "2026-10-30",
+        "registry_version": REGISTRY_VERSION, "availability_status": status, "status_label": _labels(STATUSES, status),
+        "reason": reason, "reason_label": _labels(REASONS, reason),
+    }
+
+
 def planned_entry(p: dict, source: str | None, bq=None, validation: dict | None = None) -> dict:
     col = None
     status, reason = "PLANNED", "NO_SOURCE_COLUMN"
@@ -344,6 +376,7 @@ def view(conn, source: str | None = None) -> dict:
                             "feature_set_version": fc.get("feature_set_version") or feature_set_version(feats),
                             "feature_set_version_stored": bool(fc.get("feature_set_version"))}
     entries = [model_feature_entry(n, mcfg, decisions, cov.get("rows")) for n in all_model_features()]
+    entries += [extra_feature_entry(n, mcfg, cov.get("rows")) for n in extra_features.ALL_NAMES]     # 1.3.2
     used_by_model = set((active_model or {}).get("features") or [])
     for e in entries:
         e["in_active_model"] = e["feature_key"] in used_by_model if active_model else None

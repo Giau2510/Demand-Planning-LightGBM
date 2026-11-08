@@ -452,6 +452,27 @@ CATALOG: dict[str, tuple[str, str]] = {
                                   "Horizon weights need both values (horizon_weight_short and horizon_weight_cutoff) or neither."),
     "HORIZON_WEIGHT_DIRECT_ONLY": ("Trọng số theo horizon chỉ dùng với chiến lược dự báo DIRECT — với RECURSIVE chúng bị bỏ qua nhưng vẫn làm đổi dấu vân tay cấu hình, nên không được lưu.",
                                    "Horizon weights apply to the DIRECT forecast strategy only — RECURSIVE would ignore them but they would still change the configuration fingerprint, so they are not saved."),
+    # 1.3.2: extended history (2025), same-period-last-year and deal features (docs/hoc_lai_2025_deal_20261030.md)
+    "EXTENDED_HISTORY_AFTER_WINDOW": ("Ngày đầu lịch sử mở rộng (data_policy.extended_history_start_date) phải trước ngày đầu cửa sổ dữ liệu (window_start_date) — không lưu gì.",
+                                      "The first day of the extended history (data_policy.extended_history_start_date) must be before the first day of the data window (window_start_date) — nothing was saved."),
+    "FEATURE_SET_DIRECT_ONLY": ("Bộ biến CHOT_LY / CHOT_LY_DEAL chỉ dùng với chiến lược dự báo DIRECT (các biến được tính tại mốc dự báo) — không lưu gì.",
+                                "The feature sets CHOT_LY / CHOT_LY_DEAL apply to the DIRECT forecast strategy only (the features are computed at the forecast origin) — nothing was saved."),
+    "LY_HISTORY_SET_BY_TRAINING": ("model.ly_history_start là ngày đầu lịch sử cùng kỳ năm trước do lần huấn luyện lưu cùng lần chạy — không đặt được trong cấu hình mô hình. Hãy đặt data_policy.extended_history_start_date; thay đổi có hiệu lực từ lần huấn luyện sau.",
+                                   "model.ly_history_start is the start of the same-period-last-year history a training run stores with the run — it cannot be set in the model settings. Set data_policy.extended_history_start_date instead; the change takes effect from the next training."),
+    "LY_HISTORY_NOT_CONFIGURED": ("Bộ biến của mô hình cần các biến cùng kỳ năm trước nhưng chưa đặt ngày đầu lịch sử mở rộng (data_policy.extended_history_start_date) — không chạy.",
+                                  "The model's feature set needs the same-period-last-year features but the first day of the extended history (data_policy.extended_history_start_date) is not set — not run."),
+    "EXTRA_FEATURES_NOT_IN_PANEL": ("Mô hình dùng biến bổ sung (cùng kỳ năm trước / deal) nhưng dữ liệu đầu vào chưa có phần dữ liệu bổ sung đó — không tính dự báo.",
+                                    "The model uses extra features (same period last year / deals) but the input panel has no such extra context — no forecast is computed."),
+    "DEAL_SOURCE_NOT_CONFIGURED": ("Bộ biến của mô hình cần deal nhưng nguồn deal chưa sẵn sàng: bigquery.deal_table_id hoặc bigquery.deal_code_column còn trống, hoặc chưa lưu ảnh chụp bảng deal nào — không chạy.",
+                                   "The model's feature set needs deals but the deal source is not ready: bigquery.deal_table_id or bigquery.deal_code_column is empty, or no deal-table snapshot is stored — not run."),
+    "DEAL_LINES_LOAD_FAILED": ("Không nạp được lượng theo mã deal của dòng đơn (demand_deal_daily) cho cửa sổ của lần nạp — demand đã ghi không bị ảnh hưởng. Xem chi tiết lỗi của job.",
+                               "The order-line quantities per deal code (demand_deal_daily) could not be loaded for the window of the load — the written demand is not affected. See the job's error detail."),
+    "DEAL_REFRESH_FAILED": ("Không làm mới được bảng deal sau lần D-1 — bảng deal và các ảnh chụp đã lưu không đổi. Xem chi tiết lỗi của job.",
+                            "The deal table could not be refreshed after the D-1 load — the stored deal table and its snapshots are unchanged. See the job's error detail."),
+    "DEAL_DUPLICATE_KEYS": ("Bảng deal có các dòng trùng khóa — đã ghi nhận để kiểm tra.",
+                            "The deal table has rows with duplicate keys — recorded for review."),
+    "DEAL_LINES_EXCEED_DEMAND": ("Lượng theo mã deal của một ngày × SKU × kho lớn hơn demand đã lưu của chính khóa đó — đã ghi nhận để kiểm tra.",
+                                 "The deal-code quantity of a day × SKU × FC is larger than the stored demand of the same key — recorded for review."),
 }
 
 
@@ -477,7 +498,7 @@ def category(code: str) -> str:
                 "MODEL_FILE_MISMATCH", "DAILY_FORECAST_PUBLISHED", "DAILY_ACTUAL_FAILED", "GROUPS_DEFERRED_OPEN_HOURS_LAG",
                 "FORECAST_REFRESH_FAILED", "DAILY_RETENTION_FAILED", "ACCURACY_REPORT_FAILED", "ALREADY_PUBLISHED",
                 "ACCURACY_REPORT_WRITTEN", "ACCURACY_REPORT_NOT_WRITTEN", "ACCURACY_REPORT_NO_DATA",
-                "FEATURE_REPORT_NOT_WRITTEN"):
+                "FEATURE_REPORT_NOT_WRITTEN", "EXTRA_FEATURES_NOT_IN_PANEL"):
         return "MODEL"
     if code in ("NO_ACTIVE_DATASET", "ACTIVE_DATASET_INCONSISTENT", "SOURCE_NOT_READY", "SCHEDULER_DISABLED",
                 "FLOW_NOT_READY", "D0_SCHEDULE_DISABLED", "D1_SCHEDULE_DISABLED", "TRAIN_SCHEDULE_DISABLED",
@@ -486,7 +507,9 @@ def category(code: str) -> str:
                 "SCHEDULE_NOT_REGISTERED", "REFRESH_SCHEDULE_DISABLED", "REFRESH_WAITS_FOR_D1", "REPORT_SCHEDULE_DISABLED",
                 "DAILY_FORECAST_DISABLED", "TRIAL_MODE_CONFIRM_REQUIRED", "FEATURE_TABLE_CONFIRM_REQUIRED",
                 "FEATURE_TABLE_VIA_OWN_API", "FEATURE_TABLE_SET_BY_TRAINING", "HORIZON_WEIGHT_INCOMPLETE",
-                "HORIZON_WEIGHT_DIRECT_ONLY", "TRIAL_MODE_CHANGED"):
+                "HORIZON_WEIGHT_DIRECT_ONLY", "TRIAL_MODE_CHANGED", "EXTENDED_HISTORY_AFTER_WINDOW",
+                "FEATURE_SET_DIRECT_ONLY", "LY_HISTORY_SET_BY_TRAINING", "LY_HISTORY_NOT_CONFIGURED",
+                "DEAL_SOURCE_NOT_CONFIGURED"):
         return "CONFIG"
     if code in ("INTERNAL_ERROR",):
         return "INTERNAL"

@@ -328,7 +328,8 @@ def sync_backfill(body: BackfillBody):
     s, e = _backfill_dates(body)
     bq = ss.get("bigquery")
     day = today_vn() - timedelta(days=1)
-    bs, be = sync._backfill_window(str(s), str(e), connector.read_range(bq, day)[0], day)
+    # 1.3.2: the same floor as the preview and the job (extended history start when set)
+    bs, be = sync._backfill_window(str(s), str(e), sync.backfill_floor(bq, day), day)
     sync.check_backfill_preview(body.preview_id, bs, be, connector.mapping_hash(bq), sql_sources.snapshot("history"))
     return background.submit("D1_SYNC", {"backfill_start": str(s), "backfill_end": str(e),
                                          "backfill_preview_id": body.preview_id})

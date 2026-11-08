@@ -52,6 +52,8 @@ D0_FIELDS = ["sku_id", "fc_id", "order_qty", "order_date", "created_at", "order_
 D0_ESSENTIAL = ("sku_id", "fc_id", "order_qty")
 # 1.3.1 (B11): name of a model feature in the feature table (ml/features.py names)
 FEATURE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+# 1.3.2: column of the order-line deal code in the D-1 source (bigquery.deal_code_column)
+DEAL_COLUMN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
 
 class GeneralSettings(BaseModel):
@@ -182,6 +184,15 @@ class ModelSettings(BaseModel):
     # stored with its run; never a user setting - PUT /api/settings/model refuses a value (FEATURE_TABLE_SET_BY_TRAINING).
     # None = every row at its default (every model before 1.3.1)
     feature_table: dict[str, FeatureRule] | None = None
+    # 1.3.2 (docs/hoc_lai_2025_deal_20261030.md 1.2): extra features of the DIRECT model. CHOT = none (every model
+    # before 1.3.2, left out of the config fingerprint); CHOT_LY = + the 4 same-period-last-year features;
+    # CHOT_LY_DEAL = + those 4 and the 12 deal features
+    feature_set: Literal["CHOT", "CHOT_LY", "CHOT_LY_DEAL"] = "CHOT"
+    # 1.3.2: first day (DAY0) of the stored demand read by the same-period-last-year features, set by the training on
+    # the copy stored with its run (= data_policy.extended_history_start_date when the feature set needs them); never a
+    # user setting - PUT /api/settings/model refuses a value (LY_HISTORY_SET_BY_TRAINING). None = not used (every model
+    # before)
+    ly_history_start: str | None = None
 
     @model_validator(mode="after")
     def _feature_groups(self):
@@ -201,10 +212,28 @@ class ModelSettings(BaseModel):
             raise ValueError("HORIZON_WEIGHT_DIRECT_ONLY: horizon weights apply to forecast_strategy DIRECT only")
         return self
 
+    @model_validator(mode="after")
+    def _feature_set(self):
+        # 1.3.2: the extra features are computed at the forecast origin of the DIRECT model only
+        if self.feature_set != "CHOT" and self.forecast_strategy != "DIRECT":
+            raise ValueError(f"FEATURE_SET_DIRECT_ONLY: feature_set {self.feature_set} applies to forecast_strategy "
+                             "DIRECT only")
+        return self
+
     @field_validator("feature_table")
     @classmethod
     def _feature_table(cls, v):
         return v if v is None else _check_feature_table(v)
+
+    @field_validator("ly_history_start")
+    @classmethod
+    def _ly_history_start(cls, v):
+        if v is not None:
+            if not DATE_RE.match(v):
+                raise ValueError("ly_history_start must be YYYY-MM-DD")
+            from datetime import date as _d
+            _d.fromisoformat(v)
+        return v
 
 
 class ImportSettings(BaseModel):
@@ -246,6 +275,11 @@ class DataPolicySettings(BaseModel):
     history_day_check: bool = True
     # 1.2.13: oldest source version used as line evidence (BigQuery time travel of the dataset: 168 h)
     source_time_travel_hours: int = Field(160, ge=1, le=168)
+    # 1.3.2 (docs/hoc_lai_2025_deal_20261030.md 1.1): first day of the EXTENDED history, strictly before
+    # window_start_date. An explicit backfill (preview + backup) may read the source from it and the
+    # same-period-last-year features read the stored demand from it; its days are never model-input rows (the window
+    # above is unchanged). Not part of the BigQuery mapping hash. None = the behaviour of 1.3.1
+    extended_history_start_date: str | None = None
 
     @field_validator("window_start_date")
     @classmethod
@@ -255,6 +289,25 @@ class DataPolicySettings(BaseModel):
         from datetime import date as _d
         _d.fromisoformat(v)
         return v
+
+    @field_validator("extended_history_start_date")
+    @classmethod
+    def _extended_start(cls, v):
+        if v is not None:
+            if not DATE_RE.match(v):
+                raise ValueError("extended_history_start_date must be YYYY-MM-DD")
+            from datetime import date as _d
+            _d.fromisoformat(v)
+        return v
+
+    @model_validator(mode="after")
+    def _extended_before_window(self):
+        # both are validated YYYY-MM-DD: the text order is the date order
+        if self.extended_history_start_date is not None and self.extended_history_start_date >= self.window_start_date:
+            raise ValueError(f"EXTENDED_HISTORY_AFTER_WINDOW: extended_history_start_date "
+                             f"{self.extended_history_start_date} must be before window_start_date "
+                             f"{self.window_start_date}")
+        return self
 
 
 class ScheduleSettings(BaseModel):
@@ -445,6 +498,12 @@ class BigQuerySettings(BaseModel):
     # counts per day x SKU x FC inside BigQuery (data/customers.py); the identifier never leaves BigQuery. Part of the
     # mapping hash only when set, so a saved mapping without it keeps its hash (validated state unchanged).
     customer_id_column: str = ""
+    # --- 1.3.2 (docs/hoc_lai_2025_deal_20261030.md 1.2), "" = off (the default: behaviour of 1.3.1). deal_code_column:
+    # order-line deal code column of the D-1 source, read into demand_deal_daily by D-1 / backfill for their own window.
+    # deal_table_id: deal table (project.dataset.table) refreshed after each successful regular D-1 (one snapshot per
+    # refresh). Neither is part of the mapping hash (demand_daily is unchanged by them)
+    deal_code_column: str = ""
+    deal_table_id: str = ""
 
     @field_validator("customer_id_column")
     @classmethod
@@ -452,6 +511,22 @@ class BigQuerySettings(BaseModel):
         v = (v or "").strip()
         if v and not IDENT.match(v):
             raise ValueError("invalid column name for customer_id")
+        return v
+
+    @field_validator("deal_code_column")
+    @classmethod
+    def _deal_col(cls, v):
+        v = (v or "").strip()
+        if v and not DEAL_COLUMN_RE.match(v):
+            raise ValueError("invalid column name for deal_code_column")
+        return v
+
+    @field_validator("deal_table_id")
+    @classmethod
+    def _deal_table(cls, v):
+        v = (v or "").strip()
+        if v and not TABLE_ID_RE.match(v):
+            raise ValueError("deal_table_id must be project.dataset.table")
         return v
 
     @field_validator("extra_reference_columns")

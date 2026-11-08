@@ -82,7 +82,8 @@ def excluded_summary(conn, scope_key: str, window: dict) -> dict | None:
 def panel_for_run(tr: dict, conn=None):
     """Exactly the panel a training run used, rebuilt from its stored train_start..train_end (never from the CURRENT
     window or max_train_days settings, which may have changed since). None when the run has no stored range or the
-    data is gone."""
+    data is gone. 1.3.2: with the extra-features context its stored configuration needs (feature_set, ly_history_start)."""
+    from ..ml import extra_features
     from ..ml.features import build_panel
     from . import open_hours_override
     if not tr or not tr.get("train_start") or not tr.get("train_end"):
@@ -94,7 +95,9 @@ def panel_for_run(tr: dict, conn=None):
     applied = open_hours_override.recorded(tr)
     if applied:
         d, _ = open_hours_override.fill(d, applied)
-    return build_panel(d, end_date=tr["train_end"], start_date=tr["train_start"])
+    panel = build_panel(d, end_date=tr["train_end"], start_date=tr["train_start"])
+    del d
+    return extra_features.attach(panel, tr["scope_key"], extra_features.config_of_run(tr), conn)
 
 
 def bigquery_scope_key(bq) -> str:

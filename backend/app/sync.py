@@ -75,6 +75,16 @@ def _d1_window(bq, st: dict | None, day: date, mhash: str) -> tuple[date, bool, 
     return start, full, floor
 
 
+def backfill_floor(bq, day: date | None = None) -> date:
+    """1.3.2 (docs/hoc_lai_2025_deal_20261030.md 1.1): first day an EXPLICIT backfill (preview + backup) may read - the
+    read floor of the regular D-1, or the earlier data_policy.extended_history_start_date when it is set. Used by the
+    backfill only: the regular D-1 window, the full reload, the history day check and the mapping hash keep the read
+    floor (connector.read_range)."""
+    floor = connector.read_range(bq, day)[0]
+    ext = ss.get("data_policy").extended_history_start_date
+    return min(floor, date.fromisoformat(ext)) if ext else floor
+
+
 def check_output(rows: list[dict]) -> dict:
     """The aggregated rows before anything is written: exactly one row per day x SKU x FC, a valid date, a SKU and FC,
     a real quantity (not NULL / NaN / negative). Nothing is turned into zero: one bad row stops the load."""
@@ -285,7 +295,7 @@ def backfill_preview(start: str, end: str) -> dict:
         raise AppError("BQ_VALIDATION_REQUIRED", 409, mapping_hash=connector.mapping_hash(bq))
     snap = sql_sources.snapshot("history")
     day = today_vn() - timedelta(days=1)
-    floor = connector.read_range(bq, day)[0]
+    floor = backfill_floor(bq, day)
     s, e = _backfill_window(start, end, floor, day)
     scope_key, mhash = bigquery_scope_key(bq), connector.mapping_hash(bq)
     with db.read() as c:
@@ -304,7 +314,7 @@ def backfill_preview(start: str, end: str) -> dict:
     try:
         version = _source_version(snap)
         out["source_version"] = version
-        res = connector.fetch_daily(s, e, snap, context="backfill preview")
+        res = connector.fetch_daily(s, e, snap, context="backfill preview", floor=floor)
         check_output(res["rows"])
         with db.read() as c:
             before = {(r[0], r[1], r[2]): r[3] for r in c.execute(
@@ -418,8 +428,10 @@ def run_d1_sync(job_id: str | None = None, fallback_mode: bool | None = None, ba
     mhash = connector.mapping_hash(bq)
     floor = connector.read_range(bq, day)[0]
     preview = None
+    # 1.3.2: a backfill may read from the extended history start (backfill_floor); None = the read floor as before
+    read_floor = backfill_floor(bq, day) if backfill else None
     if backfill:
-        start, end = _backfill_window(backfill_start, backfill_end, floor, day)
+        start, end = _backfill_window(backfill_start, backfill_end, read_floor, day)
         if not (st and st.get("mapping_hash") == mhash):
             raise AppError("VALIDATION_ERROR", 422, detail="run a normal D-1 sync with the current mapping first")
         preview = check_backfill_preview(backfill_preview_id, start, end, mhash, snap)
@@ -431,7 +443,7 @@ def run_d1_sync(job_id: str | None = None, fallback_mode: bool | None = None, ba
     # mapping vs live source, exact-duplicate gate on the raw rows (BLOCK: report, nothing written), aggregation
     started = now_iso()
     version = _source_version(snap)
-    res = connector.fetch_daily(start, end, snap, context=f"D-1 job {job_id or '-'}")
+    res = connector.fetch_daily(start, end, snap, context=f"D-1 job {job_id or '-'}", floor=read_floor)
     check_output(res["rows"])
     backup = None
     if backfill:
@@ -548,6 +560,9 @@ def run_d1_sync(job_id: str | None = None, fallback_mode: bool | None = None, ba
                 "estimated_bytes": res["estimated_bytes"], "job_id": job_id, "load_id": load_id,
                 # 1.2.13: source version read (stable during the load) and the history-sync plan that was written
                 "source_version": version, "history_sync": {**plan["summary"], "rows_logged": wr["rows_logged"]}}
+        if backfill:
+            # 1.3.2: first day this backfill could read (data_policy.extended_history_start_date when set)
+            info["backfill_floor"] = str(read_floor)
         if not backfill:
             _state_set(c, f"last_d1_sync:{scope_key}", info)
         else:
@@ -557,7 +572,50 @@ def run_d1_sync(job_id: str | None = None, fallback_mode: bool | None = None, ba
     _after_d1(scope_key, job_id)
     # 1.2.13: the stored history before this load's window, compared with the source (informative, never failing)
     hist = None if backfill else _history_day_check(scope_key, bq, res["window"]["start"], snap, load_id)
-    return {"status": "SUCCEEDED", "reason_code": "BACKFILL_DONE" if backfill else None, **info, "history_check": hist}
+    # 1.3.2 (docs/hoc_lai_2025_deal_20261030.md 1.2), after the demand committed - never failing the load: the
+    # order-line deal codes of exactly the window this load wrote, then (regular load only) the deal table
+    deal_lines = (_deal_lines_quietly(scope_key, w0, w1, "BACKFILL" if backfill else "D1_SYNC", job_id, snap, version)
+                  if bq.deal_code_column else None)
+    deal_refresh = None
+    if bq.deal_table_id and not backfill:
+        from .bq import deal_source
+        deal_refresh = deal_source.refresh_quietly("D1_SYNC", job_id)
+    return {"status": "SUCCEEDED", "reason_code": "BACKFILL_DONE" if backfill else None, **info, "history_check": hist,
+            "deal_lines": deal_lines, "deal_refresh": deal_refresh}
+
+
+def _deal_lines_quietly(scope_key: str, start: str, end: str, trigger: str, job_id: str | None, snap: dict,
+                        version: str | None) -> dict:
+    """1.3.2: deal_lines.load_window for the window of a D-1 load / backfill, in calendar-month chunks oldest first
+    (each its own query, transaction and deal_line_loads row: a full reload never reads the whole window at once). An
+    error never fails the load: the chunks before it stay written, the loop stops, one WARNING alert
+    (DEAL_LINES_EXCEED_DEMAND, or DEAL_LINES_LOAD_FAILED) with the window, the failed month and the months done,
+    {status: FAILED} returned. The next load of a window replaces its lines again (CLI deal-lines-load for an older
+    window)."""
+    from .bq import deal_lines
+    done: list[dict] = []
+    cs = ce = None
+    try:
+        for cs, ce in deal_lines.months(date.fromisoformat(start), date.fromisoformat(end)):
+            r = deal_lines.load_window(scope_key, cs, ce, trigger, job_id=job_id, snap=snap, version=version)
+            done.append({k: r[k] for k in ("load_id", "window", "rows_written", "rows_removed", "qty")})
+        return {"status": "SUCCEEDED", "window": {"start": start, "end": end}, "trigger": trigger, "chunks": done,
+                "rows_written": sum(x["rows_written"] for x in done), "qty": sum(x["qty"] for x in done)}
+    except Exception as ex:  # noqa: BLE001 - informative data of the deal features; the demand is written
+        log.warning("deal lines not loaded", exc_info=True, extra={"ctx": {"job_id": job_id, "window": [start, end]}})
+        err = ex.to_dict() if isinstance(ex, AppError) else {"code": type(ex).__name__, "detail": str(ex)[:300]}
+        code = "DEAL_LINES_EXCEED_DEMAND" if isinstance(ex, AppError) and ex.code == "DEAL_LINES_EXCEED_DEMAND" \
+            else "DEAL_LINES_LOAD_FAILED"
+        failed = {"start": str(cs), "end": str(ce)} if cs else None
+        try:
+            with db.tx() as c:
+                db.alert(c, "WARNING", code, {"window": [start, end], "failed_chunk": failed,
+                                              "chunks_done": [x["window"] for x in done], "trigger": trigger,
+                                              "job_id": job_id, "error": err}, "scope", scope_key)
+        except Exception:  # noqa: BLE001 - a locked database never fails the D-1 load (the result still says FAILED)
+            log.warning("deal lines alert not written", exc_info=True, extra={"ctx": {"job_id": job_id}})
+        return {"status": "FAILED", "window": {"start": start, "end": end}, "trigger": trigger, "chunks": done,
+                "failed_chunk": failed, "error": err}
 
 
 def d1_dry_run() -> dict:

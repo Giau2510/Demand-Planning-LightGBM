@@ -45,6 +45,14 @@ def reverse_0010(c) -> None:
     c.execute("DELETE FROM schema_migrations WHERE version = 10")
 
 
+def reverse_0012(c) -> None:
+    """1.3.2: the reverse statements in the header of migration 0012 (copy only) - reversed before 0011."""
+    for t in ("deals", "deal_snapshots", "deal_line_loads", "demand_deal_daily"):
+        c.execute(f"DROP TABLE {t}")
+    c.execute("ALTER TABLE forecast_refresh_values DROP COLUMN deal_active")
+    c.execute("DELETE FROM schema_migrations WHERE version = 12")
+
+
 def reverse_0011(c) -> None:
     """1.3.1: the reverse statements in the header of migration 0011 (copy only) - reversed before 0010."""
     for t in ("training_feature_importance", "accuracy_report_runs", "actual_daily", "forecast_refresh_values",
@@ -412,12 +420,14 @@ def test_legacy_rows_get_no_status_from_the_migration_and_the_dry_run_measures_t
     res = db.migrate(src)
     # 1.2.13: the upgrade path continues with 0010 (history sync); 0009 is still applied first
     assert res["applied"] == ["0009_actual_finalization.sql", "0010_history_sync.sql",
-                              "0011_lgbm_chot.sql"] and res["to"] == 11             # 1.3.1: + 0011, additive
+                              "0011_lgbm_chot.sql",                                 # 1.3.1: + 0011, additive
+                              "0012_ly_deal.sql"] and res["to"] == 12               # 1.3.2: + 0012, additive
     c = sqlite3.connect(src)
     assert c.execute("SELECT * FROM demand_daily ORDER BY rowid").fetchall() == before    # nothing changed
     assert [c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in FINAL_TABLES] == [0, 0]   # no status invented
     assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-    reverse_0011(c)                                                       # 1.3.1: the newest migration first
+    reverse_0012(c)                                                       # 1.3.2: the newest migration first
+    reverse_0011(c)                                                       # 1.3.1: then 0011
     reverse_0010(c)                                                       # 1.2.13: the newer migration first
     reverse_0009(c)                                                       # the header's reverse statements (copy only)
     c.commit()
@@ -425,7 +435,7 @@ def test_legacy_rows_get_no_status_from_the_migration_and_the_dry_run_measures_t
                          "OR name LIKE 'trg_af%'").fetchall()
     c.close()
     assert db.migrate(src)["applied"] == ["0009_actual_finalization.sql", "0010_history_sync.sql",
-                                          "0011_lgbm_chot.sql"]
+                                          "0011_lgbm_chot.sql", "0012_ly_deal.sql"]
     assert db.migrate(src)["applied"] == []
 
 

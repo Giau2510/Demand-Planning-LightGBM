@@ -636,7 +636,7 @@ def read_range(bq, end: date | None = None, conn=None) -> tuple[date, date]:
 
 
 def _src_cte(bq, with_refs: bool, start_param="start", end_param="end", distinct: bool = False,
-             snap: dict | None = None, praw: bool = False) -> str:
+             snap: dict | None = None, praw: bool = False, extra: tuple[str, ...] = ()) -> str:
     od = _order_date_expr(bq)
     key = _key_expr(snap) or "CAST(NULL AS STRING)"
     # _pend: the row is a pending order (PENDING_STATUSES), exempt from the exact-duplicate rule. praw (duplicate check
@@ -644,6 +644,9 @@ def _src_cte(bq, with_refs: bool, start_param="start", end_param="end", distinct
     # (informative, never blocking); the source row has an alias for it
     rel, row = (_rel(bq, snap), "_user_sql") if _is_sql(snap) else (f"{_table_ref(bq)} AS _src_row", "_src_row")
     raw = f", {_pending_raw_expr(bq, row)} AS _praw" if praw else ""
+    # 1.3.2: extra select expressions of the same source rows (deal_lines.py: the order-line deal code); none = the
+    # text of 1.3.1
+    raw += "".join(f", {x}" for x in extra)
     return (f"SELECT {'DISTINCT ' if distinct else ''}{_select_list(bq, with_refs)}, {od} AS _order_date, {key} AS _key, "
             f"{_pending_src_expr(bq)} AS _pend{raw} FROM {rel} WHERE {od} BETWEEN @{start_param} AND @{end_param}"
             f"{_partition_filter(bq, start_param, end_param, snap)}")
@@ -1323,14 +1326,17 @@ def _key_gate(snap: dict | None, key_dups: str | None, where: str) -> int | None
     return n
 
 
-def fetch_daily(start: date, end: date, snap: dict | None = None, context: str = "", prechecked: bool = False) -> dict:
+def fetch_daily(start: date, end: date, snap: dict | None = None, context: str = "", prechecked: bool = False,
+                floor: date | None = None) -> dict:
     """Aggregated SKU × FC × day rows + a full reconciliation of what was read, kept, excluded (by reason).
     Order: mapping vs live source, exact-duplicate gate on the RAW rows (BLOCK: report + stop), then the aggregation
-    (`prechecked`: the caller already ran the first two steps on the same window and snapshot)."""
+    (`prechecked`: the caller already ran the first two steps on the same window and snapshot). 1.3.2: `floor` = the
+    first day that may be read (an explicit backfill: sync.backfill_floor); None = the read range as before."""
     bq = ss.get("bigquery")
     _require_config(bq)
     snap = _snap(snap)
-    floor, _ = read_range(bq, end)
+    if floor is None:
+        floor, _ = read_range(bq, end)
     start = max(start, floor)
     if not prechecked:
         cols = require_mapping(bq, snap)["columns"]

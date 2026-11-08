@@ -195,8 +195,105 @@ def describe(name: str, target_date: str | None = None) -> dict:
                  vi={"name": vi, "formula": fvi, "meaning": mvi, "unit": uvi, "missing": missvi},
                  en={"name": en, "formula": fen, "meaning": men, "unit": uen, "missing": missen})
         return e
+    if name in EXTRA:
+        # 1.3.2: computed at the forecast origin (DIRECT models only); the window is relative to the origin, not the
+        # target day, so no calendar window is given
+        g, w, vi, en, fvi, fen, mvi, men, uvi, uen, missvi, missen = EXTRA[name]
+        e.update(group=g, window_days=w,
+                 vi={"name": vi, "formula": fvi, "meaning": mvi, "unit": uvi, "missing": missvi},
+                 en={"name": en, "formula": fen, "meaning": men, "unit": uen, "missing": missen})
+        return e
     return {**e, "group": "OTHER", "vi": {"name": name, "formula": "Không có mô tả.", "meaning": "", "unit": "", "missing": ""},
             "en": {"name": name, "formula": "No description.", "meaning": "", "unit": "", "missing": ""}}
+
+
+# 1.3.2 (docs/hoc_lai_2025_deal_20261030.md 1.4, ml/extra_features.py): the extra features of model.feature_set CHOT_LY
+# (same period last year) and CHOT_LY_DEAL (+ deals), computed at the forecast origin from what is known at its 00:00
+# (Vietnam time). Same tuple layout as `other` in describe().
+_LY_MISSING = ("Cửa sổ bắt đầu trước ngày đầu lịch sử mở rộng (model.ly_history_start) → thiếu (NaN); ngày không có dòng nhu cầu = 0.",
+               "A window starting before the first day of the extended history (model.ly_history_start) → missing (NaN); a day without a demand row = 0.")
+_NO_DEAL = ("Không có deal đang chạy tại mốc → thiếu (NaN).", "No running deal at the origin → missing (NaN).")
+_NO_DEAL_0 = ("Không có deal đang chạy tại mốc → 0.", "No running deal at the origin → 0.")
+_RUNNING = ("deal đang chạy = deal hợp lệ của SKU × kho có ready_time ≤ mốc 00:00 và end_time ≥ mốc 00:00 (giờ Việt Nam)",
+            "running deal = a valid deal of the SKU × FC with ready_time ≤ origin 00:00 and end_time ≥ origin 00:00 (Vietnam time)")
+EXTRA = {
+    "ly_same_day": ("SAME_PERIOD_LAST_YEAR", 1, "Nhu cầu cùng ngày năm trước", "Demand on the same day last year",
+                    "Số lượng đặt của ngày (mốc dự báo − 364 ngày), cùng thứ trong tuần của năm trước.",
+                    "Ordered quantity of the day (forecast origin − 364 days), the same weekday one year earlier.",
+                    "Mùa vụ theo năm.", "Yearly seasonality.", "đơn vị", "units", *_LY_MISSING),
+    "ly_mean_7": ("SAME_PERIOD_LAST_YEAR", 7, "Trung bình 7 ngày cùng kỳ năm trước", "Same-period-last-year 7-day mean",
+                  "Tổng số lượng của các ngày (mốc − 367) … (mốc − 361) ÷ 7.",
+                  "Sum of the quantities of the days (origin − 367) … (origin − 361) ÷ 7.",
+                  "Mức bán quanh cùng ngày năm trước.", "Level around the same day last year.", "đơn vị/ngày", "units/day",
+                  *_LY_MISSING),
+    "ly_mean_28": ("SAME_PERIOD_LAST_YEAR", 28, "Trung bình 28 ngày cùng kỳ năm trước", "Same-period-last-year 28-day mean",
+                   "Tổng số lượng của các ngày (mốc − 391) … (mốc − 364) ÷ 28.",
+                   "Sum of the quantities of the days (origin − 391) … (origin − 364) ÷ 28.",
+                   "Mức bán của 4 tuần cùng kỳ năm trước.", "Level of the same 4 weeks last year.", "đơn vị/ngày",
+                   "units/day", *_LY_MISSING),
+    "ly_trend": ("SAME_PERIOD_LAST_YEAR", 56, "Xu hướng cùng kỳ năm trước", "Same-period-last-year trend",
+                 "ly_mean_28 ÷ trung bình 28 ngày (mốc − 419) … (mốc − 392); mẫu số = 0 → 1.",
+                 "ly_mean_28 ÷ the mean of the 28 days (origin − 419) … (origin − 392); denominator 0 → 1.",
+                 "Năm trước nhu cầu đang tăng hay giảm vào thời điểm này.",
+                 "Whether demand was rising or falling at this time last year.", "tỷ lệ", "ratio", *_LY_MISSING),
+    "deal_active": ("DEAL", 1, "Đang có deal tại mốc dự báo", "Deal running at the forecast origin",
+                    f"1 nếu SKU × kho có ít nhất một {_RUNNING[0]}, ngược lại 0.",
+                    f"1 if the SKU × FC has at least one {_RUNNING[1]}, else 0.",
+                    "Deal làm tăng nhu cầu trong thời gian chạy.", "A deal lifts demand while it runs.", "0/1", "0/1",
+                    "Không có deal → 0.", "No deal → 0."),
+    "deal_days_since_start": ("DEAL", 1, "Số ngày từ khi deal bắt đầu", "Days since the deal started",
+                              f"Mốc − ngày bắt đầu (ngày của ready_time), nhỏ nhất trong các deal đang chạy ({_RUNNING[0]}).",
+                              f"Origin − start day (day of ready_time), the smallest over the running deals ({_RUNNING[1]}).",
+                              "Deal mới bắt đầu hay đã chạy lâu.", "Whether the deal is new or has run for long.", "ngày",
+                              "days", *_NO_DEAL),
+    "deal_days_to_end": ("DEAL", 1, "Số ngày đến khi deal kết thúc", "Days until the deal ends",
+                         "Ngày kết thúc (ngày của end_time) − mốc, lớn nhất trong các deal đang chạy.",
+                         "End day (day of end_time) − origin, the largest over the running deals.",
+                         "Deal còn chạy bao lâu.", "How long the deal still runs.", "ngày", "days", *_NO_DEAL),
+    "deal_max_qty": ("DEAL", 1, "Hạn mức của deal đang chạy", "Quantity cap of the running deals",
+                     "Σ max_quantity của các deal đang chạy (hạn mức trống tính 0).",
+                     "Σ max_quantity of the running deals (an empty cap counts 0).",
+                     "Quy mô deal.", "Size of the deal.", "đơn vị", "units", *_NO_DEAL),
+    "deal_used_to_date": ("DEAL", 1, "Lượng deal đã dùng đến hôm trước", "Deal quantity used up to the day before",
+                          "Σ số lượng các dòng đơn mang mã của các deal đang chạy, từ ngày đầu lịch sử đến ngày trước mốc.",
+                          "Σ quantities of the order lines carrying the code of a running deal, from the first history day to the day before the origin.",
+                          "Deal đã được dùng bao nhiêu.", "How much of the deal was used.", "đơn vị", "units", *_NO_DEAL_0),
+    "deal_remaining_ratio": ("DEAL", 1, "Tỷ lệ hạn mức deal còn lại", "Remaining share of the deal cap",
+                             "1 − deal_used_to_date ÷ deal_max_qty (không chặn ở 0); hạn mức = 0 → thiếu.",
+                             "1 − deal_used_to_date ÷ deal_max_qty (not clipped at 0); cap 0 → missing.",
+                             "Deal sắp hết hạn mức thì bán chậm lại.", "A deal close to its cap slows down.", "tỷ lệ",
+                             "ratio", *_NO_DEAL),
+    "deal_used_1": ("DEAL", 1, "Lượng deal dùng hôm trước", "Deal quantity used the day before",
+                    "Σ số lượng các dòng đơn của ngày trước mốc mang mã của các deal đang chạy.",
+                    "Σ quantities of the order lines of the day before the origin carrying the code of a running deal.",
+                    "Tốc độ dùng deal gần nhất.", "Latest deal usage pace.", "đơn vị", "units", *_NO_DEAL_0),
+    "deal_used_7": ("DEAL", 7, "Lượng deal dùng 7 ngày trước", "Deal quantity used in the previous 7 days",
+                    "Σ số lượng các dòng đơn của 7 ngày trước mốc mang mã của các deal đang chạy.",
+                    "Σ quantities of the order lines of the 7 days before the origin carrying the code of a running deal.",
+                    "Tốc độ dùng deal trong tuần.", "Weekly deal usage pace.", "đơn vị", "units", *_NO_DEAL_0),
+    "n_active_deals": ("DEAL", 1, "Số deal đang chạy", "Number of running deals",
+                       "Số deal đang chạy của SKU × kho tại mốc.", "Number of running deals of the SKU × FC at the origin.",
+                       "Nhiều deal cùng lúc.", "Overlapping deals.", "deal", "deals", "Không có deal → 0.", "No deal → 0."),
+    "sku_deal_uplift_hist": ("DEAL", None, "Mức tăng bán khi có deal (lịch sử SKU × kho)",
+                             "Deal uplift (history of the SKU × FC)",
+                             "Trung bình, trên các deal của SKU × kho đã kết thúc trước mốc, của (bán trong các ngày deal ÷ số ngày) ÷ trung bình 28 ngày trước deal; deal có nền 0 không tính.",
+                             "Mean, over the deals of the SKU × FC finished before the origin, of (sales in the deal days ÷ days) ÷ the mean of the 28 days before the deal; a deal with base 0 is left out.",
+                             "Deal trước đây làm tăng bán bao nhiêu lần.", "How much past deals lifted sales.", "lần",
+                             "times", "Chưa có deal đã kết thúc có nền > 0 → thiếu (NaN).",
+                             "No finished deal with a base > 0 → missing (NaN)."),
+    "sku_deal_usage_hist": ("DEAL", None, "Tỷ lệ dùng hạn mức deal (lịch sử)", "Deal cap usage (history)",
+                            "Trung bình quantity_used ÷ max_quantity của các deal của SKU × kho đã kết thúc trước mốc (max_quantity > 0).",
+                            "Mean quantity_used ÷ max_quantity of the deals of the SKU × FC finished before the origin (max_quantity > 0).",
+                            "Deal trước đây có dùng hết hạn mức không.", "Whether past deals used their cap.", "tỷ lệ",
+                            "ratio", "Không có deal đã kết thúc có hạn mức > 0 → thiếu (NaN).",
+                            "No finished deal with a cap > 0 → missing (NaN)."),
+    "grp_deal_uplift_hist": ("DEAL", None, "Mức tăng bán khi có deal của nhóm A/B/C", "Deal uplift of the A/B/C group",
+                             "Khi SKU × kho chưa có sku_deal_uplift_hist: trung bình uplift của mọi deal đã kết thúc trước mốc của các SKU × kho cùng nhóm A/B/C (quy tắc B7 tại ngày 1 của tháng của mốc, trên 90 ngày trước đó; ngày mở bán = giờ mở bán > 0).",
+                             "When the SKU × FC has no sku_deal_uplift_hist: mean uplift of every deal finished before the origin of the SKU × FC of the same A/B/C group (B7 rule at the first day of the origin's month over the 90 days before; open day = open hours > 0).",
+                             "Hiệu quả deal của các mặt hàng tương tự.", "Deal effect of similar items.", "lần", "times",
+                             "Đã có uplift riêng, không có nhóm hoặc nhóm chưa có deal → thiếu (NaN).",
+                             "Own uplift present, no group, or no deal in the group → missing (NaN)."),
+}
 
 
 ROLES = {   # expected role of each feature group (business wording)
@@ -209,6 +306,11 @@ ROLES = {   # expected role of each feature group (business wording)
     "AVAILABILITY": ("Ảnh hưởng của số giờ SKU mở bán đã biết.", "Effect of the known hours the SKU was open for sale."),
     "CUSTOMER": ("Hành vi mua lại đã biết của tập khách (chỉ số tổng hợp, không theo từng khách).",
                  "Known repeat behaviour of the customer base (aggregates, never per customer)."),
+    # 1.3.2
+    "SAME_PERIOD_LAST_YEAR": ("Mức bán cùng kỳ năm trước (mùa vụ theo năm), từ lịch sử mở rộng.",
+                              "Sales of the same period last year (yearly seasonality), from the extended history."),
+    "DEAL": ("Deal đang chạy và hiệu quả của deal trong lịch sử, đã biết tại mốc dự báo.",
+             "Running deals and the deal history known at the forecast origin."),
     "OTHER": ("", ""),
 }
 

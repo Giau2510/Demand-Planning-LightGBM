@@ -34,6 +34,7 @@ from ..data import open_hours_override
 from ..data.demand import resolve_scope
 from ..messages import AppError
 from ..timeutil import now_iso, today_vn
+from . import extra_features as xf
 from . import features as ft
 from . import model, pipeline
 from . import treeshap_trace as tt
@@ -272,6 +273,11 @@ def _feature_rows(names: list[str], row: np.ndarray, p: ft.Panel, s: int, mcfg, 
 
     raw_price = {str(r.order_date)[:10]: _num(r.avg_unit_price) for r in raw.itertuples() if _num(r.avg_unit_price) is not None}
     cal = dict(zip(ft.CALENDAR, ft.calendar_row(target, mcfg)))
+    # 1.3.2: extra features of the origin day (ml/extra_features.py); the same-period-last-year ones are recomputed below
+    # from the daily demand of the context, the deal ones are shown as the production module computes them
+    origin = (p.dates[-1] + pd.Timedelta(days=1)).date()
+    xn = [n for n in names if n in xf.ALL_NAMES]
+    xv = dict(zip(xn, p.extra.block(origin, xn)[s])) if xn and p.extra is not None else {}
     out = []
     for j, name in enumerate(names):
         v = _num(row[j])
@@ -369,6 +375,30 @@ def _feature_rows(names: list[str], row: np.ndarray, p: ft.Panel, s: int, mcfg, 
                 e.update(kind="ratio_of_sums", params={"w": 28, "numerator": a, "denominator": b, "sum_numerator": sa,
                                                        "sum_denominator": sb, "n_days": len(both)})
             e["inputs"] = ins
+        elif name in xf.LY_NAMES and p.extra is not None:
+            def ly_mean(a: int, b: int):        # mean of the days origin-a .. origin-b (None when one is before day0)
+                vals = p.extra.daily(p.keys[s], origin - timedelta(days=a), origin - timedelta(days=b))
+                ins = [{"date": dte, "value": v} for dte, v in vals]
+                return (None if any(v is None for _, v in vals) else sum(v for _, v in vals) / len(vals)), ins
+            span = {"ly_same_day": (364, 364), "ly_mean_7": (367, 361), "ly_mean_28": (391, 364),
+                    "ly_trend": (391, 364)}[name]
+            rec, ins = ly_mean(*span)
+            params = {"origin": str(origin), "days_before_origin": list(span),
+                      "window": [str(origin - timedelta(days=span[0])), str(origin - timedelta(days=span[1]))],
+                      "ly_history_start": str(p.extra.day0)}
+            if name == "ly_trend":
+                # numerator = ly_mean_28 (origin-391 .. origin-364), denominator = the 28 days before (origin-419 .. -392)
+                prev, ins_prev = ly_mean(419, 392)
+                ins = ins_prev + ins
+                params.update(numerator=rec, denominator=prev, denominator_days_before_origin=[419, 392],
+                              denominator_window=[str(origin - timedelta(days=419)), str(origin - timedelta(days=392))],
+                              zero_denominator_value=1.0)
+                rec = None if rec is None or prev is None else (rec / prev if prev > 0 else 1.0)
+            e.update(kind="same_period_last_year", params=params, inputs=ins)
+        elif name in xf.DEAL_NAMES and name in xv:
+            rec = _num(xv[name])
+            e.update(kind="deal", params={"origin": str(origin), "independent": False,
+                                          "computed_by": "ml/extra_features.ExtraContext.deal_block"})
         elif name in ft.CALENDAR:
             rec = _num(cal[name])
             e.update(kind="calendar", params={"target_date": str(target.date()), "weekday_encoding": ft.weekday_encoding(mcfg),
@@ -576,6 +606,12 @@ def _compute(c, fr: dict, tr: dict, sku_id, fc_id, day: str) -> dict:
         return _status("DATA_UNAVAILABLE", "the stored data window does not end on the run's data_as_of", run=run_info,
                        selection=sel)
     s = p.keys.index((sku, fc))
+    try:
+        # 1.3.2: the extra features of the model's feature set (history from its ly_history_start, deals); only the
+        # origin is computed (nothing for CHOT)
+        xf.attach(p, fr["scope_key"], mcfg, c, first_origin=(p.dates[-1] + pd.Timedelta(days=1)).date())
+    except AppError as e:
+        return _status("DATA_UNAVAILABLE", f"{e.code}: {e.detail or ''}", run=run_info, selection=sel)
     names = ft.feature_names(mcfg)
     side = json.loads((paths.models_dir() / (Path(tr["model_path"]).stem + ".json")).read_text(encoding="utf-8"))
     codes = {"sku": sku, "fc": fc, "sku_code": float(side["sku_codes"].get(sku, -1)),

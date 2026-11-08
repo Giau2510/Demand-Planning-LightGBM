@@ -93,6 +93,56 @@ def _refresh_checks(c) -> list[dict]:
     return out
 
 
+def _deal_checks(c) -> list[dict]:
+    """1.3.2 (migration 0012, bq/deal_lines.py, bq/deal_source.py): the deal-code lines stay within the stored demand of
+    their key and inside the window of the load that wrote them; a snapshot without rows points to a snapshot of the
+    same table that holds the same content; the stored deals are the rows of the latest snapshot of their table;
+    forecast_refresh_values.deal_active is 0, 1 or NULL (runs of the last REFRESH_RECENT_DAYS forecast days). Skipped
+    before migration 0012."""
+    if not _q(c, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='demand_deal_daily'"):
+        return []
+    out = [_check(
+        "deal_lines_within_demand",
+        "every demand_deal_daily key has a demand_daily row and its deal-code quantity (all codes) is at most the stored "
+        "demand + 1e-6 (the load refuses otherwise: a later demand change, e.g. a backfill, explains it - reload the "
+        "deal lines of that month)",
+        _q(c, "SELECT l.scope_key, l.order_date, l.sku_id, l.fc_id, TOTAL(l.qty) AS deal_qty, d.qty FROM demand_deal_daily l "
+              "LEFT JOIN demand_daily d ON d.scope_key = l.scope_key AND d.order_date = l.order_date AND d.sku_id = l.sku_id "
+              "AND d.fc_id = l.fc_id GROUP BY 1, 2, 3, 4 HAVING d.qty IS NULL OR TOTAL(l.qty) > d.qty + 1e-6 LIMIT 50"),
+        fail=False)]
+    out.append(_check(
+        "deal_lines_load_window",
+        "every demand_deal_daily row was written by a recorded deal_line_loads load of its scope whose window covers its day",
+        _q(c, "SELECT l.scope_key, l.order_date, l.load_id, COUNT(*) FROM demand_deal_daily l LEFT JOIN deal_line_loads d "
+              "ON d.load_id = l.load_id WHERE d.load_id IS NULL OR d.scope_key != l.scope_key OR l.order_date < "
+              "d.range_start OR l.order_date > d.range_end GROUP BY 1, 2, 3 LIMIT 50"), fail=False))
+    out.append(_check(
+        "deal_snapshot_same_as",
+        "every deal_snapshots.same_as points to a snapshot of the same source table that holds the rows (rows_gz) and has "
+        "the same content_sha256",
+        _q(c, "SELECT s.id, s.same_as, t.source_table, t.rows_gz IS NULL, t.content_sha256 = s.content_sha256 FROM "
+              "deal_snapshots s LEFT JOIN deal_snapshots t ON t.id = s.same_as WHERE s.same_as IS NOT NULL AND (t.id IS "
+              "NULL OR t.source_table != s.source_table OR t.rows_gz IS NULL OR t.content_sha256 != s.content_sha256)")))
+    out.append(_check(
+        "deals_latest_snapshot",
+        "the stored deals of a source table are the rows of its latest snapshot (deals.snapshot_id = that snapshot, or "
+        "the snapshot holding its rows when it has the same content)",
+        _q(c, "WITH latest AS (SELECT s.source_table, COALESCE(s.same_as, s.id) AS holder FROM deal_snapshots s WHERE "
+              "s.rowid = (SELECT s2.rowid FROM deal_snapshots s2 WHERE s2.source_table = s.source_table ORDER BY "
+              "s2.taken_at DESC, s2.rowid DESC LIMIT 1)) SELECT d.source_table, d.snapshot_id, l.holder, COUNT(*) FROM "
+              "deals d LEFT JOIN latest l ON l.source_table = d.source_table WHERE l.holder IS NULL OR d.snapshot_id != "
+              "l.holder GROUP BY 1, 2, 3"), fail=False))
+    if "deal_active" in {r[1] for r in c.execute("PRAGMA table_info(forecast_refresh_values)")}:
+        from .timeutil import today_vn
+        since = str(today_vn() - timedelta(days=REFRESH_RECENT_DAYS))
+        out.append(_check(
+            "refresh_values_deal_active", f"forecast_refresh_values.deal_active is 0, 1 or NULL (runs since {since})",
+            _q(c, "SELECT v.run_id, v.target_date, v.fc_code, v.sku_code, v.deal_active FROM forecast_refresh_runs r CROSS "
+                  "JOIN forecast_refresh_values v ON v.run_id = r.id WHERE r.forecast_date >= ? AND v.deal_active IS NOT "
+                  "NULL AND v.deal_active NOT IN (0, 1) LIMIT 50", (since,))))
+    return out
+
+
 def _history_sync_checks(c) -> list[dict]:
     """1.2.13 (migration 0010, data/history_sync.py): every ACTIVE held line sits inside a stored row that holds at least
     its units; the protection triggers exist; finalized days whose stored total differs from the frozen actual (changed
@@ -438,6 +488,7 @@ def _run(c, db_path: Path, models_dir: Path | None) -> dict:
                           [(t,) for t in sorted(set(FINAL_TRIGGERS) - have)]))
     out.extend(_history_sync_checks(c))
     out.extend(_refresh_checks(c))
+    out.extend(_deal_checks(c))
     model_bad = []
     if models_dir is not None:
         for rid, mv, mp, sha in _q(c, "SELECT id, model_version, model_path, model_sha256 FROM training_runs "

@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from ..weekday import iso_weekday
+from .extra_features import extra_names
 
 LAGS = [1, 2, 3, 4, 5, 6, 7, 14, 21, 28]
 ROLL_WINDOWS = [7, 14, 28, 56]
@@ -44,6 +45,9 @@ class Panel:
     customers: np.ndarray | None = None
     repeat_customers: np.ndarray | None = None
     repeat_interval: np.ndarray | None = None
+    # 1.3.2: ExtraContext of the same-period-last-year / deal features (ml/extra_features.py, attached for a model whose
+    # feature_set needs them); None = no extra feature can be computed from this panel
+    extra: object | None = None
 
     @property
     def n_series(self) -> int:
@@ -61,7 +65,7 @@ class Panel:
                      self.disc[:, :t_end].copy(), self.promo[:, :t_end].copy(),
                      self.start_idx.copy(), self.missing_days[:t_end].copy(), self.sku_codes, self.fc_codes,
                      hours=cut(self.hours), customers=cut(self.customers), repeat_customers=cut(self.repeat_customers),
-                     repeat_interval=cut(self.repeat_interval))
+                     repeat_interval=cut(self.repeat_interval), extra=self.extra)
 
 
 def _ffill_rows(a: np.ndarray) -> np.ndarray:
@@ -219,6 +223,8 @@ def _all_names(cfg) -> list[str]:
         names += OPEN_HOURS
     if customer_on(cfg):
         names += CUSTOMER
+    # 1.3.2: the extra features of the feature set, last of the origin columns (CHOT: none)
+    names += extra_names(cfg)
     return names
 
 
@@ -324,6 +330,17 @@ def features_at(p: Panel, Y: np.ndarray, price: np.ndarray, disc: np.ndarray, pr
             cols.append(_nanmean(n))        # mean distinct customers of the known days
             cols.append(_ratio(r, n))       # share of repeat customers
             cols.append(_ratio(iv, r))      # mean days since the previous order of the repeat customers
+    xn = extra_names(cfg)
+    if xn:
+        # 1.3.2: the block of the origin day D = first panel day + t (data before D 00:00 only, ml/extra_features.py);
+        # a name dropped by the feature table is not computed (its placeholder column is left out below)
+        want = [n for n in xn if n not in dropped_features(cfg)]
+        if want and p.extra is None:     # never an all-unknown column passed off as the input
+            raise ValueError("EXTRA_FEATURES_NOT_IN_PANEL: the model uses the extra features "
+                             f"{getattr(cfg, 'feature_set', None)} but the panel has no extra context")
+        blk = p.extra.block((p.dates[0] + pd.Timedelta(days=t)).date(), want) if want else None
+        pos = {n: i for i, n in enumerate(want)}
+        cols += [blk[:, pos[n]] if n in pos else np.full(S, np.nan) for n in xn]
     drop = dropped_features(cfg)
     if drop:
         # 1.3.1: the dropped columns are left out; every other column is the same value as without the rule

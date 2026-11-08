@@ -257,15 +257,20 @@ def _export_workbook(c, run: dict, extra: dict, dcfg, names: dict) -> bytes:
     for k, v in info:
         ws.append([k, v])
     ws = wb.create_sheet("Dự báo")
+    # 1.3.2: column deal_active (1 = a valid deal of the deal table covers the day) at the end, only for a run that
+    # recorded a deal source; every other run keeps the columns of 1.3.1
+    deal = bool(detail.get("deal_active"))
     ws.append(["Ngày lập dự báo", "Ngày", "Ngày thứ", "FC/kho", "SKU", "Tên sản phẩm", "Nhóm", "LightGBM gốc",
-               "Số công bố", "Phương pháp", "Cờ"])
-    cur = c.execute(f"SELECT {', '.join(VALUE_COLS)} FROM forecast_refresh_values WHERE run_id=? "
+               "Số công bố", "Phương pháp", "Cờ"] + (["Có deal (deal_active)"] if deal else []))
+    cols = VALUE_COLS + (("deal_active",) if deal else ())
+    cur = c.execute(f"SELECT {', '.join(cols)} FROM forecast_refresh_values WHERE run_id=? "
                     "ORDER BY fc_code, sku_code, horizon", (run["id"],))
     fd = run["forecast_date"]
     while chunk := cur.fetchmany(EXPORT_CHUNK):
         for r in chunk:
             ws.append([fd, r["target_date"], r["horizon"], r["fc_code"], r["sku_code"], names.get(r["sku_code"]),
-                       r["group_code"], r["lgb_raw"], r["final_qty"], r["method"], r["flags"]])
+                       r["group_code"], r["lgb_raw"], r["final_qty"], r["method"], r["flags"]]
+                      + ([r["deal_active"]] if deal else []))
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()

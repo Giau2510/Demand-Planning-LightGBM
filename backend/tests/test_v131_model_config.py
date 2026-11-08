@@ -22,7 +22,9 @@ from app.ml.features import build_panel, static_codes
 
 # new ModelSettings keys and the value that means "as 1.2.14" (left out of the fingerprint at that value)
 NEW_MODEL_DEFAULTS = {"horizon_weight_short": None, "horizon_weight_cutoff": None, "feature_sku_code": True,
-                      "fallback_enabled": True, "feature_table": None}
+                      "fallback_enabled": True, "feature_table": None,
+                      # 1.3.2 (G3-T0): at their default they stay out of the fingerprint like the 1.3.1 keys
+                      "feature_set": "CHOT", "ly_history_start": None}
 # ModelSettings fields of 1.2.14 (af835b8), in declaration order
 MODEL_FIELDS_1214 = [
     "feature_lags", "feature_rolling", "feature_calendar", "feature_price", "feature_promotion", "feature_discount",

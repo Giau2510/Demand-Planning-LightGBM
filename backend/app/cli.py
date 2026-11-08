@@ -24,6 +24,17 @@
   apply-preset lgbm-chot [--apply]          1.3.1: settings of PHUONG AN CHOT (model, daily_forecast, flows refresh +
                                             report). Default: dry run (read-only) printing the changes; --apply saves
                                             them through settings_service / the schedule flows (idempotent)
+    [--feature-set CHOT|CHOT_LY|CHOT_LY_DEAL] 1.3.2: + model.feature_set (CHOT = the 1.3.1 preset unchanged); the
+                                            CHOT_LY* sets need data_policy.extended_history_start_date; CHOT_LY_DEAL
+                                            also sets the deal source keys of bigquery
+  deal-lines-load --start D --end D [--apply] [--max-bytes N] [--allow-empty]
+                                            1.3.2: order-line deal codes -> demand_deal_daily per calendar month,
+                                            [backfill floor .. yesterday]; default: dry run (bytes per month only)
+  deal-refresh [--apply] [--max-bytes N]    1.3.2: deal table -> one snapshot + deals (default: dry run, bytes only)
+  deal-check [--start D] [--end D]          1.3.2: read-only checks of the stored deals and deal lines
+  open-hours-load --start D --end D [--apply] [--max-bytes N]
+                                            1.3.2: historical open_hours_daily in reads of at most 15 days, oldest
+                                            first (the daily refresh watermark never moves back); default: dry run
 Exit codes: 0 ok, 1 problems, 2 refused (app running / unsafe), 3 storage error.
 """
 from __future__ import annotations
@@ -166,6 +177,27 @@ def main(argv=None) -> int:
     ap_ = sub.add_parser("apply-preset", help="1.3.1: settings of a release preset (dry run unless --apply)")
     ap_.add_argument("name", choices=sorted(PRESETS))
     ap_.add_argument("--apply", action="store_true", help="save the settings and switch the preset's flows ON")
+    ap_.add_argument("--feature-set", dest="feature_set", choices=sorted(FEATURE_SETS), default="CHOT",
+                     help="1.3.2: model.feature_set of the preset (CHOT = the 1.3.1 preset unchanged)")
+    # 1.3.2: deal source and historical open hours (docs/hoc_lai_2025_deal_20261030.md); dry run unless --apply
+    dl = sub.add_parser("deal-lines-load", help="1.3.2: order-line deal codes into demand_deal_daily, per calendar month")
+    dl.add_argument("--start", required=True)
+    dl.add_argument("--end", required=True)
+    dl.add_argument("--apply", action="store_true")
+    dl.add_argument("--max-bytes", dest="max_bytes", type=int)
+    dl.add_argument("--allow-empty", dest="allow_empty", action="store_true",
+                    help="replace stored lines of a month by a read without any deal-code line (default: refused)")
+    dr = sub.add_parser("deal-refresh", help="1.3.2: read the deal table into one snapshot + deals")
+    dr.add_argument("--apply", action="store_true")
+    dr.add_argument("--max-bytes", dest="max_bytes", type=int)
+    dk = sub.add_parser("deal-check", help="1.3.2: read-only checks of the stored deals and deal lines")
+    dk.add_argument("--start")
+    dk.add_argument("--end")
+    oh = sub.add_parser("open-hours-load", help="1.3.2: historical open hours in reads of at most 15 days")
+    oh.add_argument("--start", required=True)
+    oh.add_argument("--end", required=True)
+    oh.add_argument("--apply", action="store_true")
+    oh.add_argument("--max-bytes", dest="max_bytes", type=int)
     a = ap.parse_args(argv)
     from . import paths
     try:
@@ -296,6 +328,8 @@ def _run(a) -> int:
         return 0
     if a.cmd == "apply-preset":
         return _apply_preset(a)
+    if a.cmd in ("deal-lines-load", "deal-refresh", "deal-check", "open-hours-load"):
+        return _deal_cmd(a)
 
     from .logging_setup import setup_logging
     if a.cmd == "serve":
@@ -426,6 +460,13 @@ PRESETS = {"lgbm-chot": {
         "daily_forecast": {"enabled": True, "rounding_threshold": 0.2, "log_retention_days": 120,
                            "report_subdir": "theo-doi"}},
     "flows": ("refresh", "report")}}
+# 1.3.2 (docs/hoc_lai_2025_deal_20261030.md 1.2): --feature-set of lgbm-chot, merged into the preset sections. CHOT adds
+# nothing (the 1.3.1 preset); the CHOT_LY* sets need data_policy.extended_history_start_date (refused otherwise)
+DEAL_TABLE_ID = "lakehouse-prod-394907.gold_buymed_vn2.demand_planing_deal"
+FEATURE_SETS = {"CHOT": {},
+                "CHOT_LY": {"model": {"feature_set": "CHOT_LY"}},
+                "CHOT_LY_DEAL": {"model": {"feature_set": "CHOT_LY_DEAL"},
+                                 "bigquery": {"deal_code_column": "deal_code", "deal_table_id": DEAL_TABLE_ID}}}
 
 
 def _codes(reasons) -> list[dict]:
@@ -442,23 +483,42 @@ def _apply_preset(a) -> int:
     from . import settings_service as ss
     from .jobs import flows
     from .messages import AppError
-    preset = PRESETS[a.name]
+    fs = getattr(a, "feature_set", None) or "CHOT"
+    preset = {**PRESETS[a.name], "sections": {s: dict(v) for s, v in PRESETS[a.name]["sections"].items()}}
+    for s, vals in FEATURE_SETS[fs].items():          # 1.3.2: --feature-set (CHOT: nothing added)
+        preset["sections"][s] = {**preset["sections"].get(s, {}), **vals}
+    warnings: list[dict] = []
     with db.read() as c:
         try:
             schema = c.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] or 0
         except Exception:  # noqa: BLE001 - no migration table: an empty or foreign database
             schema = 0
         cur = {s: ss.get(s, c) for s in preset["sections"]}
+        ext = ss.get("data_policy", c).extended_history_start_date
+        if fs == "CHOT_LY_DEAL":
+            # the deal refresh needs deal_table_id saved first: an empty deals table is reported, never refused
+            try:
+                n_deals = c.execute("SELECT COUNT(*) FROM deals WHERE source_table=?", (DEAL_TABLE_ID,)).fetchone()[0]
+            except Exception:  # noqa: BLE001 - database before schema 12 (refused below at --apply)
+                n_deals = 0
+            if not n_deals:
+                warnings.append({"code": "DEAL_SOURCE_EMPTY", "source_table": DEAL_TABLE_ID,
+                                 "detail": "no deal stored yet: run 'deal-refresh --apply' (and 'deal-lines-load') "
+                                           "before training with CHOT_LY_DEAL"})
     latest = max(v for v, _ in db.available_migrations())
     changes = [{"section": s, "key": k, "from": getattr(cur[s], k), "to": v}
                for s, vals in preset["sections"].items() for k, v in vals.items() if getattr(cur[s], k) != v]
     new = {s: {**cur[s].model_dump(), **vals} for s, vals in preset["sections"].items()}
-    out = {"preset": a.name, "dry_run": not a.apply, "schema_version": schema, "schema_required": latest}
+    out = {"preset": a.name, "feature_set": fs, "dry_run": not a.apply, "schema_version": schema,
+           "schema_required": latest, "warnings": warnings}
 
     def _refuse(why: str) -> int:
         print(json.dumps({"ok": False, **out, "refused": why, "changes": changes}, indent=2, ensure_ascii=False,
                          default=str))
         return 2
+    if fs != "CHOT" and not ext:
+        return _refuse(f"feature set {fs} needs data_policy.extended_history_start_date (the same-period-last-year "
+                       "features read the stored demand from it): set it first; nothing was saved")
     try:
         for s, v in new.items():
             ss.SECTIONS[s].model_validate(v)        # nothing is saved unless every section is valid
@@ -505,6 +565,164 @@ def _apply_preset(a) -> int:
                       "message": None if changed else "nothing to change: the preset is already applied"},
                      indent=2, ensure_ascii=False, default=str))
     return 1 if any(not r["to"] for r in res) else 0
+
+
+def _spans(s, e, days: int) -> list[tuple]:
+    """[s, e] split into chunks of at most `days` days, oldest first."""
+    from datetime import timedelta
+    out = []
+    while s <= e:
+        ce = min(e, s + timedelta(days=days - 1))
+        out.append((s, ce))
+        s = ce + timedelta(days=1)
+    return out
+
+
+OPEN_HOURS_LOAD_DAYS = 15
+
+
+def _open_hours_sql(table: str) -> str:
+    # the text of aux_sources.fetch_open_hours (dry run of a chunk only; the load itself goes through that function)
+    return (f"SELECT fc_code, sku_code, CAST(open_date AS STRING) AS open_date, MAX(total_open_hours) AS total_open_hours, "
+            f"COUNT(DISTINCT item_code) AS n_items FROM `{table}` "
+            f"WHERE open_date BETWEEN @start AND @end AND seller_code = @seller "
+            f"AND fc_code IS NOT NULL AND sku_code IS NOT NULL GROUP BY fc_code, sku_code, open_date "
+            f"ORDER BY open_date, fc_code, sku_code")
+
+
+def _chunk_failed(out: dict, cs, ce, est, code: str, detail) -> dict:
+    out["chunks"].append({"start": str(cs), "end": str(ce), "status": "FAILED", "estimated_bytes": est,
+                          "error": {"code": code, "detail": detail}})
+    out.update(ok=False, stopped_at=str(cs))
+    return out
+
+
+def _deal_cmd(a) -> int:
+    """1.3.2 deal source / historical open-hours commands on the configured database. One JSON object; exit 0 ok,
+    1 a chunk / the read failed (the chunks before it stay written), 2 refused (nothing written; --apply while the app
+    runs or a job is active is refused)."""
+    from datetime import date, timedelta
+    from . import db, paths, sync
+    from . import settings_service as ss
+    from .bq import aux_sources, connector, deal_lines, deal_source, sql_sources
+    from .data.demand import bigquery_scope_key
+    from .logging_setup import setup_logging
+    from .messages import AppError
+    from .timeutil import today_vn
+    setup_logging()
+    paths.ensure_storage()
+
+    def _print(obj, rc: int) -> int:
+        print(json.dumps(obj, indent=2, default=str, ensure_ascii=False))
+        return rc
+
+    def _refuse(why: str) -> int:
+        return _print({"ok": False, "command": a.cmd, "refused": why}, 2)
+    # never migrates (as the history-sync commands): the tables of migration 0012 are needed
+    with db.read() as c:
+        ver = c.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] \
+            if c.execute("SELECT 1 FROM sqlite_master WHERE name='schema_migrations'").fetchone() else None
+    if (ver or 0) < 12:
+        return _refuse(f"database schema {ver}: these commands need schema 12 (release 1.3.2 installed); nothing was "
+                       "changed")
+    bq = ss.get("bigquery")
+    scope_key = bigquery_scope_key(bq)
+    if a.cmd == "deal-check":
+        return _print(deal_source.checks(scope_key, a.start, a.end), 0)
+    if a.apply:
+        # a write runs only while the app is stopped and no job is active (as restore / storage-migrate): the app's
+        # own D-1 / backfill writes the same tables
+        from .jobs.flows import ACTIVE_STATUSES
+        from .storage_migrate import app_running
+        rt = app_running()
+        if rt:
+            return _refuse(f"the app appears to be running (pid {rt.get('pid')}, port {rt.get('port')}): stop it first; "
+                           "nothing was changed")
+        with db.read() as c:
+            act = db.one(c, f"SELECT id, job_type, status FROM job_runs WHERE status IN "
+                            f"({','.join('?' * len(ACTIVE_STATUSES))}) ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                         ACTIVE_STATUSES)
+        if act:
+            return _refuse(f"job {act['id']} ({act['job_type']}) is {act['status']}: wait until no job is active; "
+                           "nothing was changed")
+    try:
+        if a.cmd == "deal-refresh":
+            if not bq.deal_table_id:
+                return _refuse("bigquery.deal_table_id is not set")
+            if not a.apply:
+                return _print({"ok": True, "command": a.cmd, "dry_run": True, **deal_source.estimate(a.max_bytes)}, 0)
+            return _print({"ok": True, "command": a.cmd, "dry_run": False,
+                           **deal_source.refresh("MANUAL", max_bytes=a.max_bytes)}, 0)
+        try:
+            s, e = date.fromisoformat(a.start), date.fromisoformat(a.end)
+        except ValueError as ex:
+            return _refuse(f"dates must be YYYY-MM-DD: {ex}")
+        day = today_vn() - timedelta(days=1)          # yesterday on the Vietnam calendar: today is never read
+        if a.cmd == "deal-lines-load":
+            if not bq.deal_code_column:
+                return _refuse("bigquery.deal_code_column is not set")
+            if not connector.validation_ok_for_current():
+                return _refuse("the BigQuery validation is not current for the saved mapping (BQ_VALIDATION_REQUIRED)")
+            s, e = max(s, sync.backfill_floor(bq, day)), min(e, day)
+            if e < s:
+                return _refuse(f"empty window {s}..{e} (from the backfill floor to yesterday)")
+            out = {"ok": True, "command": a.cmd, "dry_run": not a.apply, "scope_key": scope_key,
+                   "window": {"start": str(s), "end": str(e)}, "chunks": []}
+            snap = sql_sources.snapshot("history")
+            for cs, ce in deal_lines.months(s, e):
+                if not a.apply:
+                    est = deal_lines.estimate(cs, ce, snap)
+                    out["chunks"].append({"start": str(cs), "end": str(ce), "estimated_bytes": est,
+                                          "above_max_bytes": a.max_bytes is not None and est > a.max_bytes})
+                    continue
+                try:
+                    r = deal_lines.load_window(scope_key, cs, ce, "MANUAL", snap=snap,
+                                               version=sync._source_version(snap), max_bytes=a.max_bytes,
+                                               allow_empty=a.allow_empty)
+                except AppError as ex:
+                    return _print(_chunk_failed(out, cs, ce, ex.params.get("estimated_bytes"), ex.code, ex.detail), 1)
+                out["chunks"].append({"start": str(cs), "end": str(ce), "status": "SUCCEEDED",
+                                      **{k: r[k] for k in ("load_id", "estimated_bytes", "rows_written", "rows_removed",
+                                                           "qty", "lines_read", "qty_read")}})
+            return _print(out, 0)
+        # open-hours-load
+        cfg = ss.get("daily_forecast")
+        table, seller = aux_sources.open_hours_source(cfg)
+        if not table:
+            return _refuse("daily_forecast.openhours_table is not set")
+        e = min(e, day)
+        if e < s:
+            return _refuse(f"empty window {s}..{e} (at most yesterday)")
+        out = {"ok": True, "command": a.cmd, "dry_run": not a.apply, "source_table": table, "seller_code": seller,
+               "window": {"start": str(s), "end": str(e)}, "chunks": []}
+        client = connector._client(bq)
+        modified = aux_sources.source_modified(cfg, bq) if a.apply else None
+        for cs, ce in _spans(s, e, OPEN_HOURS_LOAD_DAYS):
+            params = [("start", "DATE", cs), ("end", "DATE", ce), ("seller", "STRING", seller)]
+            if not a.apply or a.max_bytes is not None:
+                est = connector._run(client, bq, "daily_open_hours", _open_hours_sql(table), params,
+                                     dry_run_only=True)["estimated_bytes"]
+                if not a.apply:
+                    out["chunks"].append({"start": str(cs), "end": str(ce), "estimated_bytes": est,
+                                          "above_max_bytes": a.max_bytes is not None and est > a.max_bytes})
+                    continue
+                if est > a.max_bytes:
+                    return _print(_chunk_failed(out, cs, ce, est, "BQ_QUERY_TOO_EXPENSIVE",
+                                                f"{est} bytes > --max-bytes {a.max_bytes}"), 1)
+            # the incremental watermark of the daily refresh (last_day of the latest completed read) never moves back:
+            # the recorded last_day is max(days of this chunk, that last_day)
+            with db.read() as c:
+                done = aux_sources.last_completed_read(c, aux_sources.KIND_OPEN_HOURS, table, seller)
+            try:
+                r = aux_sources.fetch_open_hours(cs, ce, cfg, bq, source_modified=modified,
+                                                 last_day=done["last_day"] if done else None)
+            except AppError as ex:
+                return _print(_chunk_failed(out, cs, ce, ex.params.get("estimated_bytes"), ex.code, ex.detail), 1)
+            out["chunks"].append({"start": str(cs), "end": str(ce), "status": "SUCCEEDED",
+                                  **{k: r[k] for k in ("rows", "estimated_bytes", "last_day", "kept_on_conflict")}})
+        return _print(out, 0)
+    except AppError as ex:
+        return _print({"ok": False, "command": a.cmd, "code": ex.code, "detail": ex.detail, "params": ex.params}, 1)
 
 
 def _bq_check() -> int:

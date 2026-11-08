@@ -35,7 +35,7 @@ from ..data import open_hours, open_hours_override
 from ..data.demand import data_window, load_demand, resolve_scope
 from ..messages import AppError
 from ..timeutil import VN_TZ, now_iso, now_vn, today_vn
-from . import model, pipeline, sku_group
+from . import extra_features, model, pipeline, sku_group
 from .features import build_panel, feature_names, is_direct
 
 log = logging.getLogger("df.refresh")
@@ -84,16 +84,21 @@ def config_version(model_fingerprint: str | None, threshold: float, horizon: int
 
 
 def compute(panel, booster, mcfg, horizon: int, d: date, *, sku_codes: dict | None, fc_codes: dict | None,
-            groups: dict, threshold: float, baseline: bool = False, cancel=None) -> dict:
+            groups: dict, threshold: float, baseline: bool = False, cancel=None, deal_active=None) -> dict:
     """Forecast of every series of `panel` for the `horizon` days starting at d (= the day after the panel).
 
     booster / sku_codes / fc_codes: the model and the category codes saved with it (never the panel's own codes);
     baseline: the model in use published the 28-day baseline (no booster). groups: {(fc_code, sku_code): group code}.
     Returns keys [(fc_code, sku_code)], dates [ISO], raw (S x H float, the model output), final (S x H int64,
     published_qty(raw, threshold)), methods, groups (code or None), flags (per series, comma-separated or None).
-    No DB, no network."""
+    1.3.2: deal_active = S x H 0 / 1 of the deal table per series and target day (extra_features.deal_active_matrix),
+    returned as given (None = deals not configured: stored NULL). No DB, no network."""
     if str(panel.dates[-1].date()) != str(d - timedelta(days=1)):
         raise ValueError(f"panel ends {panel.dates[-1].date()}, expected {d - timedelta(days=1)}")
+    if deal_active is not None:
+        deal_active = np.asarray(deal_active, dtype=np.int8)
+        if deal_active.shape != (panel.n_series, horizon):
+            raise ValueError(f"deal_active {deal_active.shape}, expected {(panel.n_series, horizon)}")
     if baseline:
         fc = model.baseline_run(panel, horizon)
     else:
@@ -115,7 +120,7 @@ def compute(panel, booster, mcfg, horizon: int, d: date, *, sku_codes: dict | No
         flags.append(",".join(f) or None)
     return {"keys": keys, "dates": [str(x.date()) for x in fc["dates"]], "raw": raw, "final": final,
             "methods": np.asarray(fc["methods"], dtype=object), "groups": g, "flags": flags,
-            "unknown_codes": sum(1 for f in flags if f and FLAG_CODE_UNKNOWN in f)}
+            "unknown_codes": sum(1 for f in flags if f and FLAG_CODE_UNKNOWN in f), "deal_active": deal_active}
 
 
 # ------------------------------------------------------------------ model in use + panel
@@ -179,6 +184,19 @@ def build_refresh_panel(scope: dict, d: date, mcfg):
     if str(panel.dates[-1].date()) != str(d - timedelta(days=1)):
         raise NotReady("DATA_NOT_UP_TO_DATE", f"last demand day {panel.dates[-1].date()}, expected "
                                               f"{d - timedelta(days=1)}", last_day=str(panel.dates[-1].date()))
+    # 1.3.2: the extra features of the model's own feature set, data up to d-1; only the origin d is computed (CHOT:
+    # nothing). The same input checks as the training (history and deal lines loaded for every day read, a missing day
+    # is never 0): not there yet -> NotReady with the uncovered days (retried until the deadline); the checks are kept
+    # in the run detail (extra_features.sources)
+    chk = None
+    if extra_features.extra_names(mcfg):
+        try:
+            with db.read() as c:
+                chk = extra_features.check_sources(c, mcfg, scope["scope_key"], d - timedelta(days=1),
+                                                   window_start=window["configured_start"], first_origin=d)
+        except AppError as e:
+            raise NotReady(e.code, e.detail or "") from e
+    extra_features.attach(panel, scope["scope_key"], mcfg, first_origin=d, sources=chk)
     return panel, window
 
 
@@ -247,9 +265,13 @@ def _refresh(d: date, cfg, job_id, cancel, stage, trigger) -> dict:
     if cancel and cancel():
         raise model.Cancelled()
     grp = sku_group.ensure_groups(d, sk, window["start"], oh_source)
+    # 1.3.2: output column deal_active (a valid deal of the deal table covers the target day; None = not configured)
+    with db.read() as c:
+        deal_active, deal_src = extra_features.deal_active_matrix(
+            c, panel.keys, [d + timedelta(days=h) for h in range(horizon)])
     stage("FORECASTING")
     res = compute(panel, booster, mcfg, horizon, d, sku_codes=sku_codes, fc_codes=fc_codes, groups=grp["groups"],
-                  threshold=cfg.rounding_threshold, baseline=baseline, cancel=cancel)
+                  threshold=cfg.rounding_threshold, baseline=baseline, cancel=cancel, deal_active=deal_active)
     if cancel and cancel():
         raise model.Cancelled()
 
@@ -257,7 +279,7 @@ def _refresh(d: date, cfg, job_id, cancel, stage, trigger) -> dict:
     fingerprint = fcj.get("config_fingerprint")
     cv = config_version(fingerprint, cfg.rounding_threshold, horizon)
     run_id = db.new_id("FRR")
-    detail = _detail(res, panel, window, grp, oh, d1, baseline, horizon, cfg)
+    detail = _detail(res, panel, window, grp, oh, d1, baseline, horizon, cfg, deal_src)
     n, n_lgb = _persist(run_id, d, res, grp, inc, cv, fingerprint, cfg, horizon, job_id, trigger, detail, scope_key=sk)
     log.info("daily forecast published", extra={"ctx": {"run_id": run_id, "business_date": str(d), "rows": n,
                                                          "model_version": fr["model_version"]}})
@@ -364,7 +386,7 @@ def _counts(values) -> dict:
     return {str(k): int(v) for k, v in zip(u, n)}
 
 
-def _detail(res, panel, window, grp, oh, d1, baseline, horizon, cfg) -> dict:
+def _detail(res, panel, window, grp, oh, d1, baseline, horizon, cfg, deal_src=None) -> dict:
     flags = [t for f in res["flags"] for t in (f.split(",") if f else [])]
     return {"horizon": horizon, "rounding_threshold": cfg.rounding_threshold,
             "panel": {"start": str(panel.dates[0].date()), "end": str(panel.dates[-1].date()),
@@ -378,7 +400,12 @@ def _detail(res, panel, window, grp, oh, d1, baseline, horizon, cfg) -> dict:
             "open_hours_last_day": grp.get("open_hours_last_day"),
             "open_hours_read": {k: oh.get(k) for k in ("start", "end", "rows", "last_day", "mode", "kept_on_conflict",
                                                        "source_modified", "skipped", "error")},
-            "d1_job_id": d1.get("id")}
+            "d1_job_id": d1.get("id"),
+            # 1.3.2: the deal-table snapshot behind deal_active (None = deals not configured) and the extra-features
+            # context the model read (None = feature set CHOT)
+            "deal_snapshot_id": (deal_src or {}).get("snapshot_id"),
+            "deal_active": ({k: deal_src[k] for k in ("table", "snapshot_id", "n_deals")} if deal_src else None),
+            "extra_features": panel.extra.info if panel.extra is not None else None}
 
 
 def _num(x):
@@ -392,11 +419,14 @@ def _persist(run_id, d, res, grp, inc, cv, fingerprint, cfg, horizon, job_id, tr
     fr, tr = inc["forecast_run"], inc["training_run"]
     at = now_iso()
 
+    da = res.get("deal_active")     # 1.3.2: None = deals not configured (NULL)
+
     def rows():                     # the S x H value tuples, generated while written (never one full list)
         for s, k in enumerate(res["keys"]):
             m, g, fl = str(res["methods"][s]), res["groups"][s], res["flags"][s]
             for h, td in enumerate(res["dates"]):
-                yield run_id, h + 1, td, k[0], k[1], _num(res["raw"][s, h]), int(res["final"][s, h]), m, g, fl
+                yield (run_id, h + 1, td, k[0], k[1], _num(res["raw"][s, h]), int(res["final"][s, h]), m, g, fl,
+                       None if da is None else int(da[s, h]))
     n_lgb = int(np.sum(res["methods"] == model.METHOD_LGBM))
     n_series = len(res["keys"])
     with db.tx() as c:
@@ -408,7 +438,8 @@ def _persist(run_id, d, res, grp, inc, cv, fingerprint, cfg, horizon, job_id, tr
                    fingerprint, cv, int(bool(cfg.trial_mode)), int(horizon), n_series, n_lgb, n_series - n_lgb,
                    grp["computed_for"], job_id, at, json.dumps(detail, default=str)))
         n = c.executemany("INSERT INTO forecast_refresh_values(run_id, horizon, target_date, fc_code, sku_code, "
-                          "lgb_raw, final_qty, method, group_code, flags) VALUES (?,?,?,?,?,?,?,?,?,?)", rows()).rowcount
+                          "lgb_raw, final_qty, method, group_code, flags, deal_active) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                          rows()).rowcount
         db.audit(c, "DAILY_FORECAST_PUBLISHED", "forecast_refresh_run", run_id,
                  {"forecast_date": str(d), "model_version": fr["model_version"], "rows": n,
                   "config_version": cv, "trial_mode": bool(cfg.trial_mode), "trigger": trigger,

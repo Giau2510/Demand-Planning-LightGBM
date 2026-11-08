@@ -27,7 +27,7 @@ from ..data.demand import panel_for_run
 from ..messages import AppError
 from ..weekday import iso_weekday
 from . import model
-from . import feature_catalog
+from . import extra_features, feature_catalog
 from .features import LAGS, LAST_SALE_WINDOW, ROLL_WINDOWS, is_direct
 
 HISTORY_WINDOW_DAYS = 56
@@ -72,6 +72,9 @@ def _feature_info(name: str) -> tuple[str, str]:
             k = name[len(prefix) + 1:]
             vi, en = FEATURE_INFO[prefix]
             return vi.format(k=k), en.format(k=k)
+    if name in extra_features.ALL_NAMES:     # 1.3.2: same period last year / deal, described by the feature catalogue
+        d = feature_catalog.describe(name)
+        return d["vi"]["formula"], d["en"]["formula"]
     return FEATURE_INFO.get(name, (name, name))
 
 

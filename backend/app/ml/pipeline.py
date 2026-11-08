@@ -21,6 +21,7 @@ from ..data.demand import data_window, excluded_summary, fingerprint, load_deman
 from ..data.quality import build_report
 from ..messages import AppError
 from ..timeutil import now_iso, now_vn, today_vn
+from . import extra_features
 from . import feature_registry as registry
 from . import feature_report, model
 from .features import OPEN_HOURS, build_panel, feature_names, is_direct
@@ -28,9 +29,10 @@ from .features import OPEN_HOURS, build_panel, feature_names, is_direct
 log = logging.getLogger("df.pipeline")
 
 
-# 1.3.1: ModelSettings keys added after 1.2.14 and the value that means "as before" (left out of the fingerprint)
+# 1.3.1: ModelSettings keys added after 1.2.14 and the value that means "as before" (left out of the fingerprint);
+# 1.3.2: + the feature set and the start of the same-period-last-year history
 _NEW_MODEL_KEY_DEFAULTS = {"horizon_weight_short": None, "horizon_weight_cutoff": None, "feature_sku_code": True,
-                           "fallback_enabled": True}
+                           "fallback_enabled": True, "feature_set": "CHOT", "ly_history_start": None}
 
 
 def _rule_is_default(rule) -> bool:
@@ -268,7 +270,13 @@ def compare_with_incumbent(panel, cand_bt: dict, cand_cfg, inc_tr: dict, qcfg, c
         except Exception as e:  # noqa: BLE001 - old/unknown configuration: no comparison, never a guess
             return {**out, "incumbent": None, "verdict": "INSUFFICIENT_DATA", "reason": "INCUMBENT_CONFIG_UNAVAILABLE",
                     "detail": type(e).__name__}
-        inc_bt = model.backtest(panel, inc_cfg, qcfg.mape_min_actual, cancel)
+        try:
+            # 1.3.2: the incumbent's own extra features (its feature set and ly_history_start), whatever the candidate's
+            inc_panel = extra_features.for_config(panel, inc_tr.get("scope_key"), inc_cfg)
+        except Exception as e:  # noqa: BLE001 - an input of the incumbent is not there: no comparison, never a guess
+            return {**out, "incumbent": None, "verdict": "INSUFFICIENT_DATA", "reason": "INCUMBENT_INPUTS_UNAVAILABLE",
+                    "detail": getattr(e, "code", None) or type(e).__name__}
+        inc_bt = model.backtest(inc_panel, inc_cfg, qcfg.mape_min_actual, cancel)
     i = inc_bt["metrics"]
     out["incumbent"] = i
     n = c.get("n_points") or 0
@@ -389,6 +397,7 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
                 raise AppError(blockers[0]["code"], 409, detail=blockers[0]["detail"])
         mcfg_settings = ss.get("model", c)
         ftable = ss.get("feature_table", c)
+        ext_start = ss.get("data_policy", c).extended_history_start_date
         qcfg = ss.get("quality", c)
         hcfg = ss.get("horizons", c)
         fp = fingerprint(scope["scope_key"], c)
@@ -426,6 +435,20 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
     # 1.3.1 (B11): the non-default rows of the feature table as they are NOW, stored with the run: its training,
     # backtest, comparison with the incumbent and every later rebuild use exactly this table
     mcfg = mcfg.model_copy(update={"feature_table": feature_table_snapshot(ftable)})
+    if extra_features.extra_names(mcfg):
+        # 1.3.2: the same-period-last-year features read the stored demand from data_policy.extended_history_start_date,
+        # copied into model.ly_history_start of the run (its DAY0 for every later rebuild); a missing input refuses the
+        # run before any training_runs row, like the other configuration blockers (AppError, nothing written)
+        if not ext_start:
+            raise AppError("LY_HISTORY_NOT_CONFIGURED", 409, detail=f"feature_set {mcfg.feature_set}: "
+                                                                    "data_policy.extended_history_start_date is not set")
+        mcfg = mcfg.model_copy(update={"ly_history_start": ext_start})
+        with db.read() as c:
+            # refuses a history / deal lines not loaded for every day the features read (a missing day is not 0);
+            # records the coverage, the duplicate deal keys and the open hours of each origin month's group window
+            decisions["extra_features"] = extra_features.check_sources(
+                c, mcfg, scope["scope_key"], window["end"], window_start=window["configured_start"],
+                first_origin=window["start"])
     decisions["open_hours"] = {"mandatory": oh_chk is not None, "used": oh_chk is not None,
                                "reason": "MANDATORY_DATA_OK" if oh_chk is not None else "NOT_IN_SOURCE",
                                "window_check": oh_chk, "features": list(OPEN_HOURS),
@@ -520,6 +543,9 @@ def train_and_publish(job_id: str | None = None, force: bool = False, cancel=Non
                     "training_run_id": run_id, "error": det}
         panel = build_panel(demand, max_days=mcfg.max_train_days)
         del demand      # 1.2.13: the panel holds everything the job needs; the loaded frame is not kept to the end
+        # 1.3.2: the extra features' context (history from model.ly_history_start, deals) up to the panel's last day;
+        # nothing for the feature set CHOT
+        extra_features.attach(panel, scope["scope_key"], mcfg)
         log.info("training window", extra={"ctx": {"training_run_id": run_id, "window": window["start"] + ".." +
                                                    window["end"], "panel": f"{panel.dates[0].date()}..{panel.dates[-1].date()}",
                                                    "series": panel.n_series}})

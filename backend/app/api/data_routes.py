@@ -51,7 +51,11 @@ def put_settings(section: str, body: dict):
         # 1.3.1 (B11): the feature-table snapshot is set only by a training run (on the copy stored with the run)
         if body.get("feature_table") is not None:
             raise AppError("FEATURE_TABLE_SET_BY_TRAINING", 409)
-        body = {**body, "feature_open_hours": None, "weekday_encoding": None}
+        # 1.3.2: the start of the same-period-last-year history is set only by a training run (copy stored with the run)
+        if body.get("ly_history_start") is not None:
+            raise AppError("LY_HISTORY_SET_BY_TRAINING", 409,
+                           detail=f"ly_history_start={body.get('ly_history_start')!r}")
+        body = {**body, "feature_open_hours": None, "weekday_encoding": None, "ly_history_start": None}
     if section == "feature_table":
         # 1.3.1 (B11): only through PUT /api/feature-table (confirmation, history + audit)
         raise AppError("FEATURE_TABLE_VIA_OWN_API", 409)
