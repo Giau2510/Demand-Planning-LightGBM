@@ -5,6 +5,27 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.4.9 (configurable BigQuery source tables)
+
+Owner order 08/11/2026 ~21:40. No schema change; with the tables as configured today every read, forecast number and
+file is that of 1.4.8.
+
+* **Page "Kết nối BigQuery", section "Bảng nguồn D-1 / D-0"**: four more fields under "Bảng phụ" (full id
+  project.dataset.table, one-line purpose, "Kiểm tra" and "Kiểm tra & lưu" like the D-1 / D-0 fields):
+  `daily_forecast.openhours_table`, `sel2_pipeline.avg_demand_table`, `sel2_pipeline.avg_demand_hist_table`,
+  `bigquery.product_names_table`. The check (`bq/source_tables.py`, kinds `openhours`, `avg_demand`,
+  `avg_demand_hist`, `product_names`) reads metadata only (no query, no cost): the table exists, is readable, has the
+  configured location and every column the app reads with a compatible type; a table is saved (settings history kept)
+  only after a PASSED check of that exact id; no production lock for these tables.
+* **Product names table as a full id**: the code default is now `lakehouse-prod-394907.gold_buymed_vn2.dim_sku` (the
+  table the short default `dim_sku` resolved to with the production D-1 table); a stored short name keeps working
+  (joined with project / dataset of the D-1 table) and is shown as its effective full id.
+* **Open-hours owner rule (six keys)**: `data/open_hours_override.py` applies to the scope of the CONFIGURED D-1 table
+  (`current_scope_key`) instead of the fixed production table name; the six keys, the rule and its checks are
+  unchanged (with the production D-1 table the scope is identical).
+* Changed defaults: `bigquery.product_names_table` `dim_sku` -> `lakehouse-prod-394907.gold_buymed_vn2.dim_sku` (same
+  table on the production installation, which stores its own value).
+
 ## 1.4.8 (SO-line cache + spike flags v3 + spike excess; spike cleaning switch OFF)
 
 Owner rules 07-08/11/2026 (spike cleaning v3 + E4, B3 of the decision log). Schema 13 (migration

@@ -1,6 +1,8 @@
 """Product names for the forecast results (1.2.4): SKU -> product name, display and search only.
 
-Source: the BigQuery table `<project>.<dataset>.<bigquery.product_names_table>` (default dim_sku: one row per sku_code,
+Source: the BigQuery table `bigquery.product_names_table` (1.4.9: a full id project.dataset.table, default
+lakehouse-prod-394907.gold_buymed_vn2.dim_sku, set and checked on the BigQuery page (bq/source_tables); a short name
+stored by an older version is joined with project / dataset of the D-1 table as before) (dim_sku: one row per sku_code,
 checked 17/10/2026: 298,517 rows = 298,517 distinct sku_code, no empty name), read-only, dry-run first, byte cap.
 Only the SKUs present in the local BIGQUERY data are kept. A SKU with more than one distinct name in the source is
 AMBIGUOUS and gets no name (never one of them picked at random); a SKU missing in the source has none. The mapping is a

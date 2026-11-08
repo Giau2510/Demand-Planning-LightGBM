@@ -340,6 +340,7 @@ def _open_hours_checks(c) -> list[dict]:
                      "AND (open_hours IS NOT NULL OR open_hours_status IS NOT NULL) GROUP BY 1, 2")),
     ]
     from .settings_service import DataPolicySettings
+    from pydantic import ValidationError
     from .data import open_hours_override
     p = c.execute("SELECT value_json FROM app_settings WHERE section='data_policy'").fetchone()
     pol = DataPolicySettings.model_validate(json.loads(p[0])) if p else DataPolicySettings()
@@ -347,7 +348,13 @@ def _open_hours_checks(c) -> list[dict]:
     end = str((datetime.now(timezone.utc) + timedelta(hours=7)).date() - timedelta(days=1))      # yesterday, Vietnam
     # 1.2.12: rows covered by the owner's adhoc rule for six exact keys (the same check as the training) do not count as
     # not ready; they are listed by open_hours_owner_override below, the keys it does not cover with their reason
-    ovr = open_hours_override.resolve(c, open_hours_override.SCOPE_KEY, start, end)
+    # 1.4.9: the scope of the configured D-1 table; a stored bigquery section that fails validation does not stop the
+    # data check: the scope the evidence was read from is used then
+    try:
+        ovr_scope = open_hours_override.current_scope_key(c)
+    except ValidationError:
+        ovr_scope = open_hours_override.SCOPE_KEY
+    ovr = open_hours_override.resolve(c, ovr_scope, start, end, rule_scope=ovr_scope)
     keys = [(a["business_date"], a["sku_id"], a["fc_id"]) for a in ovr["applied"]]
     skip, skip_p = "", []
     if keys:

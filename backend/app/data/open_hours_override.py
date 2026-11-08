@@ -33,6 +33,9 @@ Scope and safety:
   approved listings and the same minimum and maximum (two listings: the pair of values is fully determined). A reload
   without such a record (e.g. written by an older version) or with different values keeps blocking. So a reload that
   changes nothing in the evidence (e.g. a full reload after a new column mapping) no longer needs a new approval.
+* 1.4.9 (owner 08/11/2026): the scope follows the D-1 table configured on the BigQuery page (current_scope_key) instead
+  of the fixed name of the production table; the six keys, the rule and every check above are unchanged, and with the
+  production D-1 table the scope is exactly SCOPE_KEY.
 
 Evidence: read-only BigQuery queries of 21/10/2026 on the table snapshot modified 2026-10-21 00:10:38 UTC (07:10:38
 Vietnam time), the snapshot the stored rows were loaded from; reports/release-1.2.12-20261021/
@@ -53,6 +56,8 @@ VERIFY_VERSION = "1.2.13"           # per-load verification of the evidence (ver
 APPROVED_ON = "2026-10-21"
 REASON = ("MULTI_ITEM: the listings of the SKU sold through this FC that day have different open hours; owner-approved "
           "adhoc rule for this key only: maximum of the valid listing-level values")
+# the scope of the D-1 table the evidence was read from (= the production D-1 table); 1.4.9: the rule applies to the
+# scope of the CONFIGURED D-1 table (current_scope_key), this one while no D-1 table is configured
 SCOPE_KEY = "BIGQUERY:lakehouse-prod-394907.gold_buymed_vn2.demand_planing_lightgbm"
 SOURCE_SNAPSHOT = "2026-10-21T00:10:38.658000+00:00"
 # demand_daily.loaded_at of the six rows = backfill JOB-20261021052939-2D9CCE, which read that same source snapshot
@@ -70,6 +75,17 @@ APPROVED_KEYS = (
     ("2026-08-26", "MEDX.COU-STR-001", "BD", 42.0, 8, {"MEDX.COU-STR-001.1": 23.72, "MEDX.COU-STR-001.2": 24.0}),
     ("2026-08-26", "MEDX.D6TABCV8", "BD", 4.0, 4, {"MEDX.D6TABCV8.1": 22.85, "MEDX.D6TABCV8.2": 18.22}),
 )
+
+
+def current_scope_key(conn=None) -> str:
+    """1.4.9: the scope the rule applies to = the scope key of the D-1 table configured on the BigQuery page
+    (bigquery.project_id / dataset_id / source_table, data.demand.bigquery_scope_key), so a renamed D-1 table of the
+    company system keeps the rule (the six keys are day x SKU x FC; every other gate below is unchanged). SCOPE_KEY
+    while no D-1 table is configured. With the production D-1 table the result is exactly SCOPE_KEY."""
+    from .. import settings_service as ss
+    from .demand import bigquery_scope_key
+    bq = ss.get("bigquery", conn)
+    return bigquery_scope_key(bq) if bq.dataset_id and bq.source_table else SCOPE_KEY
 
 
 def listing_max(values) -> tuple[float | None, str | None]:
@@ -104,18 +120,19 @@ def approved() -> list[dict]:
     return recs
 
 
-def resolve(conn, scope_key: str, start: str, end: str) -> dict:
+def resolve(conn, scope_key: str, start: str, end: str, rule_scope: str | None = None) -> dict:
     """Which approved keys apply to the stored rows of [start, end] of a scope (read-only, one primary-key read per key).
     applied: the stored row exists, is still MULTI_ITEM without a value, has the approved quantity, number of orders and
     load, and its listing values are valid. Every other approved key is listed in not_applied with its reason:
     NOT_IN_WINDOW / ROW_NOT_FOUND (no such row in the model input: nothing to give a value) and STORED_STATUS_OK (the
     source now gives one value: nothing to replace) do not block; every other reason leaves the stored row blocking
     (it is still MULTI_ITEM or another not-OK status, counted by window_check)."""
+    rule_scope = rule_scope or current_scope_key(conn)      # given by data_checks (its own fallback)
     out = {"rule": RULE_ID, "version": RULE_VERSION, "approved_on": APPROVED_ON, "reason": REASON,
            "source_snapshot": SOURCE_SNAPSHOT, "approved_loaded_at": APPROVED_LOADED_AT, "scope_key": scope_key,
-           "applies_to_scope": scope_key == SCOPE_KEY, "window": [start, end], "checked_at": now_iso(),
+           "applies_to_scope": scope_key == rule_scope, "window": [start, end], "checked_at": now_iso(),
            "applied": [], "not_applied": []}
-    if scope_key != SCOPE_KEY:
+    if scope_key != rule_scope:
         return out
     for rec in approved():
         rec = dict(rec)
@@ -177,7 +194,7 @@ def verify_load(scope_key: str, rows, start: str, end: str) -> dict | None:
     """1.2.13: compare, BEFORE a load / backfill writes, the source aggregate of every approved key inside [start, end]
     with the recorded evidence. Returns the record stored with the run (None for any other scope): per key `match`, the
     reason (ROW_NOT_FOUND / CONTENT_CHANGED / LISTING_VALUES_CHANGED) and the observed values. Read-only; no query."""
-    if scope_key != SCOPE_KEY:
+    if scope_key != current_scope_key():
         return None
     want = {(r["business_date"], r["sku_id"], r["fc_id"]): r for r in approved() if start <= r["business_date"] <= end}
     out = {"rule": RULE_ID, "verify_version": VERIFY_VERSION, "checked_at": now_iso(), "window": [start, end], "keys": []}

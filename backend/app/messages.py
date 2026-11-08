@@ -180,14 +180,18 @@ CATALOG: dict[str, tuple[str, str]] = {
                                      "Model released under an approved quality-gate exception (this training run only)."),
     "BQ_TABLE_ID_INVALID": ("Mã bảng phải có dạng project.dataset.table (ví dụ lakehouse-prod-394907.gold_buymed_vn2.ten_bang).",
                             "The table id must be project.dataset.table."),
-    "BQ_TABLE_CHECK_FAILED": ("Bảng chưa đạt kiểm tra (không tồn tại, thiếu quyền, sai location hoặc thiếu cột đã ánh xạ) — chưa lưu, "
+    "BQ_TABLE_CHECK_FAILED": ("Bảng chưa đạt kiểm tra (không tồn tại, thiếu quyền, sai location hoặc thiếu cột đã ánh xạ / cột cần đọc) — chưa lưu, "
                               "nguồn đang dùng giữ nguyên.",
-                              "The table did not pass the check (missing, no permission, wrong location or a mapped column is "
+                              "The table did not pass the check (missing, no permission, wrong location or a mapped / read column is "
                               "missing) — not saved, the current source is unchanged."),
     "BQ_TABLE_CHANGE_NEEDS_PRODUCTION_OFF": ("Không đổi bảng D-1 khi chế độ sản xuất đang bật (sẽ đổi phạm vi dữ liệu dự báo). "
                                              "Tắt chế độ sản xuất trước, đổi bảng, rồi kiểm tra lại toàn kỳ.",
                                              "The D-1 table cannot change while production mode is on (it would switch the "
                                              "forecast data scope). Turn production off, change it, then re-validate."),
+    "BQ_TABLE_CHANGE_JOB_ACTIVE": ("Không đổi bảng này khi một việc đang đọc nó còn chờ / đang chạy / chờ thử lại "
+                                   "(làm mới dự báo, xuất file, học ứng viên, D-1, dòng đơn). Chờ việc đó xong rồi lưu lại.",
+                                   "This table cannot change while a job that reads it is pending / running / waiting to "
+                                   "retry (forecast refresh, export, candidate training, D-1, SO lines). Save again after it ends."),
     "BQ_D0_TABLE_MISSING": ("Chưa cấu hình bảng D-0.", "The D-0 table is not configured."),
     "D0_TABLE_NOT_CHECKED": ("Bảng D-0 chưa được kiểm tra thành công (trang BigQuery → Bảng nguồn D-1 / D-0).",
                              "The D-0 table has not passed its check (BigQuery page → D-1 / D-0 source tables)."),

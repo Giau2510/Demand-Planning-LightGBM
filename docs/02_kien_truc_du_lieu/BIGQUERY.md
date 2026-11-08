@@ -331,7 +331,7 @@ Trang **SQL nguồn & đồng bộ** quản lý hai nguồn độc lập:
   dữ liệu toàn kỳ* → *Kích hoạt chế độ sản xuất*). *Tắt chế độ sản xuất* giữ nguyên nguồn đang dùng (trước 1.2.3 nút này
   tự chuyển sang DEMO).
 - **Tên sản phẩm (1.2.4).** Bảng D-1 không có tên sản phẩm. Tên lấy từ `<project>.<dataset>.dim_sku`
-  (`bigquery.product_names_table`, khóa `sku_code`, cột `product_name`; kiểm tra thật 17/10/2026: 298.517 dòng =
+  (`bigquery.product_names_table`, từ 1.4.9 là tên đầy đủ project.dataset.table, đặt trên trang Kết nối BigQuery; khóa `sku_code`, cột `product_name`; kiểm tra thật 17/10/2026: 298.517 dòng =
   298.517 `sku_code` khác nhau, 0 tên rỗng), đọc 2 cột (~23 MB/lần, dry-run trước, giới hạn byte), chỉ giữ SKU có trong
   dữ liệu BIGQUERY cục bộ. SKU có nhiều tên khác nhau → không gán tên; SKU không có trong bảng → "Chưa có tên sản phẩm".
   Tự làm mới sau mỗi lần D-1 thành công; làm tay: `POST /api/bigquery/product-names/refresh` hoặc
@@ -737,19 +737,29 @@ Mỗi luồng đọc đúng **một** bảng, cấu hình bằng full table id `
 |---|---|---|---|
 | D-1 (ngày đã đóng) | `lakehouse-prod-394907.gold_buymed_vn2.demand_planing_lightgbm` | `bigquery.project_id / dataset_id / source_table` (khóa phạm vi dữ liệu, mapping hash) | `D1_SYNC`, kiểm tra toàn kỳ, *Kiểm tra trùng & thử tổng hợp* |
 | D-0 (hôm nay) | `lakehouse-prod-394907.gold_buymed_vn2.demand_planing_lightgbm_D0` | `bigquery.d0_table_id` | `D0_SYNC` khi luồng D-0 ở chế độ **TABLE** |
+| Giờ mở bán (1.4.9, `openhours`) | `lakehouse-prod-394907.gold_buymed_vn2.openhours_by_sku` | `daily_forecast.openhours_table` | làm mới dự báo hằng ngày, SEL2; cột cần: `fc_code`, `sku_code`, `item_code` (STRING hoặc INT64), `seller_code` (STRING), `open_date` (DATE), `total_open_hours` (số) |
+| Avg Demand hôm nay (1.4.9, `avg_demand`) | `lakehouse-prod-394907.gold_buymed_vn2.fact_avg_demand_sku` | `sel2_pipeline.avg_demand_table` | SEL2; cột cần: `fc_code`, `sku_code`, `seller_code` (STRING hoặc INT64), `avg_demand` (số), `product_name` (STRING), `ingest_time` (kiểu bất kỳ) |
+| Avg Demand lịch sử (1.4.9, `avg_demand_hist`) | `lakehouse-prod-394907.gold_buymed_vn2.fact_avg_demand_sku_historical` | `sel2_pipeline.avg_demand_hist_table` | SEL2; cột như trên + `transformed_at` (TIMESTAMP) |
+| Tên sản phẩm (1.4.9, `product_names`) | `lakehouse-prod-394907.gold_buymed_vn2.dim_sku` | `bigquery.product_names_table` (tên ngắn cũ vẫn dùng được: ghép project / dataset của bảng D-1) | tên SP cạnh SKU; cột khóa / cột tên đã cấu hình (`sku_code`, `product_name` STRING) |
 
-**Kiểm tra** (`POST /api/bigquery/source-tables/{d1|d0}/check`):
+**Kiểm tra** (`POST /api/bigquery/source-tables/{d1|d0|openhours|avg_demand|avg_demand_hist|product_names}/check`):
 - Chỉ đọc metadata, không chạy query, không tốn phí.
 - Bảng phải tồn tại, đọc được bằng tài khoản Windows đang chạy app và đúng location.
 - Bảng phải có mọi cột mà luồng đó đọc, với kiểu dữ liệu tương thích:
   - D-1: mọi cột đã ánh xạ, gồm cả trường tham chiếu;
-  - D-0: chỉ các trường nội bộ đã ánh xạ.
+  - D-0: chỉ các trường nội bộ đã ánh xạ;
+  - 4 bảng phụ (1.4.9): các cột app đọc, ghi ở bảng trên (`bq/source_tables.AUX_COLUMNS`). `product_name` và
+    `ingest_time` của 2 bảng AVG là BẮT BUỘC khi kiểm tra dù danh mục dữ liệu ghi "không bắt buộc": app SELECT chúng theo
+    tên (`ml/sel2/avg_demand.py` `_COLS`), thiếu cột thì câu đọc lỗi.
 - Kết quả và thời điểm kiểm tra được lưu (`sync_state.bq_table_check:<luồng>`) và ghi vào nhật ký audit.
 
-**Lưu** (`PUT /api/bigquery/source-tables/{d1|d0}`):
+**Lưu** (`PUT /api/bigquery/source-tables/{kind}`, lưu qua `settings_service`, có lịch sử cấu hình):
 - Chỉ lưu sau khi kiểm tra **đạt** cho đúng mã bảng đó.
 - Lỗi (không tìm thấy, thiếu quyền, sai location, thiếu cột) trả về `BQ_TABLE_CHECK_FAILED`; nguồn đang dùng giữ nguyên.
 - App không tự tạo, đổi tên hay chuyển sang bảng khác.
+- 4 bảng phụ: không đổi được khi một việc đọc chúng đang chờ / chạy / chờ thử lại (`FORECAST_REFRESH`,
+  `CANDIDATE_TRAIN`, `FORECAST_EXPORT`, `D1_SYNC`, `SPIKE_LINES`; `BQ_TABLE_CHANGE_JOB_ACTIVE`). Đổi bảng: lần làm mới
+  kế tiếp đọc lại toàn bộ từ bảng mới (giờ mở bán / AVG lưu theo tên bảng nguồn).
 - Bảng D-1 **không đổi được khi chế độ sản xuất đang bật** (`BQ_TABLE_CHANGE_NEEDS_PRODUCTION_OFF`). Đổi bảng D-1 là đổi
   phạm vi dữ liệu nên phải kiểm tra toàn kỳ lại.
 

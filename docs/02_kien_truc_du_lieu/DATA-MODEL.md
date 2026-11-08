@@ -287,7 +287,7 @@ discount, promotion, voucher and source-update fields switch feature groups on o
    fingerprint equals its `data_fingerprint` (`app.cli attest-training-data`; `sync_state training_data_identity:<id>`,
    written once, audit `TRAINING_DATA_ATTESTED`). No copy of the input data is stored per run.
 9. **Product names (1.2.4)** are display / search data: `sync_state product_names` = one name per local BIGQUERY SKU
-   from `bigquery.product_names_table` (default `dim_sku`, key `sku_code`); a SKU with several names in the source gets
+   from `bigquery.product_names_table` (default `dim_sku`; 1.4.9: full id `lakehouse-prod-394907.gold_buymed_vn2.dim_sku`, a stored short name still works; key `sku_code`); a SKU with several names in the source gets
    none. Refreshed after each successful D-1 sync (a failure never fails the sync) or by hand. Never joined into any
    quantity, metric or model input.
 

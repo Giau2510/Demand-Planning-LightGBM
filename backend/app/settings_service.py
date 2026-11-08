@@ -434,7 +434,9 @@ class BigQuerySettings(BaseModel):
     d0_mapping: dict[str, FieldMapping] = Field(default_factory=_default_d0_mapping)
     # --- 1.2.4: product names shown next to the SKU in the forecast results (display / search only; bq/product_names).
     # A table of the same project.dataset or a full id; one row per key column value. Not part of any mapping hash.
-    product_names_table: str = "dim_sku"
+    # 1.4.9: the default is the full id (the table the short default "dim_sku" resolved to with the production D-1
+    # table); a stored short name keeps working (joined with project / dataset of the D-1 table, bq/product_names).
+    product_names_table: str = "lakehouse-prod-394907.gold_buymed_vn2.dim_sku"
     product_names_key_column: str = "sku_code"
     product_names_name_column: str = "product_name"
     # --- 1.2.9: source columns classified as REFERENCE although no mapping field uses them (shown on the mapping page,

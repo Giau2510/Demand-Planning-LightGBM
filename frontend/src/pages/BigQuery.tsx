@@ -163,6 +163,10 @@ export function IngestCheckView({ r }: { r: any }) {
   );
 }
 
+/** 1.4.9: the auxiliary tables (full id), checked and saved like the D-1 / D-0 tables (metadata only; the check requires
+ * every column the app reads from the table). Shown only when the backend lists them. */
+const AUX_TABLES = ["openhours", "avg_demand", "avg_demand_hist", "product_names"];
+
 /** 1.2.0: the table of each feed, configured and checked separately (metadata only, no query, no cost). A table is saved
  * only after a PASSED check of that exact id; the D-1 table cannot change while production mode is on. */
 export function SourceTables() {
@@ -172,15 +176,16 @@ export function SourceTables() {
   const [ids, setIds] = useState<Record<string, string>>({});
   const [res, setRes] = useState<Record<string, any>>({});
   useEffect(() => {
-    if (st.data?.d1 && st.data?.d0) setIds({ d1: st.data.d1.table_id, d0: st.data.d0.table_id });
+    if (st.data?.d1 && st.data?.d0) setIds(Object.fromEntries(["d1", "d0", ...AUX_TABLES].filter((k) => st.data[k]).map((k) => [k, st.data[k].table_id])));
   }, [st.data]);
   if (!st.data?.d1 || !st.data?.d0) return <Card icon="bigquery" title={t("bq.tables")}>{st.error ? <ErrorBox error={st.error} /> : <Loading />}</Card>;
-  const row = (kind: "d1" | "d0") => {
+  const aux = AUX_TABLES.filter((k) => st.data[k]);
+  const row = (kind: string) => {
     const s = st.data[kind];
     const lc = res[kind] ?? s.last_check;
     return (
       <div key={kind} className="stack" data-testid={`table-${kind}`}>
-        <Field label={t(kind === "d1" ? "bq.table_d1" : "bq.table_d0")}>
+        <Field label={t(`bq.table_${kind}`)} help={kind === "d1" || kind === "d0" ? undefined : <span data-testid={`table-${kind}-desc`}>{t(`bq.table_${kind}_desc`)}</span>}>
           <input data-testid={`table-${kind}-id`} value={ids[kind] ?? ""} onChange={(e) => setIds({ ...ids, [kind]: e.target.value })} />
         </Field>
         <div className="row wrap small">
@@ -203,6 +208,8 @@ export function SourceTables() {
       <OkBox text={act.ok} />
       {row("d1")}
       {row("d0")}
+      {aux.length > 0 && <h4 data-testid="tables-aux">{t("bq.tables_aux")}</h4>}
+      {aux.map(row)}
     </Card>
   );
 }
