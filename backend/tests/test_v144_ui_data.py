@@ -87,8 +87,9 @@ def scenario(sel2_on, monkeypatch):
     sel2_view.clear_cache()
 
 
-def _excel_rows(d: date) -> dict:
-    """{(sku, fc, horizon): row} of horizon 1..7 of the daily Excel of d (1.4.4: sheets DU_BAO_<fc_code>)."""
+def _excel_rows(d: date, h_max: int = 7) -> dict:
+    """{(sku, fc, horizon): row} of horizon 1..h_max of the daily Excel of d (1.4.4: sheets DU_BAO_<fc_code>; 1.4.6: the
+    pages show horizon 1..20, h_max=20)."""
     res = export.write_daily_export(d, scope_key=SCOPE)
     wb = load_workbook(paths.data_dir() / res["path"], read_only=True)
     out = {}
@@ -98,7 +99,7 @@ def _excel_rows(d: date) -> dict:
             cols = list(rows[0])
             for r in rows[1:]:
                 x = dict(zip(cols, r))
-                if x["horizon"] <= 7:
+                if x["horizon"] <= h_max:
                     out[(x["sku_code"], x["fc_code"], x["horizon"])] = x
     return out
 
@@ -117,17 +118,17 @@ def _same(a, b) -> bool:
 
 
 def test_daily_values_equal_excel(scenario, client):
-    xl = _excel_rows(D)
+    xl = _excel_rows(D, 20)                                 # 1.4.6: the page shows the 20 days of the Excel
     got, page = {}, 0
     while True:
         r = client.get(f"/api/daily-forecast/values?run_id=R1&page={page}").json()
-        assert r["sel2"] is True and r["horizons"] == list(range(1, 8))
+        assert r["sel2"] is True and r["horizons"] == list(range(1, 21))
         for x in r["rows"]:
             got[(x["sku_code"], x["fc_code"], x["horizon"])] = x
         page += 1
         if page * r["page_size"] >= r["total"]:
             break
-    assert set(got) == set(xl) and len(got) == 6 * 7          # union of the run and the AVG rows (S1..S6)
+    assert set(got) == set(xl) and len(got) == 6 * 20         # union of the run and the AVG rows (S1..S6)
     for k, x in xl.items():
         for c in KEYS:
             assert _same(got[k][c], x[c]), (k, c, got[k][c], x[c])
@@ -140,7 +141,7 @@ def test_daily_values_equal_excel(scenario, client):
     r = client.get("/api/daily-forecast/values?run_id=R1&horizon=3&group=A").json()
     assert {(x["sku_code"], x["horizon"]) for x in r["rows"]} == {("S1", 3), ("S6", 3)}
     r = client.get("/api/daily-forecast/values?q=thuoc%20b").json()      # latest run, product name search
-    assert r["run"]["id"] == "R1" and {x["sku_code"] for x in r["rows"]} == {"S2"} and r["total"] == 7
+    assert r["run"]["id"] == "R1" and {x["sku_code"] for x in r["rows"]} == {"S2"} and r["total"] == 20
 
 
 def test_results_summary_totals_equal_excel(scenario, client):
@@ -340,7 +341,7 @@ def test_random_50_sku_fc_and_daily_totals_equal_excel(sel2_on, client, monkeypa
     assert s["n_series"] == len(xkeys)
     assert {x["target_date"]: x["total"] for x in s["daily"]} == _excel_totals(xl)
     assert s["grand_total"] == sum(x["forecast_used"] for x in xl.values())
-    assert client.get("/api/daily-forecast/values?run_id=RC").json()["total"] == len(xl)
+    assert client.get("/api/daily-forecast/values?run_id=RC").json()["total"] == len(xkeys) * 20   # 1.4.6: 20 days
 
 
 def test_older_run_equals_its_own_day_excel_and_stale_days(sel2_on, client, monkeypatch):
@@ -351,7 +352,8 @@ def test_older_run_equals_its_own_day_excel_and_stale_days(sel2_on, client, monk
     monkeypatch.setattr(daily_routes, "_scope", lambda c: dict(SC))
     monkeypatch.setattr(export, "_scope_key", lambda conn: (SCOPE, None))
     _big_scenario(seed=3, n=120)
-    xb = _excel_rows(D - timedelta(days=2))
+    xb20 = _excel_rows(D - timedelta(days=2), 20)          # 1.4.6: the Daily page shows the 20 days
+    xb = {k: x for k, x in xb20.items() if k[2] <= 7}
     s = client.get("/api/daily-forecast/sel2-summary?run_id=RB&horizon=7&limit=1000").json()
     assert s["run"]["id"] == "RB" and {x["target_date"]: x["total"] for x in s["daily"]} == _excel_totals(xb)
     rows = []
@@ -360,9 +362,9 @@ def test_older_run_equals_its_own_day_excel_and_stale_days(sel2_on, client, monk
         rows += r["rows"]
         if (p + 1) * r["page_size"] >= r["total"]:
             break
-    assert len(rows) == len(xb)
+    assert len(rows) == len(xb20)
     for x in rows:
-        e = xb[(x["sku_code"], x["fc_code"], x["horizon"])]
+        e = xb20[(x["sku_code"], x["fc_code"], x["horizon"])]
         assert (x["forecast_used"], x["fallback_reason"], x["model_used"]) == \
             (e["forecast_used"], e["fallback_reason"], e["model_used"])
     for later, reason in ((D + timedelta(days=1), "STALE"), (D + timedelta(days=5), export.STALE_NO_RUN_3_DAYS)):
@@ -588,7 +590,7 @@ def _assert_page_equals_excel(client, xl: dict) -> None:
     for k, x in xl.items():
         for c in ("forecast_used", "avg_demand", "forecast_source", "fallback_reason"):
             assert _same(got[k][c], x[c]), (k, c, got[k][c], x[c])
-    s = client.get("/api/daily-forecast/sel2-summary?run_id=R1&horizon=7").json()
+    s = client.get("/api/daily-forecast/sel2-summary?run_id=R1&horizon=20").json()
     assert s["grand_total"] == sum(x["forecast_used"] for x in xl.values())
 
 
@@ -615,7 +617,7 @@ def test_daily_page_keeps_the_avg_read_of_its_export(scenario, client):
     with db.tx() as c:
         c.execute("UPDATE avg_demand_reads SET kind='HISTORICAL', source_table=? WHERE business_date=?", (hist, D.isoformat()))
         c.execute("UPDATE avg_demand_daily SET source_table=? WHERE business_date=?", (hist, D.isoformat()))
-    xl = _excel_rows(D)
+    xl = _excel_rows(D, 20)
     assert xl[("S2", "F1", 1)]["forecast_used"] == 4
     _new_read(D, NEW_AVG, ss.get("sel2_pipeline").avg_demand_table, "2026-11-05T09:00:00+00:00")
     _assert_page_equals_excel(client, xl)
@@ -628,7 +630,7 @@ def test_daily_page_of_an_export_without_avg_read_ignores_a_later_read(scenario,
     with db.tx() as c:
         c.execute("DELETE FROM avg_demand_daily WHERE business_date=?", (D.isoformat(),))
         c.execute("DELETE FROM avg_demand_reads WHERE business_date=?", (D.isoformat(),))
-    xl = _excel_rows(D)
+    xl = _excel_rows(D, 20)
     assert all(x["avg_demand"] is None for x in xl.values())
     _new_read(D, NEW_AVG, ss.get("sel2_pipeline").avg_demand_table, "2026-11-05T09:00:00+00:00")
     _assert_page_equals_excel(client, xl)
@@ -774,7 +776,7 @@ def test_results_sel2_run_blocks(scenario, client):
     used as recorded with the run (no invented window / sync time), product-name source."""
     run = client.get("/api/daily-forecast/sel2-summary?run_id=R1").json()["run"]
     cov = run["horizon_coverage"]
-    assert cov["run_horizons"] == list(range(1, 8)) == run["horizons"]
+    assert cov["run_horizons"] == list(range(1, 21)) == run["horizons"]   # 1.4.6: the 20 days of the Excel
     assert cov["configured"] == sorted(set(ss.get("horizons").enabled)) and cov["configured_missing_in_run"] == []
     lin = run["lineage"]
     assert lin["data_source"] == "BIGQUERY" and lin["batch_id"] == SCOPE and lin["table"] is None

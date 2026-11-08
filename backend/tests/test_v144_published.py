@@ -159,7 +159,7 @@ def test_history_unchanged_after_a_later_config_change(scenario, client):
 
 def test_daily_page_of_an_exported_day_uses_the_files_configuration(scenario, client):
     """The Daily page of a run with an Excel keeps the numbers of that file after a later configuration change."""
-    xl = _excel_rows(D)
+    xl = _excel_rows(D, 20)                                 # 1.4.6: the Daily page shows the 20 days of the Excel
     timeutil.set_now_override(lambda: datetime(2030, 1, 1, 1, 0, 0, tzinfo=timezone.utc))
     try:
         source_config.set_one("S2", "F1", "LIGHTGBM", confirm=True, changed_by="tester")   # after the export

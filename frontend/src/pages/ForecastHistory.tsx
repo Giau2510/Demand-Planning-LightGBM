@@ -154,12 +154,12 @@ export default function ForecastHistory() {
                 </optgroup>
               </select>
             </Field>
-            {mode === "custom" && (
-              <>
-                <Field label={t("fh.from")}><DateInput value={from || runFrom} onChange={setFrom} ariaLabel={t("fh.from")} /></Field>
-                <Field label={t("fh.to")}><DateInput value={to || runTo} onChange={setTo} ariaLabel={t("fh.to")} /></Field>
-              </>
-            )}
+            {/* 1.4.6: FROM - TO always shown (the dates of the range in use); a change switches to the custom range.
+                Horizon 1 (1.4.5): the run date is the target date */}
+            <Field label={t("fh.from")}><DateInput value={mode === "custom" ? from || runFrom : runFrom} ariaLabel={t("fh.from")}
+              onChange={(x) => { setFrom(x); if (mode !== "custom") { setTo(runTo); setMode("custom"); } }} /></Field>
+            <Field label={t("fh.to")}><DateInput value={mode === "custom" ? to || runTo : runTo} ariaLabel={t("fh.to")}
+              onChange={(x) => { setTo(x); if (mode !== "custom") { setFrom(runFrom); setMode("custom"); } }} /></Field>
             <Field label={t("fc.fc")}>
               <select value={fc} onChange={(e) => setFc(e.target.value)} aria-label={t("fc.fc")} data-testid="fh-fc">
                 <option value="">{t("common.all")}</option>

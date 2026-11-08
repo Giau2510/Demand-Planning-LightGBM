@@ -7,13 +7,14 @@ import { AssessmentBox, Bars, Card, Code, Empty, ErrorBox, JobProgress, LineChar
 import { Icon } from "../components/icons";
 import ForecastInfoLine from "../components/ForecastInfoLine";
 
-export function HorizonPicker({ value, onChange, options }: { value: number; onChange: (h: number) => void; options: number[] }) {
+/** 1.4.6: estimateFrom (SEL2 run: 8) marks the periods that include the weekly-estimate days 8..20 of the daily Excel. */
+export function HorizonPicker({ value, onChange, options, estimateFrom }: { value: number; onChange: (h: number) => void; options: number[]; estimateFrom?: number }) {
   const { t } = useI18n();
   return (
     <label className="row" title={t("fc.horizon_help")}>
       <span className="small">{t("fc.horizon")}</span>
-      <select value={value} onChange={(e) => onChange(Number(e.target.value))}>
-        {options.map((h) => <option key={h} value={h}>{h} {t("common.days")}</option>)}
+      <select value={value} onChange={(e) => onChange(Number(e.target.value))} data-testid="horizon-picker">
+        {options.map((h) => <option key={h} value={h}>{h} {t("common.days")}{estimateFrom && h >= estimateFrom ? ` (${t("fc.estimate_tag")})` : ""}</option>)}
       </select>
     </label>
   );

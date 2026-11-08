@@ -104,11 +104,11 @@ describe("1.4.4 Results page in SEL2 mode", () => {
     await waitFor(() => expect(calls.some((u) => u.startsWith("/api/daily-forecast/sel2-values") && u.includes("run_id=FRR-44"))).toBe(true));
     const row = await waitFor(() => {
       const tr = screen.getByText("MEDX.A").closest("tr")!;
-      expect(tr.closest("table")!.querySelectorAll("thead th").length).toBe(9);
+      expect(tr.closest("table")!.querySelectorAll("thead th").length).toBe(10);   // 1.4.6: + Cách tính
       return tr;
     });
     const head = Array.from(row.closest("table")!.querySelectorAll("thead th")).map((th) => th.textContent);
-    expect(head).toEqual(["SKU", "Tên sản phẩm", "FC/kho", "Ngày", "Thứ", "Số lượng dự báo", "Thực tế đến hiện tại", "Phương pháp", ""]);
+    expect(head).toEqual(["SKU", "Tên sản phẩm", "FC/kho", "Ngày", "Thứ", "Số lượng dự báo", "Thực tế đến hiện tại", "Phương pháp", "Cách tính", ""]);
     const cells = Array.from(row.querySelectorAll("td")).map((td) => td.textContent);
     expect(cells.length).toBe(head.length);
     expect(cells[5]).toBe(String(VALUES.rows[0].forecast_used));

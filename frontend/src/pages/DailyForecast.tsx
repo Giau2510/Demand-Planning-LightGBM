@@ -6,6 +6,7 @@ import { Card, Confirm, DateInput, Empty, ErrorBox, Field, FilterBar, JobProgres
   SearchInput, Stat, fmtDate, fmtNum, fmtTime, useAction, useAsync } from "../components/ui";
 import { Icon } from "../components/icons";
 import ForecastInfoLine from "../components/ForecastInfoLine";
+import { CachTinh } from "./Results";
 
 const PAGE = 100;
 const GROUPS = ["A", "B", "C"];
@@ -59,11 +60,13 @@ export default function DailyForecast() {
   const [q, setQ] = useState("");
   const [qd, setQd] = useState("");
   useEffect(() => { const id = setTimeout(() => setQd(q.trim()), 300); return () => clearTimeout(id); }, [q]);
+  const [from, setFrom] = useState("");     // 1.4.6: target date range FROM - TO
+  const [to, setTo] = useState("");
   const [page, setPage] = useState(0);
-  useEffect(() => setPage(0), [runId, date, h, group, qd]);
+  useEffect(() => setPage(0), [runId, date, h, group, qd, from, to]);
   // a chosen run wins over the forecast date (the backend does the same)
-  const values = useAsync(() => get(`/api/daily-forecast/values${qs({ run_id: runId, forecast_date: runId ? "" : date, horizon: h, group, q: qd, page })}`),
-    [runId, date, h, group, qd, page]);
+  const values = useAsync(() => get(`/api/daily-forecast/values${qs({ run_id: runId, forecast_date: runId ? "" : date, horizon: h, group, q: qd, date_from: from, date_to: to, page })}`),
+    [runId, date, h, group, qd, from, to, page]);
   // 1.4.0 forecast source per SKU x FC (read only for a SEL2 run) and the daily Excel of the forecast day
   const sel2 = isSel2Run(values.data?.run);
   const lgbm = useAsync(() => (sel2 ? loadLightgbmKeys().catch(() => null) : Promise.resolve(null)), [sel2]);
@@ -153,8 +156,10 @@ export default function DailyForecast() {
   // the columns stay those of 1.4.3
   const sel2Rows = !!v?.sel2;
   const showSource = isSel2Run(run) && !!lgbmKeys;
-  const nFilters = [runId, date, h, group, q.trim()].filter(Boolean).length;
-  const clear = () => { setRunId(""); setDate(""); setH(""); setGroup(""); setQ(""); setQd(""); };
+  // 1.4.6: a SEL2 run shows the 20 days of the daily Excel; days from estimate_from (8) are the weekly estimate
+  const estFrom: number | undefined = sel2Rows ? v?.estimate_from : undefined;
+  const nFilters = [runId, date, h, group, q.trim(), from, to].filter(Boolean).length;
+  const clear = () => { setRunId(""); setDate(""); setH(""); setGroup(""); setQ(""); setQd(""); setFrom(""); setTo(""); };
 
   return (
     <div className="stack" data-testid="daily-page">
@@ -253,8 +258,14 @@ export default function DailyForecast() {
           <Field label={t("daily.day_n")}>
             <select value={h} onChange={(e) => setH(e.target.value)} aria-label={t("daily.day_n")} data-testid="daily-horizon">
               <option value="">{t("common.all")}</option>
-              {list(v?.horizons).map((x: number) => <option key={x} value={x}>{x}</option>)}
+              {list(v?.horizons).map((x: number) => <option key={x} value={x}>{x}{estFrom && x >= estFrom ? ` (${t("fc.cach.UOC_TINH_THEO_TUAN")})` : ""}</option>)}
             </select>
+          </Field>
+          <Field label={t("fc.target_from")}>
+            <DateInput value={from} onChange={setFrom} ariaLabel={t("fc.target_from")} />
+          </Field>
+          <Field label={t("fc.target_to")}>
+            <DateInput value={to} onChange={setTo} ariaLabel={t("fc.target_to")} />
           </Field>
           <Field label={t("daily.group")}>
             <select value={group} onChange={(e) => setGroup(e.target.value)} aria-label={t("daily.group")} data-testid="daily-group">
@@ -266,6 +277,7 @@ export default function DailyForecast() {
             <SearchInput value={q} onChange={setQ} label={t("daily.search")} placeholder={t("daily.search_ph")} clearLabel={t("fc.search_clear")} />
           </Field>
         </FilterBar>
+        {estFrom && <p className="small" data-testid="daily-estimate-note"><Pill status="WARNING" label={t("fc.cach.UOC_TINH_THEO_TUAN")} /> {t("fc.estimate_note")}</p>}
         <ErrorBox error={values.error} />
         {values.loading && !v && <Loading />}
         {v && !run && <Empty text={t("daily.no_values")} hint={lr ? undefined : t("daily.no_run_hint")} />}
@@ -274,7 +286,7 @@ export default function DailyForecast() {
             <table className="tbl" data-testid="daily-table">
               <thead><tr><th>{t("daily.made_on")}</th><th>{t("fc.date")}</th><th className="num">{t("daily.day_n")}</th><th>{t("fc.fc")}</th>
                 <th>{t("fc.sku")}</th><th>{t("fc.product_name")}</th><th>{t("daily.group")}</th><th className="num">{t("daily.lgb_raw")}</th>
-                <th className="num">{t("daily.final_qty")}</th><th>{t("fc.method")}</th>{showSource && <th>{t("dexp.source_col")}</th>}
+                <th className="num">{t("daily.final_qty")}</th><th>{t("fc.method")}</th>{sel2Rows && <th>{t("fc.cach_tinh")}</th>}{showSource && <th>{t("dexp.source_col")}</th>}
                 <th>{t("daily.flags")}</th></tr></thead>
               <tbody>
                 {list(v.rows).map((x: any) => {
@@ -288,6 +300,7 @@ export default function DailyForecast() {
                     <td className="nowrap" title={x.group_code ? t(`daily.group.${x.group_code}`) : undefined}>{x.group_code ?? "—"}</td>
                     <td className="num" title={x.lgb_raw === null || x.lgb_raw === undefined ? undefined : String(x.lgb_raw)}>{fmt3(x.lgb_raw)}</td><td className="num"><b>{fmtNum(x.final_qty)}</b></td>
                     <td><MethodLabel code={x.method} /></td>
+                    {sel2Rows && <td className="nowrap"><CachTinh code={x.cach_tinh} /></td>}
                     {showSource && <td className="nowrap" data-testid={`daily-src-${x.fc_code}-${x.sku_code}-${x.horizon}`}>
                       {kind === "LIGHTGBM" ? <Pill status="OK" label={t("dexp.using_lgbm")} />
                         : s.trial_label ? <Pill status="WARNING" label={pick(s.trial_label)} /> : <Pill status="INFO" label={t("fsrc.src.AVG_DEMAND")} />}</td>}

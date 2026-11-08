@@ -28,6 +28,7 @@ from ..data.demand import resolve_scope
 from ..messages import AppError
 from ..ml import accuracy_report, feature_registry, feature_report, features
 from ..ml.pipeline import feature_table_snapshot
+from ..ml.sel2 import export
 from ..timeutil import VN_TZ, iso, now_iso, now_vn, parse_iso, today_vn, vn_slot
 from . import background, sel2_view
 
@@ -171,11 +172,18 @@ def daily_runs(limit: int = Query(30, ge=1, le=200)):
                "ORDER BY forecast_date DESC, created_at DESC, rowid DESC LIMIT ?", (scope["scope_key"], limit))]
 
 
-def _filters(run_id: str, horizon: int | None, group: str | None, q: str | None) -> tuple[str, list]:
+def _filters(run_id: str, horizon: int | None, group: str | None, q: str | None, date_from: str | None = None,
+             date_to: str | None = None) -> tuple[str, list]:
     where, params = ["run_id=?"], [run_id]
     if horizon is not None:
         where.append("horizon=?")
         params.append(horizon)
+    if date_from:
+        where.append("target_date>=?")
+        params.append(date_from)
+    if date_to:
+        where.append("target_date<=?")
+        params.append(date_to)
     if group:
         where.append("group_code=?")
         params.append(group)
@@ -203,8 +211,12 @@ def _sel2_value_row(r: dict) -> dict:
 
 @router.get("/daily-forecast/values")
 def daily_values(run_id: str | None = None, forecast_date: str | None = None, horizon: int | None = Query(None, ge=1),
-                 group: str | None = None, q: str | None = None, page: int = Query(0, ge=0)):
+                 group: str | None = None, q: str | None = None, page: int = Query(0, ge=0),
+                 date_from: str | None = None, date_to: str | None = None):
+    """Rows of one refresh run. 1.4.6: a SEL2 run shows the 20 days of the daily Excel (horizon 8..20 = weekly estimate,
+    column cach_tinh); date_from / date_to = target date range (both kinds of run)."""
     fd = _date(forecast_date, "forecast_date")
+    df, dt = _date(date_from, "date_from"), _date(date_to, "date_to")
     if group and group not in GROUPS:
         raise AppError("VALIDATION_ERROR", 422, detail=f"group: one of {', '.join(GROUPS)}")
     with db.read() as c:
@@ -213,11 +225,12 @@ def daily_values(run_id: str | None = None, forecast_date: str | None = None, ho
         if run is None:
             return {"run": None, "rows": [], "total": 0, "page": page, "page_size": PAGE, "horizons": []}
         v = sel2_view.view(c, run["id"])
-        if v is not None:      # 1.4.4: a SEL2 run shows the rows of the daily Excel (export._rows), horizon 1..7
-            total, rows = sel2_view.page(v, v.filter(q=q, group=group), horizon, page * PAGE, PAGE)
+        if v is not None:      # 1.4.4: a SEL2 run shows the rows of the daily Excel (1.4.6: export._rows20, 1..20)
+            total, rows = sel2_view.page(v, v.filter(q=q, group=group), horizon, page * PAGE, PAGE, df, dt)
             return {"run": run, "rows": [_sel2_value_row(r) for r in rows], "total": total, "page": page,
-                    "page_size": PAGE, "horizons": list(range(1, sel2_view.HORIZON + 1)), "sel2": True}
-        where, params = _filters(run["id"], horizon, group, q)
+                    "page_size": PAGE, "horizons": list(range(1, sel2_view.H_ALL + 1)), "sel2": True,
+                    "estimate_from": sel2_view.HORIZON + 1}
+        where, params = _filters(run["id"], horizon, group, q, df, dt)
         total = c.execute(f"SELECT COUNT(*) FROM forecast_refresh_values WHERE {where}", params).fetchone()[0]
         names = _names(c, scope)
         rows = [_value_row(run, r, names) for r in c.execute(
@@ -246,15 +259,16 @@ def _sel2_run(c, run_id: str | None) -> tuple[dict | None, sel2_view.View | None
     if v is None:
         return None, None
     r = v.run
-    hs = list(range(1, sel2_view.HORIZON + 1))
-    # the blocks of the 1.3.x run on the page, SEL2-true: the horizons the page offers vs the configured ones (a SEL2
-    # run is always horizon 1..7: nothing to extend), the data used as recorded with the run, the product-name source
-    cov = {"run_horizons": hs, "max_horizon": sel2_view.HORIZON,
+    hs = list(range(1, sel2_view.H_ALL + 1))
+    # the blocks of the 1.3.x run on the page, SEL2-true: the horizons the page offers vs the configured ones (1.4.6: the
+    # 20 days of the daily Excel, 8..20 = weekly estimate; nothing to extend), the data used as recorded with the run,
+    # the product-name source
+    cov = {"run_horizons": hs, "max_horizon": sel2_view.H_ALL,
            "configured": sorted(set(ss.get("horizons", c).enabled)), "configured_missing_in_run": [], "can_extend_without_retraining": False, "cannot_extend_reason": None}
     return {"id": r["id"], "model_version": r["model_version"], "data_source": scope["data_source"],
             "scope_key": sk, "forecast_origin": r["forecast_date"], "forecast_date": r["forecast_date"],
-            "data_as_of": r["data_as_of"], "created_at": r["created_at"], "max_horizon": sel2_view.HORIZON,
-            "horizons": hs, "fcs": v.fcs, "sel2": True, "horizon_coverage": cov,
+            "data_as_of": r["data_as_of"], "created_at": r["created_at"], "max_horizon": sel2_view.H_ALL,
+            "horizons": hs, "estimate_from": sel2_view.HORIZON + 1, "fcs": v.fcs, "sel2": True, "horizon_coverage": cov,
             "lineage": _sel2_lineage(r, scope["data_source"]),
             "product_names": product_names.status(c) if scope["data_source"] == "BIGQUERY" else None}, v
 
@@ -293,29 +307,34 @@ def sel2_runs(limit: int = Query(30, ge=1, le=200)):
 
 
 @router.get("/daily-forecast/sel2-summary")
-def sel2_summary(run_id: str | None = None, horizon: int = Query(7, ge=1, le=7), sku_id: str | None = None,
-                 fc_id: str | None = None, q: str | None = None, limit: int = Query(100, ge=1, le=1000),
+def sel2_summary(run_id: str | None = None, horizon: int = Query(7, ge=1, le=sel2_view.H_ALL),
+                 sku_id: str | None = None, fc_id: str | None = None, q: str | None = None,
+                 date_from: str | None = None, date_to: str | None = None, limit: int = Query(100, ge=1, le=1000),
                  offset: int = Query(0, ge=0)):
-    """Results page (SEL2 mode): per SKU x FC the total of forecast_used over horizon 1..horizon and the daily totals
+    """Results page (SEL2 mode): per SKU x FC the total of forecast_used over horizon 1..horizon (1.4.6: up to 20, the
+    days of the daily Excel; 8..20 = weekly estimate) within the target dates date_from .. date_to, and the daily totals
     of the filtered SKU x FC - the numbers of the daily Excel of the run's day. Order as the 1.3.x summary: total
     DESC, sku, fc. actual: the actual so far today as the 1.3.x summary (D0 snapshot, read only)."""
+    df, dt = _date(date_from, "date_from"), _date(date_to, "date_to")
     with db.read() as c:
         run, v = _sel2_run(c, run_id)
         if v is None:
             return {"run": None, "series": [], "daily": [], "n_series": 0, "grand_total": 0}
         keys = v.filter(sku=sku_id, fc=fc_id, q=q)
         act = _sel2_actual(c, run)
-    tot = {k: sum(v.used[k][:horizon]) for k in keys}
+    idx = [i for i in range(horizon) if (not df or v.days[i] >= df) and (not dt or v.days[i] <= dt)]
+    tot = {k: sum(v.used[k][i] for i in idx) for k in keys}
     keys = sorted(keys, key=lambda k: (-tot[k], k[0], k[1]))
-    start, end = v.days[0], v.days[horizon - 1]
-    in_range = start <= act["date"] <= end
+    start, end = (v.days[idx[0]], v.days[idx[-1]]) if idx else (None, None)
+    in_range = bool(idx) and start <= act["date"] <= end
     actual = intraday.public(act)
     actual["in_horizon"] = in_range
     # each SKU x FC counted once, only the series that pass the current filter (as the 1.3.x summary)
     actual["total"] = (sum(act["values"].get(k, 0.0) for k in keys)
                        if in_range and intraday.has_values(act) else None)
     actual["n_series"] = len(keys)
-    daily = [{"target_date": v.days[i], "total": sum(v.used[k][i] for k in keys)} for i in range(horizon)]
+    daily = [{"target_date": v.days[i], "total": sum(v.used[k][i] for k in keys),
+              "cach_tinh": export.CACH_SEL2 if i < sel2_view.HORIZON else export.CACH_WEEK} for i in idx]
     for d in daily:
         d["actual_today"] = actual["total"] if d["target_date"] == act["date"] else None
     series = [{"sku_id": k[0], "fc_id": k[1], "product_name": v.names.get(k[0]), "total": tot[k],
@@ -328,12 +347,14 @@ def sel2_summary(run_id: str | None = None, horizon: int = Query(7, ge=1, le=7),
 
 
 @router.get("/daily-forecast/sel2-values")
-def sel2_values(run_id: str | None = None, horizon: int = Query(7, ge=1, le=7), sku_id: str | None = None,
-                fc_id: str | None = None, q: str | None = None, date_from: str | None = None,
-                date_to: str | None = None, limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0)):
-    """Results page (SEL2 mode), daily detail: the rows of the daily Excel (horizon 1..horizon) with the field names
-    of the page (sku_id, fc_id, horizon_day, forecast_qty = forecast_used, method = model_used). Order as the 1.3.x
-    detail: sku, fc, target date; actual_today as the 1.3.x detail (D0 snapshot, read only)."""
+def sel2_values(run_id: str | None = None, horizon: int = Query(7, ge=1, le=sel2_view.H_ALL),
+                sku_id: str | None = None, fc_id: str | None = None, q: str | None = None,
+                date_from: str | None = None, date_to: str | None = None, limit: int = Query(100, ge=1, le=1000),
+                offset: int = Query(0, ge=0)):
+    """Results page (SEL2 mode), daily detail: the rows of the daily Excel (horizon 1..horizon; 1.4.6: up to 20, column
+    cach_tinh SEL2 / UOC_TINH_THEO_TUAN) with the field names of the page (sku_id, fc_id, horizon_day, forecast_qty =
+    forecast_used, method = model_used). Order as the 1.3.x detail: sku, fc, target date; actual_today as the 1.3.x
+    detail (D0 snapshot, read only)."""
     df, dt = _date(date_from, "date_from"), _date(date_to, "date_to")
     with db.read() as c:
         run, v = _sel2_run(c, run_id)
