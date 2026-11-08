@@ -689,3 +689,12 @@ Căn cứ (`reports\release-1.4.6-20261108`):
   - history_source_drift 296;
   - export_files_exist 2.
 * **Push:** nhánh github/1.4.6 và tag v1.4.6 cùng ở `4d33cf4`.
+
+## 08/11/2026 09:45 – B3 test làm sạch đột biến ngày 1–7 (logic v3 + E4): ĐẠT với N = 4 (chọn) và N = 5
+
+* **Mẫu:** 1,5 % (247 SKU×kho); 01/07–22/10, 114 ngày.
+* **N = 4 so với L0:** Đúng +1,08, thiếu +0,51, lệch −0,77. Không tháng nào thiếu > +2; Đúng tăng ở cả 4 tháng; kho BD thiếu +1,20 (dưới chốt +2).
+* **N = 7 / 9 / 12:** không đạt (tháng 10 thiếu +2,5 tới +2,8).
+* **Chưa cài** (không kịp trước 12:00). App không lưu dòng đơn theo customer_id, nên cần đường dữ liệu dòng SO + bảng mới.
+* **Đề xuất xác nhận trên mẫu 10 %** trước khi làm 1.4.7, vì mẫu nhỏ. Chờ chủ dự án.
+* **Báo cáo:** `reports\backtest-ngay1-7-20261107\v3_mau015\`; báo cáo gộp `reports\bao-cao\BAO_CAO_20261108_0950.md`.
