@@ -488,9 +488,9 @@ def job_timeout(job_type: str, sched) -> int:
     and kills it first)."""
     if job_type == "CANDIDATE_TRAIN":
         return int(ss.get("sel2_pipeline").train_timeout_seconds) + SEL2_TRAIN_MARGIN
-    if job_type == "SPIKE_LINES":       # 1.4.8: the child's own timeout (45 min) ends it first
-        from ..spike_lines import TIMEOUT_S
-        return TIMEOUT_S + SEL2_TRAIN_MARGIN
+    if job_type == "SPIKE_LINES":       # 1.4.8: the child's own timeout (45 min, first full run 120 min) ends it first
+        from ..spike_lines import TIMEOUT_FULL_S, TIMEOUT_S
+        return max(TIMEOUT_S, TIMEOUT_FULL_S) + SEL2_TRAIN_MARGIN
     return sched.timeout_seconds
 
 

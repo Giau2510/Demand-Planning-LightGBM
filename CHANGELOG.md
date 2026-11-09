@@ -12,7 +12,8 @@ Owner rules 07-08/11/2026 (spike cleaning v3 + E4, B3 of the decision log). Sche
 (default) every forecast number, the published runs, the daily Excel and the night timing are those of 1.4.7; the fixed
 forecast_used rule is unchanged.
 
-* **Nightly job `SPIKE_LINES`** (`backend/app/spike_lines.py`, one per day, child process, 45 min limit, free commit
+* **Nightly job `SPIKE_LINES`** (`backend/app/spike_lines.py`, one per day, child process, 45 min limit (120 min for
+  the first full flag run of the scope, about 50 min on the owner's PC; both switch states), free commit
   >= 3 GB): read-only BigQuery read of the SO lines (`bq/connector.fetch_so_lines`: the D-1 source, filters and
   exact-duplicate rule; one row = day x FC x SKU x so_code x customer, source rows summed; dry run first, refused above
   min(5 GB, `maximum_bytes_billed`); about **3.1 GB scanned per night**, the source has no date pruning) into
@@ -23,10 +24,18 @@ forecast_used rule is unchanged.
   and the excess as of D (level 1, E4 = `spike_e4_n`). Separate
   from D-1 (never delays it); a failure = job FAILED + one WARNING alert `SPIKE_LINES_FAILED`, nothing else.
   Scheduling: switch OFF -> after today's forecast refresh (every other plan exactly as 1.4.7); switch ON -> right
-  after D-1, the refresh and the trainings wait for it at most 45 minutes after it was planned. It runs in its own
+  after D-1, the refresh and the trainings wait for it at most 45 minutes after it was planned (a first full run
+  with the switch ON keeps them queued behind it, one heavy job at a time: the rollout does the first full run with
+  the switch OFF right after the install). It runs in its own
   scheduler worker (D-0 and the exports never queue behind it), is a heavy job (one heavy job at a time) and its cache
   / flag writes are short 7-day transactions. CLI `spike-lines --date D [--initial [--reflag]]
   [--dry-run] [--yes]`.
+* **Next-purchase refresh set-based** (task C-148P, proof on a DB copy): the later nights' refresh of the stored
+  lines' next purchase day used a correlated subquery over the cache per row (> 3 h on 5.5 M lines, 75 k rows ->
+  TIMEOUT); now the rows that can still change go into a TEMP table, their purchase days come from one pass over
+  the scope's cache, the first later day per row by an index seek on a TEMP table, then `UPDATE ... FROM` in
+  transactions of 50,000 rows. Same results (test against the former query); no new index on the database.
+  The runner's own limit of the job covers the 120 min.
 * **Switch `sel2_pipeline.spike_cleaning`** (OFF): ON -> the SEL2 LightGBM training (as of its origin) and candidates
   (as of D) read the demand minus the excess; TSB / DOW4 / AVG7 read the cleaned daily demand; actuals, groups, open
   hours and scope stay raw; run detail `spike_cleaning` (e4_n, excess total), `config_version` includes the switch only

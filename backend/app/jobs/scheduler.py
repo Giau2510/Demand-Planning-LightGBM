@@ -46,6 +46,10 @@ its own switch (1.1.8, see jobs/flows.py) and is planned only when that switch i
                         refresh / CANDIDATE_TRAIN is under way - every other plan exactly as 1.4.7. True: planned right
                         after today's D-1; today's FORECAST_REFRESH and CANDIDATE_TRAIN (weekly and catch-up) wait while
                         it is planned / PENDING / RUNNING, at most spike_lines.WAIT_MAX (45 min) after its row was created.
+                        Child limit: 45 min; the first full flag run of the scope (no full-flags marker yet) 120 min in
+                        both switch states. With the switch True such a run makes today's FORECAST_REFRESH and
+                        CANDIDATE_TRAIN queue behind it after WAIT_MAX (one heavy job at a time): the rollout does the
+                        first full run with the switch False right after the install.
 
 Missed slots (machine off / app closed) are recorded as SKIPPED (MISSED_SLOT_NO_BACKFILL). For D0 the policy
 `d0_catchup_policy` decides: LATEST_ONCE = at most ONE catch-up snapshot of TODAY (stamped with the real time, flagged

@@ -431,3 +431,105 @@ def test_a_night_after_a_gap_of_more_than_30_days_flags_every_line_since_the_las
     _seed_db(scope, start=d3, end=d3)
     r3 = spike_lines.run(d3)                                                          # next night: back to 30 days
     assert r3["flags"]["written_from"] == str(d3 - timedelta(days=30))
+
+
+# ------------------------------------------------------------------ C-148P: set-based next-purchase refresh
+def _refresh_reference(c, scope_key, first, before, d):
+    """The correlated form of 1.4.8 before C-148P (same semantics, one cache scan per row): the expected result."""
+    from app.ml.sel2 import spike
+    n = c.execute(
+        "UPDATE spike_flag_lines SET next_day = (SELECT MIN(l.order_date) FROM so_lines_cache l WHERE "
+        "l.scope_key = spike_flag_lines.scope_key AND l.fc_code = spike_flag_lines.fc_code AND "
+        "l.sku_code = spike_flag_lines.sku_code AND l.customer_id = spike_flag_lines.customer_id AND "
+        "l.order_date > spike_flag_lines.d AND l.order_date < ? AND l.qty > 0), computed_for = ?, computed_at = 'r' "
+        "WHERE scope_key = ? AND logic = ? AND history_days = ? AND d >= ? AND d < ? AND next_day IS NULL AND "
+        "customer_id <> '' AND computed_for < ?",
+        (str(d), str(d), scope_key, spike.LOGIC, spike.HISTORY_DAYS, str(first), str(before), str(d))).rowcount
+    c.execute(
+        "UPDATE spike_flag_lines SET computed_for = ?, computed_at = 'r' WHERE scope_key = ? AND logic = ? AND "
+        "history_days = ? AND d < ? AND next_day IS NULL AND customer_id <> '' AND computed_for < ? AND NOT EXISTS ("
+        "SELECT 1 FROM so_lines_cache l WHERE l.scope_key = spike_flag_lines.scope_key AND "
+        "l.fc_code = spike_flag_lines.fc_code AND l.sku_code = spike_flag_lines.sku_code AND "
+        "l.customer_id = spike_flag_lines.customer_id AND l.order_date > spike_flag_lines.d AND l.order_date < ? AND "
+        "l.qty > 0)", (str(d), scope_key, spike.LOGIC, spike.HISTORY_DAYS, str(first), str(d), str(d)))
+    return n
+
+
+def test_set_based_next_day_refresh_equals_the_correlated_form(monkeypatch):
+    """Random cache lines (qty 0 = not a purchase, another scope, lines on or after d) and stored flags (before / in /
+    after the refreshed days, unknown customers, next_day already seen, computed_for already d): the set-based refresh
+    writes exactly the rows, next_day and computed_for of the correlated form, in several transactions."""
+    import random
+    from app.ml.sel2 import spike
+    monkeypatch.setattr(spike_lines, "REFRESH_ROWS", 7)
+    rnd = random.Random(148)
+    first, before, d = D - timedelta(days=40), D - timedelta(days=10), D
+    custs, skus = ["", "C1", "C2", "C3"], ["S00", "S01", "S02"]
+    lines = set()
+    for _ in range(400):
+        lines.add((rnd.choice(["A", "A", "A", "B"]), str(first + timedelta(days=rnd.randrange(0, 45))),
+                   rnd.choice(["FC1", "FC2"]), rnd.choice(skus), f"SO{rnd.randrange(30)}", rnd.choice(custs)))
+    lines = [(*k, rnd.choice([0.0, 1.0, 2.0, 5.0]), 1, "x") for k in lines]
+    flags = set()
+    for _ in range(150):
+        flags.add((str(first + timedelta(days=rnd.randrange(-20, 40))), rnd.choice(["FC1", "FC2"]), rnd.choice(skus),
+                   f"SO{rnd.randrange(30)}", rnd.choice(custs)))
+    rows = []
+    for day, fc, sku, so, cu in sorted(flags):
+        dd = date.fromisoformat(day)
+        nd = rnd.choice([None, None, None, str(dd + timedelta(days=2))])
+        cf = rnd.choice([dd + timedelta(days=1), dd + timedelta(days=1), max(d, dd + timedelta(days=1))])
+        rows.append(("A", day, fc, sku, so, cu, nd, str(cf)))
+    rows.append(("A", str(first - timedelta(days=5)), "FC1", "S00", "SOX", "C9", None, str(first)))   # no cache line
+
+    def seed():
+        with db.tx() as c:
+            c.execute("DELETE FROM spike_flag_lines")
+            c.execute("DELETE FROM so_lines_cache")
+            c.executemany("INSERT INTO so_lines_cache(scope_key, order_date, fc_code, sku_code, so_code, customer_id, qty, "
+                          "n_rows, loaded_at) VALUES (?,?,?,?,?,?,?,?,?)", lines)
+            c.executemany("INSERT INTO spike_flag_lines(scope_key, logic, history_days, d, fc_code, sku_code, so_code, "
+                          "customer_id, qty, group_code, min_qty, n_prev, cust_med, gap_med, n_gaps, next_day, kept, T1, "
+                          "T2, T4, T7, n_signals_raw, exc_wholesale, exc_periodic, exc_demand, is_regular, computed_for, "
+                          "computed_at) VALUES (?, 'v3', 180, ?, ?, ?, ?, ?, 50, 'B', 5, 2, 2, 7, 3, ?, 2, 1, 0, 0, 0, "
+                          "1, 0, 0, 0, 1, ?, 'x')", rows)
+
+    def state():
+        with db.read() as c:
+            return {tuple(r[:5]): (r[5], r[6], r[7] != "x") for r in c.execute(
+                "SELECT d, fc_code, sku_code, so_code, customer_id, next_day, computed_for, computed_at "
+                "FROM spike_flag_lines").fetchall()}
+    seed()
+    with db.tx() as c:
+        n_ref = _refresh_reference(c, "A", first, before, d)
+    want = state()
+    seed()
+    n = spike_lines._refresh_next_day("A", first, before, d)
+    got = state()
+    assert got == want and n == n_ref
+    assert n > 0 and sum(v[2] for v in want.values()) > n             # both rules touched rows
+    assert any(v[0] is not None and v[2] and k[0] >= str(first) for k, v in want.items())   # a next_day found
+    # nothing left to change: a second refresh writes nothing
+    assert spike_lines._refresh_next_day("A", first, before, d) == 0 and state() == got
+
+
+def test_child_timeout_longer_until_the_first_full_flag_run(sel2_on):
+    """C-148P: the first full flag run of the scope (~50 min on the owner's PC) gets TIMEOUT_FULL_S, later nights
+    TIMEOUT_S; the runner's own limit covers the longer one."""
+    from app.jobs import runner
+    assert spike_lines.child_timeout() == spike_lines.TIMEOUT_S == 45 * 60            # not a BIGQUERY scope
+    scope = _configure()
+    assert spike_lines.child_timeout() == spike_lines.TIMEOUT_FULL_S == 120 * 60
+    seen = {}
+    spike_lines.set_child_runner(lambda a, t: (seen.update(timeout=t), {"ok": True, "exit_code": 0, "result": {
+        "status": "DONE"}})[1])
+    try:
+        spike_lines.job(None, {"business_date": str(D)})
+    finally:
+        spike_lines.set_child_runner(None)
+    assert seen == {"timeout": 120 * 60}
+    with db.tx() as c:
+        c.execute("INSERT INTO sync_state(name, value_json, updated_at) VALUES (?, ?, 'x')",
+                  (spike_lines.FULL_MARK + scope, json.dumps({"computed_for": str(D)})))
+    assert spike_lines.child_timeout() == 45 * 60
+    assert runner.job_timeout("SPIKE_LINES", ss.get("schedule")) == 120 * 60 + runner.SEL2_TRAIN_MARGIN

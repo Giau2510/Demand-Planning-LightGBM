@@ -22,8 +22,9 @@ run(D) (child process `python -m app.cli spike-lines --date D --yes`, the server
      day, the source's last day). Groups (minimum quantity): ROLLING_B7 of data.Inputs.groups on every retraining weekday from the one on or
      before the first cached day to D-1 (a series without a group that week = B), as the research (bt17 weekly_groups).
   c. demand_excess_daily as of D, level 1, E4 N = sel2_pipeline.spike_e4_n.
-job(...) (runner handler, jobs/runner.py): the free-commit gate, the child (timeout 45 min) and the alert. Customer
-ids stay in so_lines_cache / spike_flag_lines only (never in logs, results or alerts)."""
+job(...) (runner handler, jobs/runner.py): the free-commit gate, the child (timeout 45 min; 120 min while the scope has
+no finished full flag run: that run flags every cached line, ~50 min) and the alert. Customer ids stay in
+so_lines_cache / spike_flag_lines only (never in logs, results or alerts)."""
 from __future__ import annotations
 
 import gc
@@ -41,13 +42,15 @@ from .timeutil import now_iso, today_vn
 log = logging.getLogger("df.spike_lines")
 JOB_TYPE = "SPIKE_LINES"
 CACHE_DAYS = 210                # 180 days of history + the 30 days of the E4 rule
-TIMEOUT_S = 45 * 60             # the child is killed after 45 minutes
+TIMEOUT_S = 45 * 60             # the child is killed after 45 minutes (later nights)
+TIMEOUT_FULL_S = 120 * 60       # first full flag run of the scope (no FULL_MARK yet): ~50 min on the owner's PC
 WAIT_MAX = timedelta(minutes=45)    # switch ON: the refresh / training wait for today's step at most this long
 MIN_COMMIT_MB = 3072            # free commit needed to start the child (= pipeline.MIN_COMMIT_MB, not imported)
 RECENT_DAYS = 30                # later nights: flags of the lines of the last 30 days recomputed (full history)
 CHUNK_LINES = 1_500_000         # SO lines per flag_lines call (whole SKUs)
 ALERT = "SPIKE_LINES_FAILED"
 WRITE_DAYS = 7                  # days per write transaction (cache replace, flag writes): no long write lock
+REFRESH_ROWS = 50_000           # flag rows per write transaction of the next-purchase refresh
 FULL_MARK = "spike_flags_full:"     # sync_state name prefix: the first full flag run of the scope finished (+ scope)
 _on_chunk = None                # tests: called between two write transactions
 LEVEL = 1
@@ -202,31 +205,68 @@ def _sku_chunks(conn, scope_key: str) -> list[tuple[str, str]]:
     return out
 
 
-def _refresh_next_day(c, scope_key: str, first: date, before: date, d: date) -> int:
+def _refresh_next_day(scope_key: str, first: date, before: date, d: date) -> int:
     """Stored flagged lines of days first (first cached day) .. before-1 whose next purchase was not seen yet (next_day
     NULL, known customer): the first later purchase day (qty > 0, < d) of the same customer x SKU x FC in the cache,
     and computed_for = d (the data end of next_day: Excess decides T7 as of a day from it). Every other column stays as
     stored. Lines of days before the cache never get a next_day from it; one still without a next purchase only gets
     computed_for = d when the cache holds no later purchase of its customer x SKU x FC either (its next purchase would
     have been found while its day was cached, so none happened before d): its T7 stays decidable after it left the
-    cache. Returns the next_day updates. No commit."""
+    cache. Returns the next_day updates (the rows of days first .. before-1 written).
+    Set-based (C-148P: the correlated form scanned the scope's cache once per row, > 3 h on 5.5 M lines): only the rows
+    that can still change (next_day NULL, known customer, computed_for < d) into a TEMP table, the purchase days of
+    their customer x SKU x FC from ONE pass over the scope's cache into an indexed TEMP table, the first later day per
+    row by an index seek, then UPDATE ... FROM in transactions of REFRESH_ROWS rows."""
     from .ml.sel2 import spike
-    n = c.execute(
-        "UPDATE spike_flag_lines SET next_day = (SELECT MIN(l.order_date) FROM so_lines_cache l WHERE "
-        "l.scope_key = spike_flag_lines.scope_key AND l.fc_code = spike_flag_lines.fc_code AND "
-        "l.sku_code = spike_flag_lines.sku_code AND l.customer_id = spike_flag_lines.customer_id AND "
-        "l.order_date > spike_flag_lines.d AND l.order_date < ? AND l.qty > 0), computed_for = ?, computed_at = ? "
-        "WHERE scope_key = ? AND logic = ? AND history_days = ? AND d >= ? AND d < ? AND next_day IS NULL AND "
-        "customer_id <> '' AND computed_for < ?",
-        (str(d), str(d), now_iso(), scope_key, spike.LOGIC, spike.HISTORY_DAYS, str(first), str(before),
-         str(d))).rowcount
-    c.execute(
-        "UPDATE spike_flag_lines SET computed_for = ?, computed_at = ? WHERE scope_key = ? AND logic = ? AND "
-        "history_days = ? AND d < ? AND next_day IS NULL AND customer_id <> '' AND computed_for < ? AND NOT EXISTS ("
-        "SELECT 1 FROM so_lines_cache l WHERE l.scope_key = spike_flag_lines.scope_key AND "
-        "l.fc_code = spike_flag_lines.fc_code AND l.sku_code = spike_flag_lines.sku_code AND "
-        "l.customer_id = spike_flag_lines.customer_id AND l.order_date > spike_flag_lines.d AND l.order_date < ? AND "
-        "l.qty > 0)", (str(d), now_iso(), scope_key, spike.LOGIC, spike.HISTORY_DAYS, str(first), str(d), str(d)))
+    c = db.connect()
+    at, n = now_iso(), 0
+    try:
+        c.execute("CREATE TEMP TABLE _nd_t AS SELECT d, fc_code, sku_code, so_code, customer_id FROM spike_flag_lines "
+                  "WHERE scope_key = ? AND logic = ? AND history_days = ? AND d < ? AND next_day IS NULL AND "
+                  "customer_id <> '' AND computed_for < ? ORDER BY d",
+                  (scope_key, spike.LOGIC, spike.HISTORY_DAYS, str(before), str(d)))
+        lo = c.execute("SELECT MIN(d) FROM temp._nd_t").fetchone()[0]
+        if lo is None:
+            return 0
+        c.execute("CREATE TEMP TABLE _nd_k (fc_code TEXT, sku_code TEXT, customer_id TEXT, "
+                  "PRIMARY KEY (fc_code, sku_code, customer_id)) WITHOUT ROWID")
+        c.execute("INSERT OR IGNORE INTO temp._nd_k SELECT fc_code, sku_code, customer_id FROM temp._nd_t")
+        c.execute("CREATE TEMP TABLE _nd_p (fc_code TEXT, sku_code TEXT, customer_id TEXT, order_date TEXT, "
+                  "PRIMARY KEY (fc_code, sku_code, customer_id, order_date)) WITHOUT ROWID")
+        # CROSS JOIN: the cache is the outer loop (one range scan of the scope), each line probes the key table
+        c.execute("INSERT OR IGNORE INTO temp._nd_p SELECT l.fc_code, l.sku_code, l.customer_id, l.order_date FROM "
+                  "so_lines_cache l CROSS JOIN temp._nd_k k WHERE l.scope_key = ? AND l.order_date > ? AND "
+                  "l.order_date < ? AND l.qty > 0 AND k.fc_code = l.fc_code AND k.sku_code = l.sku_code AND "
+                  "k.customer_id = l.customer_id", (scope_key, lo, str(d)))
+        c.execute("CREATE TEMP TABLE _nd_r AS SELECT t.d, t.fc_code, t.sku_code, t.so_code, t.customer_id, (SELECT "
+                  "MIN(p.order_date) FROM temp._nd_p p WHERE p.fc_code = t.fc_code AND p.sku_code = t.sku_code AND "
+                  "p.customer_id = t.customer_id AND p.order_date > t.d) AS next_day FROM temp._nd_t t "
+                  "ORDER BY t.rowid")
+        # the UPDATE walks the flag rows of the batch's days (primary key range) and probes this key: without it each
+        # flag row scanned the REFRESH_ROWS rows of the batch
+        c.execute("CREATE INDEX temp._nd_r_k ON _nd_r(d, fc_code, sku_code, so_code, customer_id)")
+        upd = ("UPDATE spike_flag_lines SET next_day = r.next_day, computed_for = ?, computed_at = ? FROM temp._nd_r r "
+               "WHERE r.rowid BETWEEN ? AND ? AND {} AND spike_flag_lines.scope_key = ? AND spike_flag_lines.logic = ? "
+               "AND spike_flag_lines.history_days = ? AND spike_flag_lines.d BETWEEN ? AND ? AND "
+               "spike_flag_lines.d = r.d AND spike_flag_lines.fc_code = "
+               "r.fc_code AND spike_flag_lines.sku_code = r.sku_code AND spike_flag_lines.so_code = r.so_code AND "
+               "spike_flag_lines.customer_id = r.customer_id AND spike_flag_lines.next_day IS NULL AND "
+               "spike_flag_lines.computed_for < ?")
+        top = c.execute("SELECT MAX(rowid) FROM temp._nd_r").fetchone()[0] or 0
+        for a in range(1, top + 1, REFRESH_ROWS):
+            # the rows come ordered by d: a batch covers a short day range (no scan of every flag row of the scope)
+            d_lo, d_hi = c.execute("SELECT MIN(d), MAX(d) FROM temp._nd_r WHERE rowid BETWEEN ? AND ?",
+                                   (a, a + REFRESH_ROWS - 1)).fetchone()
+            p = (str(d), at, a, a + REFRESH_ROWS - 1, str(first), scope_key, spike.LOGIC, spike.HISTORY_DAYS, d_lo,
+                 d_hi, str(d))
+            with db.tx(c):
+                # days first .. before-1: next_day (NULL when none yet) + computed_for
+                n += c.execute(upd.format("r.d >= ?"), p).rowcount
+                # days before the cache: only the rows without a later purchase (next_day stays NULL), computed_for
+                c.execute(upd.format("r.d < ? AND r.next_day IS NULL"), p)
+            _between_chunks()
+    finally:
+        c.close()       # the TEMP tables go with the connection
     return n
 
 
@@ -286,8 +326,7 @@ def compute_flags(scope_key: str, d: date, full: bool | None = None) -> dict:
         _between_chunks()
     if not full:
         val = {**mark, "last_computed_for": str(max(d, last))}
-        with db.tx() as c:
-            next_days = _refresh_next_day(c, scope_key, first, w0, d)
+        next_days = _refresh_next_day(scope_key, first, w0, d)
     else:
         val = {"computed_for": str(d), "first_day": str(first), "last_computed_for": str(d)}
     with db.tx() as c:
@@ -347,11 +386,24 @@ def _call_child(args: list[str], timeout: int) -> dict:
     return jobs.run_child(args, timeout, cmd=jobs.child_command(args))
 
 
+def child_timeout() -> int:
+    """Seconds the child may run: TIMEOUT_FULL_S while the active scope has no finished full flag run (full_done None:
+    the child flags every cached line, ~50 min on the owner's PC), else TIMEOUT_S. Not a BIGQUERY scope: TIMEOUT_S (the
+    child refuses at once)."""
+    try:
+        sk = _scope_key()
+    except AppError:
+        return TIMEOUT_S
+    with db.read() as c:
+        return TIMEOUT_S if full_done(c, sk) else TIMEOUT_FULL_S
+
+
 def job(job_id, params: dict) -> dict:
     """runner handler of SPIKE_LINES (jobs/runner.py; key SPIKE_LINES:<day>): free commit below MIN_COMMIT_MB -> not
-    started; else the child `spike-lines --date D --yes` (killed after TIMEOUT_S). Never raises: anything but a DONE /
-    SKIPPED result is {"status": "FAILED"} (the runner records the row FAILED, no retry, no ERROR alert) + ONE WARNING
-    alert SPIKE_LINES_FAILED written here (no customer id in it). D-1, the refresh and the export go on."""
+    started; else the child `spike-lines --date D --yes` (killed after child_timeout(): TIMEOUT_S, the first full run
+    TIMEOUT_FULL_S). Never raises: anything but a DONE / SKIPPED result is {"status": "FAILED"} (the runner records the
+    row FAILED, no retry, no ERROR alert) + ONE WARNING alert SPIKE_LINES_FAILED written here (no customer id in it).
+    D-1, the refresh and the export go on."""
     from .jobs import resources
     d = date.fromisoformat(str((params or {}).get("business_date") or today_vn())[:10])
     res, code, err = None, None, None
@@ -360,7 +412,7 @@ def job(job_id, params: dict) -> dict:
         if avail is not None and avail / resources.MB < MIN_COMMIT_MB:
             code, err = "SEL2_LOW_MEMORY", f"free commit {avail / resources.MB:.0f} MB < {MIN_COMMIT_MB} MB"
         else:
-            child = _call_child(["spike-lines", "--date", str(d), "--yes"], TIMEOUT_S)
+            child = _call_child(["spike-lines", "--date", str(d), "--yes"], child_timeout())
             res = child.get("result")
             if not (child.get("ok") and child.get("exit_code", 0) == 0 and (res or {}).get("status") in ("DONE",
                                                                                                          "SKIPPED")):

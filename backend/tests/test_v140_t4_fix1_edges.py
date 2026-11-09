@@ -62,8 +62,9 @@ def test_job_timeout_of_every_type_only_candidate_train_differs(enabled):
     sched = ss.get("schedule")
     got = {jt: runner.job_timeout(jt, sched) for jt in runner.JOB_TYPES}
     assert runner.SEL2_TRAIN_MARGIN == 120
-    # 1.4.8: SPIKE_LINES = the child's own 45-minute timeout + the margin (spike_lines.TIMEOUT_S), whatever the settings
-    own = {"CANDIDATE_TRAIN": 7200 + 120, "SPIKE_LINES": 45 * 60 + 120}
+    # 1.4.8: SPIKE_LINES = the child's longest own timeout (first full run 120 min, spike_lines.TIMEOUT_FULL_S) + the
+    # margin, whatever the settings
+    own = {"CANDIDATE_TRAIN": 7200 + 120, "SPIKE_LINES": 120 * 60 + 120}
     assert got == {jt: own.get(jt, 1800) for jt in runner.JOB_TYPES}
     assert set(runner.JOB_TYPES) >= {"CANDIDATE_TRAIN", "FORECAST_EXPORT", "FORECAST_REFRESH", "TRAIN_PUBLISH"}
 
