@@ -19,7 +19,11 @@ reads from the table with a compatible type (AUX_COLUMNS = the SELECTs of the mo
   avg_demand       sel2_pipeline.avg_demand_table       ml/sel2/avg_demand.read_current (_COLS)
   avg_demand_hist  sel2_pipeline.avg_demand_hist_table  ml/sel2/avg_demand.read_historical (_COLS + transformed_at)
   product_names    bigquery.product_names_table         bq/product_names.refresh (the configured key / name columns;
-                                                        a stored short name shows as its effective full id)"""
+                                                        a stored short name shows as its effective full id)
+
+1.4.10: product_names is OPTIONAL (names come from the Avg Demand tables first, dim_sku is the last fallback): an empty
+id means "not used" - check and save accept it without any BigQuery call (PASSED, optional_empty), status shows
+optional=True and ok=True for it; a non-empty id is checked exactly as before."""
 from __future__ import annotations
 
 import json
@@ -32,6 +36,7 @@ from . import connector
 
 KINDS = ("d1", "d0", "openhours", "avg_demand", "avg_demand_hist", "product_names")
 # 1.4.9: settings section and key of each auxiliary table
+OPTIONAL = ("product_names",)          # 1.4.10: kinds whose table id may be empty (= not used)
 AUX = {"openhours": ("daily_forecast", "openhours_table"), "avg_demand": ("sel2_pipeline", "avg_demand_table"),
        "avg_demand_hist": ("sel2_pipeline", "avg_demand_hist_table"),
        "product_names": ("bigquery", "product_names_table")}
@@ -49,7 +54,8 @@ AUX_COLUMNS = {
 USED_BY = {"openhours": "daily forecast refresh + SEL2 (open hours per SKU x FC x day)",
            "avg_demand": "SEL2 AVG_DEMAND of today (forecast_used when the source is AVG_DEMAND or a fallback)",
            "avg_demand_hist": "SEL2 AVG_DEMAND of past days (history, backtest, re-export)",
-           "product_names": "product names next to the SKU (display and search only)"}
+           "product_names": "product names next to the SKU (display and search only): optional last fallback "
+                            "after the Avg Demand tables, empty = not used"}
 
 
 # jobs that read an auxiliary table (directly or through its stored copy keyed by the table id): the daily refresh
@@ -147,6 +153,9 @@ def check(kind: str, table_id: str | None = None) -> dict:
     out: dict = {"kind": kind, "table_id": tid, "checked_at": now_iso(), "status": "FAILED", "errors": [],
                  "warnings": []}
     try:
+        if kind in OPTIONAL and not tid:                    # 1.4.10: not used = nothing to read, nothing to prove
+            out.update(status="PASSED", optional_empty=True)
+            return _store_check(out)
         parse(tid)
         client = connector._client(bq)
         try:
@@ -175,6 +184,11 @@ def check(kind: str, table_id: str | None = None) -> dict:
         out["status"] = "FAILED" if out["errors"] else "PASSED"
     except AppError as e:
         out["errors"].append({"code": e.code, "detail": e.detail})
+    return _store_check(out)
+
+
+def _store_check(out: dict) -> dict:
+    kind, tid = out["kind"], out["table_id"]
     with db.tx() as c:
         c.execute("INSERT INTO sync_state(name, value_json, updated_at) VALUES (?,?,?) ON CONFLICT(name) DO UPDATE SET "
                   "value_json=excluded.value_json, updated_at=excluded.updated_at",
@@ -187,7 +201,10 @@ def check(kind: str, table_id: str | None = None) -> dict:
 def save(kind: str, table_id: str) -> dict:
     kind = _kind(kind)
     tid = (table_id or "").strip()
-    proj, ds, tbl = parse(tid)
+    if kind in OPTIONAL and not tid:
+        proj = ds = tbl = ""                                # 1.4.10: "" = not used (no parse, no BigQuery call)
+    else:
+        proj, ds, tbl = parse(tid)
     bq = ss.get("bigquery")
     if kind == "d1" and tid != current_id("d1", bq) and bq.production_enabled:
         raise AppError("BQ_TABLE_CHANGE_NEEDS_PRODUCTION_OFF", 409, detail=f"{current_id('d1', bq)} -> {tid}")
@@ -203,7 +220,8 @@ def save(kind: str, table_id: str) -> dict:
     elif kind in AUX:
         section, key = AUX[kind]
         if tid != current_id(kind, bq):
-            ss.update(section, {key: tid}, note=f"{section}.{key} = {tid} (checked)")
+            ss.update(section, {key: tid}, note=f"{section}.{key} = {tid} (checked)" if tid
+                      else f"{section}.{key} = '' (optional table, not used)")
     elif tid != current_id("d1", bq):
         ss.update("bigquery", {"project_id": proj, "dataset_id": ds, "source_table": tbl,
                                "schema_snapshot": res["columns"]}, note=f"D-1 table {tid} (checked)")
@@ -219,6 +237,8 @@ def status() -> dict:
             tid = current_id(kind, bq, c)
             out[kind] = {"table_id": tid, "last_check": lc,
                          "ok": bool(lc and lc.get("status") == "PASSED" and lc.get("table_id") == tid)}
+            if kind in OPTIONAL:                            # 1.4.10: an empty id = not used = nothing to check
+                out[kind].update(optional=True, ok=out[kind]["ok"] or not tid)
             if kind in AUX:
                 out[kind].update(setting=".".join(AUX[kind]), used_by=USED_BY[kind],
                                  required_columns=sorted(required_columns(kind, bq)))

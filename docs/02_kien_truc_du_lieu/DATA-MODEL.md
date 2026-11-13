@@ -287,8 +287,12 @@ discount, promotion, voucher and source-update fields switch feature groups on o
    fingerprint equals its `data_fingerprint` (`app.cli attest-training-data`; `sync_state training_data_identity:<id>`,
    written once, audit `TRAINING_DATA_ATTESTED`). No copy of the input data is stored per run.
 9. **Product names (1.2.4)** are display / search data: `sync_state product_names` = one name per local BIGQUERY SKU
-   from `bigquery.product_names_table` (default `dim_sku`; 1.4.9: full id `lakehouse-prod-394907.gold_buymed_vn2.dim_sku`, a stored short name still works; key `sku_code`); a SKU with several names in the source gets
-   none. Refreshed after each successful D-1 sync (a failure never fails the sync) or by hand. Never joined into any
+   (plus the SKUs of the newest `avg_demand_daily` day). 1.4.10 order: newest non-empty `product_name` in
+   `avg_demand_daily` (copy of today's Avg Demand table) -> latest name in the historical Avg Demand table (60 days,
+   only for SKUs still without a name; a read failure is only logged) -> the name stored by the previous refresh ->
+   the OPTIONAL `bigquery.product_names_table` (`dim_sku`; empty default = never read; 1.4.9: full id, a stored short
+   name still works; key `sku_code`; only when SKUs are still without a name). A SKU with several names in `dim_sku`
+   gets none from it. The state also holds `skus_by_source` {avg, hist, stored, dim}. Refreshed after each successful D-1 sync (a failure never fails the sync) or by hand. Never joined into any
    quantity, metric or model input.
 
 ## 10. Business data contract vs current implementation

@@ -28,6 +28,8 @@ NAMES_COLS = [("transformed_at", "TIMESTAMP"), ("sku_code", "STRING"), ("product
               ("product_name", "STRING"), ("seller_code", "STRING"), ("sku_active", "BOOLEAN")]
 REAL = {D1: REAL_D1, D0: D0_OUT, OH: OH_COLS, AVG: AVG_COLS, AVG_H: AVG_H_COLS, NAMES: NAMES_COLS}
 AUX = {"openhours": OH, "avg_demand": AVG, "avg_demand_hist": AVG_H, "product_names": NAMES}
+# 1.4.10: the product-names table is an optional last fallback: its default is "" (= not used); the others are unchanged
+DEFAULT = {**AUX, "product_names": ""}
 SETTING = {"openhours": ("daily_forecast", "openhours_table"), "avg_demand": ("sel2_pipeline", "avg_demand_table"),
            "avg_demand_hist": ("sel2_pipeline", "avg_demand_hist_table"),
            "product_names": ("bigquery", "product_names_table")}
@@ -41,10 +43,13 @@ def test_defaults_are_exactly_the_tables_used_by_1_4_8():
     assert ss.get("daily_forecast").openhours_table == OH
     assert ss.get("sel2_pipeline").avg_demand_table == AVG
     assert ss.get("sel2_pipeline").avg_demand_hist_table == AVG_H
-    assert ss.get("bigquery").product_names_table == NAMES
+    assert ss.get("bigquery").product_names_table == ""                 # 1.4.10: optional, default not used
     st = source_tables.status()
-    assert {k: st[k]["table_id"] for k in AUX} == AUX
-    assert all(st[k]["last_check"] is None and not st[k]["ok"] for k in AUX)
+    assert {k: st[k]["table_id"] for k in AUX} == DEFAULT
+    assert all(st[k]["last_check"] is None for k in AUX)
+    # nothing was checked: the required tables are not ok; the optional empty one is (nothing to check)
+    assert {k: st[k]["ok"] for k in AUX} == {"openhours": False, "avg_demand": False, "avg_demand_hist": False,
+                                             "product_names": True}
     assert st["openhours"]["setting"] == "daily_forecast.openhours_table"
 
 
@@ -80,7 +85,7 @@ def test_a_table_missing_a_column_the_code_reads_fails_and_is_never_saved(client
     r = client.put(f"/api/bigquery/source-tables/{kind}", json={"table_id": other})
     assert r.status_code == 409 and r.json()["code"] == "BQ_TABLE_CHECK_FAILED"
     section, key = SETTING[kind]
-    assert getattr(ss.get(section), key) == AUX[kind]                   # unchanged, no fallback
+    assert getattr(ss.get(section), key) == DEFAULT[kind]               # unchanged, no fallback
     lc = source_tables.last_check(kind)
     assert lc["status"] == "FAILED" and {"code": "COLUMN_NOT_FOUND", "field": kind, "column": missing} in lc["errors"]
 

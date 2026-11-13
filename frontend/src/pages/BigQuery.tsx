@@ -194,6 +194,7 @@ export function SourceTables() {
           <button className="primary" data-testid={`table-${kind}-save`} disabled={act.busy || (kind === "d1" && s.production_enabled && ids.d1 !== s.table_id)}
             onClick={async () => { const r = await act.run(() => put(`/api/bigquery/source-tables/${kind}`, { table_id: ids[kind] }), t("common.saved")); if (r) { setRes({}); st.reload(); } }}><Icon name="save" size={14} />{t("bq.table_save")}</button>
           {lc ? <Pill status={lc.status === "PASSED" ? "OK" : "FAILED"} label={`${lc.status} · ${fmtTime(lc.checked_at)}`} /> : <span className="muted">{t("bq.table_never_checked")}</span>}
+          {s.optional && !(ids[kind] ?? "").trim() && <span className="muted" data-testid={`table-${kind}-unused`}>{t("bq.table_unused")}</span>}
           {kind === "d0" && <span className="muted">{t("bq.table_mode")}: <b>{s.mode}</b></span>}
         </div>
         {lc?.errors?.length > 0 && <Issues items={lc.errors.map((e: any) => ({ code: e.code, detail: e.column ? `${e.field ?? ""} → ${e.column}` : e.detail }))} tone="bad" />}

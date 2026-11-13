@@ -161,6 +161,8 @@ def test_model_page_backtest_flag_follows_the_same_rule(client, fast_model):
 
 
 # ------------------------------------------------------------------ B. product names, search, Excel
+# 1.4.10: the dim_sku table is an OPTIONAL last fallback (default "" = never read): these tests configure it explicitly
+DIM = "lakehouse-prod-394907.gold_buymed_vn2.dim_sku"
 NAMES = [{"sku": "S0", "name": "Hỗ trợ gan Simarin Plus Stella (H/30V)"}, {"sku": "S1", "name": "Diamicron MR 30mg Servier"},
          {"sku": "S2", "name": "Tên A"}, {"sku": "S2", "name": "Tên B"},              # two names: ambiguous -> none
          {"sku": "S1", "name": "Diamicron MR 30mg Servier"},                            # repeated identical: one name
@@ -173,6 +175,7 @@ def _summary(client, fr, **p):
 
 def test_names_are_one_per_sku_never_duplicate_a_row_and_never_change_a_number(client, fast_model):
     fake, _, res = _published()
+    ss.update("bigquery", {"product_names_table": DIM})
     fr = res["forecast_run_id"]
     before = _summary(client, fr)
     vals_before = client.get(f"/api/forecast-runs/{fr}/values?limit=5000").json()
@@ -180,7 +183,8 @@ def test_names_are_one_per_sku_never_duplicate_a_row_and_never_change_a_number(c
     fake.responses["product_names"] = NAMES
     st = client.post("/api/bigquery/product-names/refresh").json()
     assert st["skus_local"] == 5 and st["skus_named"] == 2 and st["skus_ambiguous"] == 1 and st["skus_without_name"] == 3
-    assert st["source"].endswith(".dim_sku") and "names" not in st
+    assert st["source"].endswith("dim_sku") and "names" not in st          # 1.4.10: "<avg table> (stored) + dim_sku"
+    assert st["skus_by_source"] == {"avg": 0, "hist": 0, "stored": 0, "dim": 2}
     after = _summary(client, fr)
     vals_after = client.get(f"/api/forecast-runs/{fr}/values?limit=5000").json()
     assert after["n_series"] == before["n_series"] and after["grand_total"] == before["grand_total"]
@@ -198,6 +202,7 @@ def test_names_are_one_per_sku_never_duplicate_a_row_and_never_change_a_number(c
 def test_search_partial_case_and_accent_insensitive_combined_with_the_fc_filter(client, fast_model):
     fake, _, res = _published()
     fr = res["forecast_run_id"]
+    ss.update("bigquery", {"product_names_table": DIM})
     fake.responses["product_names"] = NAMES
     client.post("/api/bigquery/product-names/refresh")
     skus = lambda r: sorted({s["sku_id"] for s in r["series"]})  # noqa: E731
@@ -217,6 +222,7 @@ def test_search_partial_case_and_accent_insensitive_combined_with_the_fc_filter(
 def test_excel_has_the_name_after_the_sku_same_rows_same_totals(client, fast_model):
     fake, _, res = _published()
     fr = res["forecast_run_id"]
+    ss.update("bigquery", {"product_names_table": DIM})
     fake.responses["product_names"] = NAMES
     client.post("/api/bigquery/product-names/refresh")
     wb = load_workbook(io.BytesIO(client.get(f"/api/forecast-runs/{fr}/export.xlsx?horizon=7&lang=vi").content))
@@ -232,19 +238,21 @@ def test_excel_has_the_name_after_the_sku_same_rows_same_totals(client, fast_mod
     t = {(r[0], r[2]): r[4] for r in tot.iter_rows(min_row=2, values_only=True)}
     assert sum(t.values()) == pytest.approx(_summary(client, fr)["grand_total"])
     info = {r[0]: r[1] for r in wb.worksheets[0].iter_rows(min_row=2, values_only=True)}
-    assert info["Phiên bản định dạng file"] == "6" and info["Nguồn tên sản phẩm"].endswith(".dim_sku")   # 1.2.9: format 6
+    assert info["Phiên bản định dạng file"] == "6" and info["Nguồn tên sản phẩm"].endswith("dim_sku")   # 1.2.9: format 6
 
 
 def test_a_d1_refreshes_the_names_and_a_name_failure_never_fails_it(client):
     from app import sync
     from test_v116 import _daily
     fake = _bq_ready_production()
+    ss.update("bigquery", {"product_names_table": DIM})     # 1.4.10: with an empty table nothing is read, nothing can fail
     y = timeutil.today_vn() - timedelta(days=1)
     fake.responses["daily"] = _daily(y, 4.0)
     fake.errors["product_names"] = RuntimeError("name table unavailable")
     assert sync.run_d1_sync("J1", fallback_mode=True)["status"] == "SUCCEEDED"
     with db.read() as c:
-        assert product_names.status(c) is None
+        st = product_names.status(c)                          # 1.4.10: the failing OPTIONAL table is recorded, nothing raised
+        assert st is not None and st["dim_error"] and st["skus_named"] == 0
     del fake.errors["product_names"]
     fake.responses["product_names"] = [{"sku": "S1", "name": "Tên S1"}]
     assert sync.run_d1_sync("J2", fallback_mode=True)["status"] == "SUCCEEDED"

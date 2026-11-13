@@ -330,12 +330,20 @@ Trang **SQL nguồn & đồng bộ** quản lý hai nguồn độc lập:
   trước khi lưu và báo sau khi lưu; `SOURCE_NOT_READY` ghi rõ tắt từ lúc nào, do thay đổi nào, cách khắc phục (*Kiểm tra
   dữ liệu toàn kỳ* → *Kích hoạt chế độ sản xuất*). *Tắt chế độ sản xuất* giữ nguyên nguồn đang dùng (trước 1.2.3 nút này
   tự chuyển sang DEMO).
-- **Tên sản phẩm (1.2.4).** Bảng D-1 không có tên sản phẩm. Tên lấy từ `<project>.<dataset>.dim_sku`
-  (`bigquery.product_names_table`, từ 1.4.9 là tên đầy đủ project.dataset.table, đặt trên trang Kết nối BigQuery; khóa `sku_code`, cột `product_name`; kiểm tra thật 17/10/2026: 298.517 dòng =
-  298.517 `sku_code` khác nhau, 0 tên rỗng), đọc 2 cột (~23 MB/lần, dry-run trước, giới hạn byte), chỉ giữ SKU có trong
-  dữ liệu BIGQUERY cục bộ. SKU có nhiều tên khác nhau → không gán tên; SKU không có trong bảng → "Chưa có tên sản phẩm".
-  Tự làm mới sau mỗi lần D-1 thành công; làm tay: `POST /api/bigquery/product-names/refresh` hoặc
-  `app.cli product-names-refresh`. Tên chỉ để hiển thị / tìm kiếm / Excel, không đổi số lượng hay chỉ số nào.
+- **Tên sản phẩm (1.2.4; từ 1.4.10 lấy từ bảng Avg Demand trước, `dim_sku` là bảng dự phòng không bắt buộc).** Bảng D-1
+  không có tên sản phẩm. Thứ tự cho từng SKU (tên không rỗng đầu tiên thắng; một bản ánh xạ duy nhất): (1) tên
+  `product_name` mới nhất, không rỗng, của SKU trong bảng cục bộ `avg_demand_daily` (bản chép của
+  `fact_avg_demand_sku` hôm nay); (2) chỉ với SKU còn thiếu tên: tên không rỗng mới nhất trong bảng Avg Demand lịch sử
+  (`sel2_pipeline.avg_demand_hist_table`, 60 ngày `transformed_at` gần nhất, lọc `sku_code IN UNNEST(@skus)`, dry-run
+  trước, giới hạn byte; đọc lỗi thì chỉ ghi log, không làm hỏng lần làm mới); (3) tên của lần làm mới trước (SKU đã có
+  tên không bao giờ bị xóa tên); (4) chỉ khi `bigquery.product_names_table` KHÔNG rỗng và vẫn còn SKU thiếu tên: bảng đó
+  (từ 1.4.9 là tên đầy đủ project.dataset.table, đặt trên trang Kết nối BigQuery; khóa `sku_code`, cột `product_name`;
+  đọc 2 cột ~23 MB/lần, dry-run trước, giới hạn byte; SKU có nhiều tên khác nhau trong bảng này → không lấy tên từ
+  đây). Để trống `product_names_table` = không bao giờ đọc `dim_sku`. Phạm vi SKU = dữ liệu BIGQUERY cục bộ + SKU của
+  ngày mới nhất trong `avg_demand_daily`; SKU không có tên ở nguồn nào → "Chưa có tên sản phẩm". Trạng thái có thêm
+  `skus_by_source` {avg, hist, stored, dim}. Tự làm mới sau mỗi lần D-1 thành công; làm tay:
+  `POST /api/bigquery/product-names/refresh` hoặc `app.cli product-names-refresh`. Tên chỉ để hiển thị / tìm kiếm /
+  Excel (cột `ten_san_pham`), không đổi số lượng hay chỉ số nào.
 
 ## 10. SQL D0 do người dùng cung cấp — các điểm cần xác nhận
 
@@ -740,7 +748,7 @@ Mỗi luồng đọc đúng **một** bảng, cấu hình bằng full table id `
 | Giờ mở bán (1.4.9, `openhours`) | `lakehouse-prod-394907.gold_buymed_vn2.openhours_by_sku` | `daily_forecast.openhours_table` | làm mới dự báo hằng ngày, SEL2; cột cần: `fc_code`, `sku_code`, `item_code` (STRING hoặc INT64), `seller_code` (STRING), `open_date` (DATE), `total_open_hours` (số) |
 | Avg Demand hôm nay (1.4.9, `avg_demand`) | `lakehouse-prod-394907.gold_buymed_vn2.fact_avg_demand_sku` | `sel2_pipeline.avg_demand_table` | SEL2; cột cần: `fc_code`, `sku_code`, `seller_code` (STRING hoặc INT64), `avg_demand` (số), `product_name` (STRING), `ingest_time` (kiểu bất kỳ) |
 | Avg Demand lịch sử (1.4.9, `avg_demand_hist`) | `lakehouse-prod-394907.gold_buymed_vn2.fact_avg_demand_sku_historical` | `sel2_pipeline.avg_demand_hist_table` | SEL2; cột như trên + `transformed_at` (TIMESTAMP) |
-| Tên sản phẩm (1.4.9, `product_names`) | `lakehouse-prod-394907.gold_buymed_vn2.dim_sku` | `bigquery.product_names_table` (tên ngắn cũ vẫn dùng được: ghép project / dataset của bảng D-1) | tên SP cạnh SKU; cột khóa / cột tên đã cấu hình (`sku_code`, `product_name` STRING) |
+| Tên sản phẩm (1.4.9, `product_names`; từ 1.4.10 KHÔNG BẮT BUỘC) | (trống = không dùng; bản cài cũ có thể lưu `lakehouse-prod-394907.gold_buymed_vn2.dim_sku`) | `bigquery.product_names_table` (tên ngắn cũ vẫn dùng được: ghép project / dataset của bảng D-1; để trống được: Kiểm tra / Lưu không gọi BigQuery) | dự phòng cuối cho tên SP cạnh SKU (sau các bảng Avg Demand); cột khóa / cột tên đã cấu hình (`sku_code`, `product_name` STRING) |
 
 **Kiểm tra** (`POST /api/bigquery/source-tables/{d1|d0|openhours|avg_demand|avg_demand_hist|product_names}/check`):
 - Chỉ đọc metadata, không chạy query, không tốn phí.

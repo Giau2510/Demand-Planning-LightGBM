@@ -436,7 +436,9 @@ class BigQuerySettings(BaseModel):
     # A table of the same project.dataset or a full id; one row per key column value. Not part of any mapping hash.
     # 1.4.9: the default is the full id (the table the short default "dim_sku" resolved to with the production D-1
     # table); a stored short name keeps working (joined with project / dataset of the D-1 table, bq/product_names).
-    product_names_table: str = "lakehouse-prod-394907.gold_buymed_vn2.dim_sku"
+    # 1.4.10: OPTIONAL last fallback after the Avg Demand tables; "" (the default) = the table is never read. An
+    # installation that saved its own value keeps it.
+    product_names_table: str = ""
     product_names_key_column: str = "sku_code"
     product_names_name_column: str = "product_name"
     # --- 1.2.9: source columns classified as REFERENCE although no mapping field uses them (shown on the mapping page,
@@ -471,8 +473,8 @@ class BigQuerySettings(BaseModel):
     @classmethod
     def _names_table(cls, v):
         v = (v or "").strip()
-        if not v or not (IDENT.match(v) or TABLE_ID_RE.match(v)):
-            raise ValueError("product_names_table must be a table name or project.dataset.table")
+        if v and not (IDENT.match(v) or TABLE_ID_RE.match(v)):
+            raise ValueError("product_names_table must be empty, a table name or project.dataset.table")
         return v
 
     @field_validator("product_names_key_column", "product_names_name_column")

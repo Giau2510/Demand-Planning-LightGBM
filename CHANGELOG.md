@@ -5,6 +5,30 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.4.10 (product names from the Avg Demand tables; dim_sku optional)
+
+Owner order 13/11/2026. The number 1.4.10 was cancelled earlier (the 4b test did not pass, nothing was installed under
+it) and is now reused for this change. No schema change. Forecast numbers are unchanged: the names only affect the
+`ten_san_pham` column of the Excel files and the product text shown next to the SKU (display and search).
+
+* **Name order per SKU** (`bq/product_names.py`): (1) the newest non-empty `product_name` of the SKU in the local
+  `avg_demand_daily` (copy of today's `fact_avg_demand_sku`); (2) only for SKUs still without a name, the latest
+  non-empty name of the historical Avg Demand table (last 60 days of `transformed_at`, `sku_code IN UNNEST(@skus)`,
+  dry run + byte cap, read-only; a failure of this read is logged and never fails the refresh); (3) the name stored by
+  the previous refresh (a SKU that had a name is never blanked); (4) the optional `bigquery.product_names_table`
+  (`dim_sku`), read only when it is set AND SKUs are still without a name (a SKU with several names there stays
+  without a name from it). The SKU set is the local BIGQUERY data plus the SKUs of the newest Avg Demand day. The
+  state / `status()` keep their keys and add `skus_by_source` {avg, hist, stored, dim}; `source` names the sources
+  actually used; `rows_read` / `estimated_bytes` count the BigQuery reads (0 when there are none).
+* **Excel (SEL2 export)**: the Avg Demand name of the export day is used first; the stored mapping only fills the SKUs
+  without one (before, the dim_sku name overrode it). An empty text is never a name.
+* **Page "Kết nối BigQuery", "Bảng phụ"**: the product names table is optional; an empty id means "không dùng" and is
+  accepted by "Kiểm tra" and "Kiểm tra & lưu" without any BigQuery call (status PASSED, `optional_empty`); a non-empty
+  id is checked and saved exactly as in 1.4.9. New one-line description (texts in `i18n.tsx`).
+* Changed defaults: `bigquery.product_names_table` `lakehouse-prod-394907.gold_buymed_vn2.dim_sku` -> `""` (not used);
+  it takes effect only for installations that never saved this key - the production installation stores its own value
+  and keeps it. The validator now accepts an empty value.
+
 ## 1.4.9 (configurable BigQuery source tables)
 
 Owner order 08/11/2026 ~21:40. No schema change; with the tables as configured today every read, forecast number and

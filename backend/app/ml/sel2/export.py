@@ -479,7 +479,10 @@ def _names(conn, d: str, avg_table: str | None) -> dict[str, str]:
         out = {r[0]: r[1] for r in conn.execute("SELECT sku_code, MAX(product_name) FROM avg_demand_daily WHERE "
                                                 "business_date=? AND source_table=? AND product_name IS NOT NULL "
                                                 "GROUP BY sku_code", (d, avg_table))}
-    out.update({k: v for k, v in (product_names.names(conn) or {}).items() if v})
+    out = {k: v for k, v in out.items() if v and v.strip()}                    # 1.4.10: an empty text is no name
+    for k, v in (product_names.names(conn) or {}).items():                      # the stored mapping only FILLS gaps
+        if v and v.strip() and k not in out:
+            out[k] = v                                  # names are written exactly as read (as in 1.4.9)
     return out
 
 
