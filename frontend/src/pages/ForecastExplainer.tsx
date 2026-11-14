@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { get } from "../api";
 import { useI18n } from "../i18n";
+import LegacyDataBanner from "../components/LegacyDataBanner";
 import { Card, Empty, ErrorBox, Loading, PageHeader, Stat, fmtDate, fmtDateWd, fmtTime, useAsync } from "../components/ui";
 import { CHECK_TEXT, STATUS_TEXT, featureText, fmt2, fmtInt, isTiny, roundingGap } from "../explainer";
 
@@ -95,7 +96,7 @@ export default function ForecastExplainer() {
   const [sp] = useSearchParams();
   const q = query({ sku_id: sp.get("sku_id"), fc_id: sp.get("fc_id"), target_date: sp.get("target_date") });
   const r = useAsync(() => get<any>(`${API}${q}`, { timeoutMs: TIMEOUT }), [q]);
-  const header = <PageHeader icon="explain" title={t("nav.explainer")} desc={t("fexp.desc")} />;
+  const header = <><PageHeader icon="explain" title={t("nav.explainer")} desc={t("fexp.desc")} /><LegacyDataBanner /></>;
   if (r.loading && !r.data) return <div className="stack">{header}<Loading /></div>;
   if (r.error) return <div className="stack">{header}<ErrorBox error={r.error} /></div>;
   const d = r.data;

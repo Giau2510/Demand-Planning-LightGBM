@@ -5,6 +5,18 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.4.11 ("being updated" banner on three pages)
+
+Owner order 14/11/2026. No schema change. Forecast numbers, layout, menu and API are unchanged: one warning banner
+("Đang cập nhật: số liệu kiểu cũ, chưa cập nhật theo SEL2. Số chính thức xem ở trang Dự báo hằng ngày.") is shown at
+the top of exactly three pages: Tổng quan (Dashboard), Giải thích cách tính Forecast and Chất lượng mô hình. The page
+name in the text is a link to `/daily-forecast`; the banner is not dismissible.
+
+* **Frontend**: new component `components/LegacyDataBanner.tsx` (existing `alert warn` style), used by `Dashboard.tsx`,
+  `ForecastExplainer.tsx` and `Performance.tsx`; texts in `i18n.tsx` (`legacy.banner_before`, `legacy.banner_after`;
+  the link text reuses `nav.daily`). Test: `v1411-legacy-banner.test.tsx`.
+* Version 1.4.10 -> 1.4.11 (`backend/app/__init__.py`, `frontend/package.json`, `package-lock.json`).
+
 ## 1.4.10 (product names from the Avg Demand tables; dim_sku optional)
 
 Owner order 13/11/2026. The number 1.4.10 was cancelled earlier (the 4b test did not pass, nothing was installed under

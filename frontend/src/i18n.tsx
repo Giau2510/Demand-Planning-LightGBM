@@ -1546,6 +1546,9 @@ export const DICT: Record<string, [string, string]> = {
 
   // ---- 1.3.1: daily forecast refresh page, trial mode, accuracy reports
   "nav.daily": ["Dự báo hằng ngày", "Daily forecast"],
+  // 1.4.11: "being updated" banner (the link text between the two parts is nav.daily)
+  "legacy.banner_before": ["Đang cập nhật: số liệu kiểu cũ, chưa cập nhật theo SEL2. Số chính thức xem ở trang ", "Being updated: legacy figures, not yet updated to SEL2. The official numbers are on the "],
+  "legacy.banner_after": [".", " page."],
   "daily.desc": ["Số dự báo được làm mới mỗi sáng bằng mô hình LightGBM đang dùng, sau khi dữ liệu D-1 về. Số công bố = 0 nếu giá trị LightGBM nhỏ hơn ngưỡng, ngược lại làm tròn lên. Màn hình Kết quả và các file xuất cũ không đổi.",
     "The forecast refreshed every morning with the LightGBM model in use, after the D-1 data arrived. Published quantity = 0 when the LightGBM value is below the threshold, otherwise rounded up. The Results page and the existing exports do not change."],
   "daily.trial_note": ["Chế độ chạy thử đang bật (xem banner phía trên): số trên trang này và mọi file xuất mới đều mang nhãn chạy thử cho tới khi chủ dự án tắt chế độ này.",

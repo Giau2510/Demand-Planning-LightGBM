@@ -6,6 +6,7 @@ import { useI18n } from "../i18n";
 import { AssessmentBox, Bars, Card, Code, Empty, ErrorBox, JobProgress, LineChart, Loading, MethodLabel, OkBox, PageHeader, Pill, SourceBadge, Stat, Term, fmtDate, fmtNum, fmtPct, fmtSignedPct, fmtTime, useAction, useAsync } from "../components/ui";
 import { Icon } from "../components/icons";
 import ForecastInfoLine from "../components/ForecastInfoLine";
+import LegacyDataBanner from "../components/LegacyDataBanner";
 
 /** 1.4.6: estimateFrom (SEL2 run: 8) marks the periods that include the weekly-estimate days 8..20 of the daily Excel. */
 export function HorizonPicker({ value, onChange, options, estimateFrom }: { value: number; onChange: (h: number) => void; options: number[]; estimateFrom?: number }) {
@@ -83,6 +84,7 @@ export default function Dashboard() {
         <button className="primary" onClick={train} disabled={act.busy || jobActive || !s?.scope}>
           <Icon name={jobActive ? "running" : "model"} className={jobActive ? "spin" : undefined} />{jobActive ? t("common.running") : t("dash.train_now")}</button>
       </>} />
+      <LegacyDataBanner />
       <ForecastInfoLine />
       <ErrorBox error={act.error} />
       <OkBox text={act.ok} />

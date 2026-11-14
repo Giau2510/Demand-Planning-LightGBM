@@ -4,6 +4,7 @@ import { get, post } from "../api";
 import { useI18n } from "../i18n";
 import { AssessmentBox, Bars, Card, Code, Empty, ErrorBox, Loading, MethodLabel, OkBox, PageHeader, Pill, SourceBadge, Stat, Term, fmtDate, fmtNum, fmtPct, fmtSignedPct, fmtTime, useAction, useAsync } from "../components/ui";
 import { Icon } from "../components/icons";
+import LegacyDataBanner from "../components/LegacyDataBanner";
 
 function MetricsRow({ label, m }: { label: ReactNode; m: any }) {
   return (
@@ -128,7 +129,7 @@ export default function Performance() {
     if (!sel && runs.data?.length) setSel(runs.data[0].id);
   }, [runs.data, sel]);
   const det = useAsync(() => (sel ? get(`/api/training-runs/${sel}`) : Promise.resolve(null)), [sel]);
-  const header = <PageHeader icon="performance" title={t("nav.performance")} desc={t("page.performance.desc")} />;
+  const header = <><PageHeader icon="performance" title={t("nav.performance")} desc={t("page.performance.desc")} /><LegacyDataBanner /></>;
   if (runs.loading && !runs.data) return <div className="stack">{header}<Loading /></div>;   // a reload must not unmount the page (job progress)
   const d = det.data;
   const bt = d?.backtest;
