@@ -217,6 +217,8 @@ CATALOG: dict[str, tuple[str, str]] = {
                                "The D-0 schedule is PAUSED for maintenance (6 hours at most, resumes by itself on expiry) — this slot is recorded as skipped and is not caught up."),
     "D0_PAUSED": ("Lịch D-0 đang tạm dừng để bảo trì nên không chạy D-0 thủ công. Chạy lại sau khi hết hạn hoặc bấm Bật lại D-0 (Bat-lai-D0.bat / app.cli d0-resume).",
                   "The D-0 schedule is paused for maintenance, so a manual D-0 run is refused. Run it again after the pause ends or resume D-0 (Bat-lai-D0.bat / app.cli d0-resume)."),
+    "D0_PAUSE_NOT_OWNER": ("Lệnh bật lại D-0 bị từ chối: lệnh tạm dừng hiện tại do người/phiên khác đặt. Không có gì thay đổi.",
+                           "D-0 resume refused: the current pause was set by someone else (expect_by does not match). Nothing was changed."),
     "D0_PAUSE_INVALID": ("Thời gian tạm dừng D-0 không hợp lệ: từ 1 đến 6 giờ.",
                          "Invalid D-0 pause: 1 to 6 hours."),
     "CATCH_UP_RUN": ("Chạy bù sau khi khởi động lại; dữ liệu được ghi theo thời điểm chạy thực tế.",
@@ -580,7 +582,7 @@ def category(code: str) -> str:
                 "FEATURE_REPORT_NOT_WRITTEN"):
         return "MODEL"
     if code in ("NO_ACTIVE_DATASET", "ACTIVE_DATASET_INCONSISTENT", "SOURCE_NOT_READY", "SCHEDULER_DISABLED",
-                "FLOW_NOT_READY", "D0_SCHEDULE_DISABLED", "D0_PAUSED", "D0_PAUSE_INVALID", "D1_SCHEDULE_DISABLED", "TRAIN_SCHEDULE_DISABLED",
+                "FLOW_NOT_READY", "D0_SCHEDULE_DISABLED", "D0_PAUSED", "D0_PAUSE_INVALID", "D0_PAUSE_NOT_OWNER", "D1_SCHEDULE_DISABLED", "TRAIN_SCHEDULE_DISABLED",
                 "SCHEDULE_SWITCH_VIA_FLOW_API", "SCHEDULER_NOT_RUNNING", "D0_MAPPING_INCOMPLETE", "D0_REVALIDATE_REQUIRED",
                 "TRAIN_WAITS_FOR_D1", "EOD_SCHEDULE_DISABLED", "CLOSE_SCHEDULE_DISABLED", "CLOSE_SOURCE_MANUAL_IMPORT",
                 "SCHEDULE_NOT_REGISTERED", "REFRESH_SCHEDULE_DISABLED", "REFRESH_WAITS_FOR_D1", "REPORT_SCHEDULE_DISABLED",

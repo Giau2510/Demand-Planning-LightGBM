@@ -281,8 +281,17 @@ huấn luyện tuần, job cuối ngày (`EOD_FORECAST_SNAPSHOT`, `ACTUAL_CLOSE`
   khi hết hạn), nên chốt cài "tối đa 1 mốc lỡ" không đếm các mốc này. Job D-0 đang CHẠY lúc đặt lệnh dừng KHÔNG bị hủy
   (chốt cài vẫn chờ job đang chạy); job D-0 đang chờ thử lại (RETRY_WAIT, kể cả chạy tay) bị ghi SKIPPED
   `PAUSED_FOR_MAINTENANCE` nếu đến lượt trong lúc dừng.
+- Chỉ mốc có giờ nằm TRONG cửa sổ dừng mới ghi `PAUSED_FOR_MAINTENANCE`; mốc lỡ thật TRƯỚC lúc dừng (app tắt) vẫn là
+  `MISSED_SLOT_NO_BACKFILL` để chốt cài thấy. Trong lúc đang dừng scheduler không xếp lượt chạy bù (LATEST_ONCE). Các
+  cửa sổ chồng lấn / liền kề được gộp, tối đa 50; đặt dừng khi đang dừng thì kéo dài (hoặc rút ngắn) cửa sổ đang mở,
+  không thêm cửa sổ mới.
+- Quay về 1.4.12 (rollback): bản đó KHÔNG biết tạm dừng nên D-0 chạy ngay theo lịch, và lần lưu cấu hình lịch kế tiếp
+  của 1.4.12 bỏ 3 khóa mới (`d0_paused_until`, `d0_paused_by`, `d0_pause_windows`). Không có thay đổi schema nên không
+  cần gỡ gì khác; trước khi rollback hãy `d0-resume` nếu muốn mốc D-0 chạy lại ngay.
 - CLI: `python -m app.cli d0-pause --hours H [--by TEXT]` (H = 1..6, mặc định 6), `d0-resume [--by TEXT]`, `d0-status`
   (đang dừng?, đến lúc nào theo giờ Việt Nam, ai đặt, số phút còn lại; chỉ đọc). Mã thoát 0 = xong, 2 = từ chối.
+  `d0-resume --expect-by TEXT` (API: `expect_by`) chỉ bật lại khi lệnh dừng đang có do chính `TEXT` đặt, nếu không từ chối
+  `D0_PAUSE_NOT_OWNER` (409), không đổi gì; không có `--expect-by` là chủ dự án bật lại bằng tay như cũ.
 - API (app đang chạy): `GET /api/d0/pause`, `POST /api/d0/pause {hours, by}`, `POST /api/d0/resume {by}`.
 - Gói cài: `Tam-dung-D0.bat` (dừng 6 giờ, in giờ hết hạn) và `Bat-lai-D0.bat` (chạy lại ngay), gọi `scripts\d0-pause.ps1`
   và `scripts\d0-resume.ps1`.

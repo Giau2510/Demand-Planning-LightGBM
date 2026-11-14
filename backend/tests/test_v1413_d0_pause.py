@@ -59,8 +59,9 @@ def test_paused_slots_are_skipped_not_backfilled_and_expiry_resumes(small_demo):
     sch = Scheduler()
     sch.tick(_at(10, 5), wait=True)
     jobs = _jobs()
-    for hhmm in ("08:00", "10:00"):                  # the late 08:00 slot too: no catch-up of any slot
-        assert jobs[_k(hhmm)]["status"] == "SKIPPED" and jobs[_k(hhmm)]["reason_code"] == "PAUSED_FOR_MAINTENANCE"
+    assert jobs[_k("08:00")]["reason_code"] == "MISSED_SLOT_NO_BACKFILL"     # missed BEFORE the pause: stays missed
+    # 10:00 was still inside its grace when the pause was set: the scheduled run reaches the runner and is skipped there
+    assert jobs[_k("10:00")]["status"] == "SKIPPED" and jobs[_k("10:00")]["reason_code"] == "PAUSED_FOR_MAINTENANCE"
     assert jobs[_k("10:00")]["trigger"] == "SCHEDULE"
     assert not any(k.endswith(":CATCHUP") for k in jobs)
     _freeze(_at(12, 1))                              # still inside the pause
@@ -144,11 +145,12 @@ def test_other_flows_are_unaffected_while_paused(data_dir):
 
     base, d0_before = others()
     assert {"D1_SYNC", "EOD_FORECAST_SNAPSHOT", "ACTUAL_CLOSE"} <= {a["job_type"] for a in base}
-    assert d0_before and all(a["reason"] != "PAUSED_FOR_MAINTENANCE" for a in d0_before if a["action"] == "skip")
+    assert any(a["action"] == "run" for a in d0_before)                 # the usual single catch-up of the day
     d0_pause.pause(6, "owner")
     paused, d0_after = others()
     assert paused == base                                           # D-1 / EOD / ACTUAL_CLOSE / refresh: identical
-    assert d0_after and all(a["action"] == "skip" and a["reason"] == "PAUSED_FOR_MAINTENANCE" for a in d0_after)
+    # every slot is before the window: stays MISSED, and no catch-up is queued while the pause is active
+    assert d0_after and all(a["action"] == "skip" and a["reason"] == "MISSED_SLOT_NO_BACKFILL" for a in d0_after)
 
 
 def test_manual_d0_run_is_refused_while_paused_other_jobs_are_not(client, small_demo):
@@ -234,6 +236,49 @@ def test_genuinely_missed_slot_without_pause_is_still_recorded_and_counted(small
         assert jobs[_k(hhmm)]["reason_code"] == "MISSED_SLOT_NO_BACKFILL"
         assert _gate_missed(jobs, DAY.date(), hhmm) == "SKIPPED MISSED_SLOT_NO_BACKFILL"
     assert _gate_missed(jobs, DAY.date(), "09:00") == "no job row"
+
+
+def test_missed_before_the_pause_stay_missed_and_are_counted_by_the_gate(small_demo):
+    _freeze(_at(7, 0))
+    sch = Scheduler()
+    sch.tick(_at(7, 0), wait=True)                           # heartbeat of the early morning (D-0 off)
+    ss.update("schedule", {"d0_enabled": True, "d0_times": ["08:00", "10:00", "12:00", "14:00"]})
+    _freeze(_at(11, 0))                                      # app was down 08:00 and 10:00; pause set at 11:00 for 2 h
+    d0_pause.pause(2, "owner")                               # window 11:00 - 13:00
+    sch.tick(_at(11, 1), wait=True)
+    jobs = _jobs()
+    for hhmm in ("08:00", "10:00"):
+        assert jobs[_k(hhmm)]["reason_code"] == "MISSED_SLOT_NO_BACKFILL"
+        assert _gate_missed(jobs, DAY.date(), hhmm) == "SKIPPED MISSED_SLOT_NO_BACKFILL"
+    assert not any(k.endswith(":CATCHUP") for k in jobs)     # no catch-up queued while paused
+    _freeze(_at(12, 1))
+    sch.tick(_at(12, 1), wait=True)
+    jobs = _jobs()
+    assert jobs[_k("12:00")]["reason_code"] == "PAUSED_FOR_MAINTENANCE"      # inside the window
+    assert _gate_missed(jobs, DAY.date(), "12:00") is None
+    _freeze(_at(13, 30))                                     # expired: the old missed slots are not caught up either
+    sch.tick(_at(13, 30), wait=True)
+    assert not any(k.endswith(":CATCHUP") for k in _jobs())
+
+
+def test_windows_are_merged_extended_and_capped(data_dir):
+    _freeze(_at(10, 0))
+    d0_pause.pause(2, "owner")                               # 10:00 - 12:00
+    _freeze(_at(11, 0))
+    d0_pause.pause(3, "owner")                               # extends the open window: 10:00 - 14:00, no second one
+    assert ss.get("schedule").d0_pause_windows == [[timeutil.iso(_at(10, 0)), timeutil.iso(_at(14, 0))]]
+    d0_pause.resume("owner")                                 # closes it at 11:00
+    _freeze(_at(11, 0))
+    d0_pause.pause(1, "owner")                               # adjacent to the closed window: merged
+    assert len(ss.get("schedule").d0_pause_windows) == 1
+    # many separate windows: pruned to the last 15 days and capped at 50
+    ss.update("schedule", {"d0_pause_windows": []})
+    for i in range(60):
+        _freeze(_at(0, 0) + timedelta(hours=8 * i))
+        d0_pause.pause(1, "owner")
+    ws = ss.get("schedule").d0_pause_windows
+    assert len(ws) <= 50
+    assert all(timeutil.parse_iso(w[1]) > timeutil.parse_iso(ws[-1][1]) - timedelta(days=16) for w in ws)
 
 
 def test_resume_ends_the_window_so_later_slots_are_not_paused(small_demo):
@@ -331,3 +376,30 @@ def test_cli_refuses_hours_outside_1_to_6(capsys, hours):
     out = json.loads(capsys.readouterr().out)
     assert out["ok"] is False and out["code"] == "D0_PAUSE_INVALID"
     assert ss.get("schedule").d0_paused_until == "" and _history() == []
+
+
+# ---------------------------------------------------------------- conditional resume (expect_by)
+def test_resume_with_expect_by_only_ends_the_pause_set_by_the_same_text(client, capsys):
+    _freeze(_at(10, 0))
+    client.post("/api/d0/pause", json={"hours": 2, "by": "owner"})
+    n = len(_history())
+    r = client.post("/api/d0/resume", json={"by": "CAI-1413", "expect_by": "CAI-1413"})
+    assert r.status_code == 409 and r.json()["code"] == "D0_PAUSE_NOT_OWNER" and r.json()["vi"] and r.json()["en"]
+    assert d0_pause.status()["paused"] is True and d0_pause.status()["by"] == "owner" and len(_history()) == n
+    assert cli.main(["d0-resume", "--by", "CAI-1413", "--expect-by", "CAI-1413"]) == 2
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] is False and out["code"] == "D0_PAUSE_NOT_OWNER" and d0_pause.status()["paused"] is True
+    ok = client.post("/api/d0/resume", json={"by": "owner", "expect_by": "owner"})
+    assert ok.status_code == 200 and ok.json()["paused"] is False
+
+
+def test_resume_without_expect_by_is_the_owners_manual_resume_and_cli_expect_by_matches(client, capsys):
+    _freeze(_at(10, 0))
+    client.post("/api/d0/pause", json={"hours": 2, "by": "CAI-1413"})
+    assert client.post("/api/d0/resume", json={"by": "owner"}).json()["paused"] is False      # no expect_by: always
+    assert cli.main(["d0-pause", "--hours", "1", "--by", "CAI-1413"]) == 0
+    capsys.readouterr()
+    assert cli.main(["d0-resume", "--by", "CAI-1413", "--expect-by", "CAI-1413"]) == 0
+    assert json.loads(capsys.readouterr().out)["paused"] is False
+    # nothing paused: expect_by is a harmless no-op (nothing to protect)
+    assert client.post("/api/d0/resume", json={"expect_by": "someone"}).json()["paused"] is False

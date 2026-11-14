@@ -22,7 +22,7 @@
                                             dry run (read-only) printing the plan and its plan_id; --apply deletes
                                             exactly that reviewed plan after a verified backup
   d0-pause [--hours H] [--by TEXT]          1.4.13: pause ONLY the D-0 slots for H hours (1..6, default 6); expiry resumes
-  d0-resume [--by TEXT]                     1.4.13: end the D-0 pause now
+  d0-resume [--by TEXT] [--expect-by TEXT]  1.4.13: end the D-0 pause now (--expect-by: only a pause set by that text)
   d0-status                                 1.4.13: paused?, until (Vietnam time), by, remaining minutes (read-only)
   apply-preset lgbm-chot [--apply]          1.3.1: settings of PHUONG AN CHOT (model, daily_forecast, flows refresh +
                                             report). Default: dry run (read-only) printing the changes; --apply saves
@@ -195,6 +195,7 @@ def main(argv=None) -> int:
     d0p.add_argument("--by", default="")
     d0r = sub.add_parser("d0-resume", help="1.4.13: end the D-0 maintenance pause now")
     d0r.add_argument("--by", default="")
+    d0r.add_argument("--expect-by", default=None, help="end the pause only when it was set by this text (else exit 2)")
     sub.add_parser("d0-status", help="1.4.13: D-0 maintenance pause state (read-only)")
     ap_ = sub.add_parser("apply-preset", help="1.3.1: settings of a release preset (dry run unless --apply)")
     ap_.add_argument("name", choices=sorted(PRESETS))
@@ -804,7 +805,7 @@ def _d0_pause(a) -> int:
                     raise AppError("D0_PAUSE_INVALID", 422, detail="--hours must be 1..6")
                 res = d0_pause.pause(a.hours, a.by)
             else:
-                res = d0_pause.resume(a.by)
+                res = d0_pause.resume(a.by, a.expect_by)
     except (AppError, ValueError) as e:
         print(json.dumps({"ok": False, "refused": str(e)[:300], "code": getattr(e, "code", None)}, ensure_ascii=False))
         return 2

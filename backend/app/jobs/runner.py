@@ -355,7 +355,8 @@ def execute(job_type: str, key: str, trigger: str = "MANUAL", scheduled_for: str
         _update(row["id"], status="SKIPPED", finished_at=now_iso(), reason_code=FLOW_OFF_CODE[job_type],
                 error=f"schedule.{flag}=false")
         return _row(row["id"])
-    if job_type == "D0_SYNC" and (row["trigger"] != "MANUAL" or row["status"] == "RETRY_WAIT")             and d0_pause.is_paused(sched):
+    if job_type == "D0_SYNC" and (row["trigger"] != "MANUAL" or row["status"] == "RETRY_WAIT") \
+            and d0_pause.is_paused(sched):
         # 1.4.13: a scheduled / catch-up / retried D-0 run, and a manual one waiting for its retry, never executes
         # inside the maintenance pause (a NEW manual run is refused earlier, api/background.py D0_PAUSED)
         _update(row["id"], status="SKIPPED", finished_at=now_iso(), reason_code=d0_pause.REASON_CODE,

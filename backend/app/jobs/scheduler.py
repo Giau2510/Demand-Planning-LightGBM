@@ -129,7 +129,7 @@ def plan(now: datetime, sched, active_source: str, last_heartbeat: datetime | No
                 k = d0_key(d, t)
                 if live("D0_SYNC", vn_slot(d, t)) and k not in existing and vn_slot(d, t) > last_heartbeat:
                     # 1.4.13: a slot that fell inside a maintenance pause is recorded as such, evaluated later or not
-                    paused = d0_pause.slot_paused(sched, vn_slot(d, t), now)
+                    paused = d0_pause.slot_paused(sched, vn_slot(d, t))
                     actions.append({"action": "skip", "job_type": "D0_SYNC", "key": k, "trigger": "SCHEDULE",
                                     "scheduled_for": vn_slot(d, t).isoformat(),
                                     "reason": d0_pause.REASON_CODE if paused else "MISSED_SLOT_NO_BACKFILL"})
@@ -149,7 +149,7 @@ def plan(now: datetime, sched, active_source: str, last_heartbeat: datetime | No
         if k in existing:
             continue
         slot = vn_slot(today, t)
-        if d0_pause.slot_paused(sched, slot, now):      # 1.4.13: maintenance pause of the D0 slots only
+        if d0_pause.slot_paused(sched, slot):           # 1.4.13: maintenance pause of the D0 slots only
             # recorded once, never run later: not "missed", so no catch-up after the pause either
             actions.append({"action": "skip", "job_type": "D0_SYNC", "key": k, "trigger": "SCHEDULE",
                             "scheduled_for": slot.isoformat(), "reason": d0_pause.REASON_CODE})
@@ -160,7 +160,8 @@ def plan(now: datetime, sched, active_source: str, last_heartbeat: datetime | No
             missed.append(t)
             actions.append({"action": "skip", "job_type": "D0_SYNC", "key": k, "trigger": "SCHEDULE",
                             "scheduled_for": slot.isoformat(), "reason": "MISSED_SLOT_NO_BACKFILL"})
-    if missed and sched.d0_catchup_policy == "LATEST_ONCE":
+    # 1.4.13: no catch-up while the maintenance pause is active (the missed slots stay MISSED, they are not run later)
+    if missed and sched.d0_catchup_policy == "LATEST_ONCE" and not d0_pause.is_paused(sched, now):
         latest = missed[-1]
         later_due = any(vn_slot(today, t) > vn_slot(today, latest) and now - vn_slot(today, t) <= grace
                         for t in due_slots)

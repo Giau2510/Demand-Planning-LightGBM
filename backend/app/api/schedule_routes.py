@@ -47,6 +47,7 @@ class D0PauseBody(BaseModel):
 
 class D0ResumeBody(BaseModel):
     by: str = ""
+    expect_by: str | None = None      # given: end the pause only when it was set by this same `by` (409 D0_PAUSE_NOT_OWNER)
 
 
 # 1.4.13: maintenance pause of ONLY the D-0 slots (the install chain calls these on the running app)
@@ -63,4 +64,4 @@ def d0_pause_set(body: D0PauseBody):
 
 @router.post("/d0/resume")
 def d0_pause_end(body: D0ResumeBody | None = None):
-    return d0_pause.resume(body.by if body else "")
+    return d0_pause.resume(body.by if body else "", body.expect_by if body else None)

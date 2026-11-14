@@ -15,6 +15,7 @@ from .timeutil import VN_TZ, now_iso, now_utc, parse_iso
 
 REASON_CODE = "PAUSED_FOR_MAINTENANCE"
 WINDOWS_KEEP = timedelta(days=15)       # past pause windows kept in the settings (the scheduler looks back 14 days)
+WINDOWS_MAX = 50                        # at most this many windows (newest kept), overlapping / adjacent ones merged
 
 
 def paused_until(sched, now: datetime | None = None) -> datetime | None:
@@ -32,9 +33,23 @@ def in_window(sched, slot: datetime) -> bool:
     return any(parse_iso(f) <= slot < parse_iso(u) for f, u in sched.d0_pause_windows)
 
 
-def slot_paused(sched, slot: datetime, now: datetime) -> bool:
-    """The D-0 slot is not run: the pause is active now, or the slot time fell inside a recorded pause window."""
-    return is_paused(sched, now) or in_window(sched, slot)
+def slot_paused(sched, slot: datetime) -> bool:
+    """The D-0 slot is recorded PAUSED_FOR_MAINTENANCE only when its own time fell inside a recorded pause window. A
+    slot BEFORE the pause that was really missed (app down) stays MISSED_SLOT_NO_BACKFILL: the install gate sees it."""
+    return in_window(sched, slot)
+
+
+def _merged(windows: list[list[str]], now: datetime) -> list[list[str]]:
+    """Windows older than WINDOWS_KEEP dropped, overlapping / adjacent ones merged, at most WINDOWS_MAX (newest)."""
+    ws = sorted(([f, u] for f, u in windows if parse_iso(u) > now - WINDOWS_KEEP), key=lambda w: parse_iso(w[0]))
+    out: list[list[str]] = []
+    for f, u in ws:
+        if out and parse_iso(f) <= parse_iso(out[-1][1]):
+            if parse_iso(u) > parse_iso(out[-1][1]):
+                out[-1][1] = u
+        else:
+            out.append([f, u])
+    return out[-WINDOWS_MAX:]
 
 
 def status(now: datetime | None = None) -> dict:
@@ -67,20 +82,30 @@ def pause(hours: float = ss.D0_PAUSE_MAX_HOURS, by: str | None = None) -> dict:
     by = _by(by)
     now = now_utc()
     until = (now + timedelta(hours=hours)).isoformat(timespec="seconds")
-    keep = [w for w in ss.get("schedule").d0_pause_windows if parse_iso(w[1]) > now - WINDOWS_KEEP]
+    windows = [list(w) for w in ss.get("schedule").d0_pause_windows]
+    open_w = [w for w in windows if parse_iso(w[0]) <= now < parse_iso(w[1])]
+    if open_w:       # a pause is active: this call extends (or shortens) the open window, it adds no second one
+        open_w[0][1] = until
+    else:
+        windows.append([now.isoformat(timespec="seconds"), until])
     ss.update("schedule", {"d0_paused_until": until, "d0_paused_by": by,
-                           "d0_pause_windows": [*keep, [now_iso(), until]]},
+                           "d0_pause_windows": _merged(windows, now)},
               note=f"D-0 maintenance pause until {until} by {by or '-'}")
     return status()
 
 
-def resume(by: str | None = None) -> dict:
-    """End the pause now (a no-op write is skipped when D-0 was not paused)."""
+def resume(by: str | None = None, expect_by: str | None = None) -> dict:
+    """End the pause now (a no-op write is skipped when D-0 was not paused). With expect_by (the install chain ends
+    only the pause it set itself): refused with 409 D0_PAUSE_NOT_OWNER, nothing changed, when a pause is active and
+    d0_paused_by differs. Without expect_by: the owner's manual resume, as before."""
     by = _by(by)
     cur = ss.get("schedule")
     now = now_utc()
+    if expect_by is not None and is_paused(cur, now) and cur.d0_paused_by != expect_by:
+        raise AppError("D0_PAUSE_NOT_OWNER", 409, detail=f"paused by {cur.d0_paused_by!r}, expected {expect_by!r}")
     # the window that is open now ends now (slots from now on run); older windows stay as they were
-    windows = [[f, now_iso()] if parse_iso(f) <= now < parse_iso(u) else [f, u] for f, u in cur.d0_pause_windows]
+    windows = [[f, now.isoformat(timespec="seconds")] if parse_iso(f) <= now < parse_iso(u) else [f, u]
+               for f, u in cur.d0_pause_windows]
     if cur.d0_paused_until or cur.d0_paused_by or windows != cur.d0_pause_windows:
         ss.update("schedule", {"d0_paused_until": "", "d0_paused_by": "", "d0_pause_windows": windows},
                   note=f"D-0 maintenance pause ended at {now_iso()} by {by or '-'}")
