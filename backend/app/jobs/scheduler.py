@@ -2,7 +2,9 @@
 
 Every tick (default 30 s) it reads the saved schedule and decides, in Vietnam time, which jobs are due. Each flow has
 its own switch (1.1.8, see jobs/flows.py) and is planned only when that switch is ON:
-  D0_SYNC       schedule.d0_enabled    at each configured slot (default 08:00..18:00 every 2h)
+  D0_SYNC       schedule.d0_enabled    at each configured slot (default 08:00..18:00 every 2h); 1.4.13: while
+                                       schedule.d0_paused_until is in the future a due slot is recorded SKIPPED
+                                       PAUSED_FOR_MAINTENANCE (never run or caught up later; see app/d0_pause.py)
   D1_SYNC       schedule.d1_enabled    from `d1_signal_poll_start`, polling the completion signal; after
                                        `d1_fallback_time` it verifies the source has a plausible full day before syncing
   TRAIN_PUBLISH schedule.train_enabled at `train_time` (BIGQUERY: only once today's D-1 succeeded - the scheduled
@@ -68,6 +70,7 @@ from datetime import date, datetime, timedelta
 from .. import db
 from .. import settings_service as ss
 from ..timeutil import VN_TZ, now_iso, now_utc, now_vn, parse_iso, vn_slot
+from .. import d0_pause
 from . import resources, runner
 
 log = logging.getLogger("df.scheduler")
@@ -138,12 +141,16 @@ def plan(now: datetime, sched, active_source: str, last_heartbeat: datetime | No
     # ---- D0 slots today
     due_slots = [t for t in sched.d0_times if vn_slot(today, t) <= now and live("D0_SYNC", vn_slot(today, t))]
     missed = []
+    d0_paused = d0_pause.is_paused(sched, now)      # 1.4.13: maintenance pause of the D0 slots only (default: not paused)
     for t in due_slots:
         k = d0_key(today, t)
         if k in existing:
             continue
         slot = vn_slot(today, t)
-        if now - slot <= grace:
+        if d0_paused:       # recorded once, never run later: not "missed", so no catch-up after the pause either
+            actions.append({"action": "skip", "job_type": "D0_SYNC", "key": k, "trigger": "SCHEDULE",
+                            "scheduled_for": slot.isoformat(), "reason": d0_pause.REASON_CODE})
+        elif now - slot <= grace:
             actions.append({"action": "run", "job_type": "D0_SYNC", "key": k, "trigger": "SCHEDULE",
                             "scheduled_for": slot.isoformat(), "params": {"scheduled_slot": slot.isoformat()}})
         else:

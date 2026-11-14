@@ -21,6 +21,9 @@
   eod-retention [--db FILE] [--apply --plan ID]   1.2.6: 90-day retention of the end-of-day forecast backup. Default:
                                             dry run (read-only) printing the plan and its plan_id; --apply deletes
                                             exactly that reviewed plan after a verified backup
+  d0-pause [--hours H] [--by TEXT]          1.4.13: pause ONLY the D-0 slots for H hours (1..6, default 6); expiry resumes
+  d0-resume [--by TEXT]                     1.4.13: end the D-0 pause now
+  d0-status                                 1.4.13: paused?, until (Vietnam time), by, remaining minutes (read-only)
   apply-preset lgbm-chot [--apply]          1.3.1: settings of PHUONG AN CHOT (model, daily_forecast, flows refresh +
                                             report). Default: dry run (read-only) printing the changes; --apply saves
                                             them through settings_service / the schedule flows (idempotent)
@@ -187,6 +190,12 @@ def main(argv=None) -> int:
     hl.add_argument("--apply", action="store_true")
     sub.add_parser("history-check", help="1.2.13: compare the stored history before the D-1 window with the source now "
                                          "(read-only BigQuery; records the day checks)")
+    d0p = sub.add_parser("d0-pause", help="1.4.13: pause only the D-0 slots for maintenance (1..6 hours, auto-resume)")
+    d0p.add_argument("--hours", type=int, default=6)
+    d0p.add_argument("--by", default="")
+    d0r = sub.add_parser("d0-resume", help="1.4.13: end the D-0 maintenance pause now")
+    d0r.add_argument("--by", default="")
+    sub.add_parser("d0-status", help="1.4.13: D-0 maintenance pause state (read-only)")
     ap_ = sub.add_parser("apply-preset", help="1.3.1: settings of a release preset (dry run unless --apply)")
     ap_.add_argument("name", choices=sorted(PRESETS))
     ap_.add_argument("--apply", action="store_true", help="save the settings and switch the preset's flows ON")
@@ -372,6 +381,8 @@ def _run(a) -> int:
         return 0
     if a.cmd == "apply-preset":
         return _apply_preset(a)
+    if a.cmd in ("d0-pause", "d0-resume", "d0-status"):
+        return _d0_pause(a)
     if a.cmd == "sel2-export":
         return _sel2_export(a)
     if a.cmd == "sel2-published-backfill":
@@ -772,6 +783,32 @@ def _spike_lines(a) -> int:
     except Exception as e:  # noqa: BLE001 - printed as JSON for the job (never a bare traceback only)
         return _sel2_unexpected(out, e)
     print(json.dumps({"ok": True, **out, "result": res}, indent=2, ensure_ascii=False, default=str))
+    return 0
+
+
+def _d0_pause(a) -> int:
+    """1.4.13 `d0-pause [--hours H] [--by T]` / `d0-resume [--by T]` / `d0-status`: the D-0 maintenance pause through
+    settings_service (validated, history kept); the running scheduler reads it on its next tick. d0-status writes
+    nothing. Exit 0 ok, 2 refused (hours outside 1..6, text too long, schedule not readable)."""
+    from . import d0_pause, paths
+    from .logging_setup import setup_logging
+    from .messages import AppError
+    paths.ensure_storage()
+    try:
+        if a.cmd == "d0-status":
+            res = d0_pause.status()
+        else:
+            setup_logging()      # never migrates: the commands only change one schedule setting
+            if a.cmd == "d0-pause":
+                if not 1 <= a.hours <= 6:
+                    raise AppError("D0_PAUSE_INVALID", 422, detail="--hours must be 1..6")
+                res = d0_pause.pause(a.hours, a.by)
+            else:
+                res = d0_pause.resume(a.by)
+    except (AppError, ValueError) as e:
+        print(json.dumps({"ok": False, "refused": str(e)[:300], "code": getattr(e, "code", None)}, ensure_ascii=False))
+        return 2
+    print(json.dumps({"ok": True, **res}, indent=2, ensure_ascii=False))
     return 0
 
 

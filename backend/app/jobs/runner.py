@@ -11,7 +11,7 @@ import secrets
 import threading
 from datetime import timedelta
 
-from .. import db
+from .. import d0_pause, db
 from .. import settings_service as ss
 from ..messages import AppError
 from ..timeutil import now_iso, now_utc, parse_iso
@@ -354,6 +354,11 @@ def execute(job_type: str, key: str, trigger: str = "MANUAL", scheduled_for: str
         # a scheduled / catch-up / retried run of a flow that is switched OFF never executes
         _update(row["id"], status="SKIPPED", finished_at=now_iso(), reason_code=FLOW_OFF_CODE[job_type],
                 error=f"schedule.{flag}=false")
+        return _row(row["id"])
+    if job_type == "D0_SYNC" and row["trigger"] != "MANUAL" and d0_pause.is_paused(sched):
+        # 1.4.13: a scheduled / catch-up / retried D-0 run inside the maintenance pause never executes
+        _update(row["id"], status="SKIPPED", finished_at=now_iso(), reason_code=d0_pause.REASON_CODE,
+                error=f"schedule.d0_paused_until={sched.d0_paused_until}")
         return _row(row["id"])
     sel2_skip = _sel2_skip(job_type, row["trigger"])
     if sel2_skip:

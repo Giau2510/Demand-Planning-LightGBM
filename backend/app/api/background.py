@@ -6,7 +6,8 @@ import secrets
 import threading
 import time
 
-from .. import db
+from .. import d0_pause, db
+from .. import settings_service as ss
 from ..jobs import runner
 from ..messages import AppError
 from ..timeutil import now_iso
@@ -22,6 +23,8 @@ def submit(job_type: str, params: dict | None = None, wait: bool | None = None) 
     (flag already_active) instead of creating a duplicate - repeated clicks never start a second run."""
     if job_type not in runner.JOB_TYPES:
         raise AppError("BATCH_NOT_FOUND", 404, detail=job_type)
+    if job_type == "D0_SYNC" and d0_pause.is_paused(ss.get("schedule")):
+        raise AppError("D0_PAUSED", 409)        # 1.4.13: a manual D-0 run is refused inside the maintenance pause
     if job_type == "TRAIN_PUBLISH":
         # 1.2.3: a manual training on a BigQuery source that is not ready is refused at once with the exact reason
         # (never a job skipped later); the schedule switches play no part in a manual run

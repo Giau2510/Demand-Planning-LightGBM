@@ -30,6 +30,7 @@ $packagedScripts = @("_common.ps1", "start.ps1", "stop.ps1", "check-env.ps1", "b
                      "register-autostart.ps1", "unregister-autostart.ps1", "smoke_test.py",
                      "migrate-storage.ps1", "rollback-storage.ps1", "diagnose.ps1", "repair-storage.ps1",
                      "deploy-upgrade.ps1", "_deploy_staging.ps1", "rollback-version.ps1", "eod-retention.ps1",
+                     "d0-pause.ps1", "d0-resume.ps1",
                      "ops\don_dep_dinh_ky.ps1", "ops\register-don-dep-task.ps1", "ops\don_dep_giu.txt",
                      "ops\don_dep_ket_luan.txt", "ops\don_dep_current.ps1")
 
@@ -167,6 +168,9 @@ Set-Content -Path (Join-Path $out "Check-Environment.bat") -Value (($bat -f "che
 Set-Content -Path (Join-Path $out "Install.bat") -Value (($bat -f "install.ps1") + "pause`r`n") -Encoding ASCII
 Set-Content -Path (Join-Path $out "Backup.bat") -Value (($bat -f "backup.ps1") + "pause`r`n") -Encoding ASCII
 Set-Content -Path (Join-Path $out "Diagnose.bat") -Value (($bat -f "diagnose.ps1") + "pause`r`n") -Encoding ASCII
+# 1.4.13: pause / resume ONLY the D-0 slots for maintenance (6 hours at most, auto-resume)
+Set-Content -Path (Join-Path $out "Tam-dung-D0.bat") -Value (($bat -f "d0-pause.ps1") + "pause`r`n") -Encoding ASCII
+Set-Content -Path (Join-Path $out "Bat-lai-D0.bat") -Value (($bat -f "d0-resume.ps1") + "pause`r`n") -Encoding ASCII
 
 # 6. verify the embedded runtime actually works (imports + LightGBM train/predict)
 $env:PYTHONPATH = ""

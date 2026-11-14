@@ -7,16 +7,18 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import db
-from .timeutil import now_iso
+from .timeutil import now_iso, now_utc
 
 DEFAULT_HORIZON_CHOICES = [1, 3, 7, 14, 15, 21, 28, 30, 45, 60, 90, 180, 365]
 HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 DAY_END_TIMEZONE = "Asia/Ho_Chi_Minh"       # 1.2.6 day-end flows: the only timezone of business dates
+D0_PAUSE_MAX_HOURS = 6                      # 1.4.13: longest D-0 maintenance pause
 IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,299}$")
 PROJECT_RE = re.compile(r"^[a-z][a-z0-9\-]{4,61}[a-z0-9]$")
 INTERNAL_FIELDS = ["order_id", "created_at", "order_date", "sku_id", "fc_id", "order_qty", "unit_price",
@@ -311,6 +313,30 @@ class ScheduleSettings(BaseModel):
     report_enabled_at: str | None = None
     report_weekday: int = Field(1, ge=1, le=7)
     report_time: str = "09:30"
+    # 1.4.13 (owner order 14/11/2026, Task 10): maintenance pause of ONLY the D-0 slots (job D0_SYNC). d0_paused_until =
+    # UTC ISO-8601 moment the pause ends ("" = not paused, the default: D-0 runs exactly as before); at most
+    # D0_PAUSE_MAX_HOURS from the moment it is set; expiry resumes by itself (nothing is written). A due D-0 slot
+    # inside the pause is recorded SKIPPED PAUSED_FOR_MAINTENANCE and never run later. d0_paused_by = who set it.
+    d0_paused_until: str = ""
+    d0_paused_by: str = Field("", max_length=60)
+
+    @field_validator("d0_paused_until")
+    @classmethod
+    def _d0_pause(cls, v, info):
+        if v == "":
+            return v
+        try:
+            until = datetime.fromisoformat(v)
+        except ValueError:
+            raise ValueError("d0_paused_until must be an ISO-8601 time or empty") from None
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+        until = until.astimezone(timezone.utc)
+        # the limit is checked when a value is SAVED; a stored value is read back as it is (a clock that moved must
+        # never make the whole schedule unreadable)
+        if not (info.context or {}).get("stored") and until > now_utc() + timedelta(hours=D0_PAUSE_MAX_HOURS, minutes=1):
+            raise ValueError(f"d0_paused_until is more than {D0_PAUSE_MAX_HOURS} hours ahead")
+        return until.isoformat(timespec="seconds")
 
     @field_validator("eod_timezone", "close_timezone")
     @classmethod
@@ -837,7 +863,7 @@ def get(section: str, conn=None):
         if not r:
             return cls()
         data = json.loads(r[0])
-        return cls.model_validate(data)
+        return cls.model_validate(data, context={"stored": True})
     if conn is not None:
         return _load(conn)
     with db.read() as c:

@@ -262,3 +262,21 @@ Khi `sel2_pipeline.enabled` = True (mặc định). `False` = công tắc khẩn
   không bao giờ chặn). Khi TẮT (mặc định): mọi quyết định lịch khác giữ nguyên như 1.4.7 (kiểm thử so từng tick với
   bộ lập lịch 1.4.7). CLI: `spike-lines --date D [--initial] [--dry-run] [--yes]` (`--dry-run`: chỉ ước tính byte
   BigQuery; không `--yes`: chỉ in kế hoạch).
+
+## Tạm dừng D-0 để bảo trì (1.4.13)
+
+D-0 là job giám sát phụ, không được làm chậm bản cài. Công tắc cấu hình CHỈ tạm dừng các mốc D-0 (job `D0_SYNC`); D-1,
+huấn luyện tuần, job cuối ngày (`EOD_FORECAST_SNAPSHOT`, `ACTUAL_CLOSE`) và `FORECAST_REFRESH` không bị ảnh hưởng. Mặc
+định KHÔNG tạm dừng: D-0 chạy đúng như trước.
+
+- Cấu hình nhóm `schedule`: `d0_paused_until` (UTC ISO-8601, rỗng = không dừng) và `d0_paused_by` (ghi ai đặt). Lưu qua
+  `settings_service` nên lịch sử cấu hình được giữ. Tối đa 6 giờ kể từ lúc đặt (dài hơn bị từ chối); HẾT HẠN LÀ TỰ CHẠY
+  LẠI, không cần ghi gì. Trình sửa cấu hình chung không đổi các trường này.
+- Trong lúc dừng, mốc D-0 đến hạn được ghi SKIPPED `PAUSED_FOR_MAINTENANCE` và KHÔNG chạy bù sau đó (kể cả chính sách
+  `d0_catchup_policy` = LATEST_ONCE); sau khi hết hạn các mốc kế tiếp chạy bình thường. "Chạy ngay" D-0 thủ công khi đang
+  dừng bị từ chối với mã `D0_PAUSED` (409).
+- CLI: `python -m app.cli d0-pause --hours H [--by TEXT]` (H = 1..6, mặc định 6), `d0-resume [--by TEXT]`, `d0-status`
+  (đang dừng?, đến lúc nào theo giờ Việt Nam, ai đặt, số phút còn lại; chỉ đọc). Mã thoát 0 = xong, 2 = từ chối.
+- API (app đang chạy): `GET /api/d0/pause`, `POST /api/d0/pause {hours, by}`, `POST /api/d0/resume {by}`.
+- Gói cài: `Tam-dung-D0.bat` (dừng 6 giờ, in giờ hết hạn) và `Bat-lai-D0.bat` (chạy lại ngay), gọi `scripts\d0-pause.ps1`
+  và `scripts\d0-resume.ps1`.
