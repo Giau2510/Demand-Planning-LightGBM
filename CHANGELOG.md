@@ -7,6 +7,8 @@ they take effect without any data change for every section/key that was never sa
 
 ## 1.4.13 (D-0 maintenance pause)
 
+Owner 14/11/2026: the D-0 pause lasts at most 6 h and is NOT renewed automatically inside an install chain (backup to post-install check); the DB comparison before the install is NOT relaxed. Tạm dừng D-0 tối đa 6 giờ, KHÔNG gia hạn tự động trong chuỗi cài (từ lúc sao lưu tới kiểm sau cài); phép so DB trước khi cài KHÔNG nới (chủ dự án 14/11/2026).
+
 Owner order 14/11/2026 (Task 10): D-0 is an auxiliary monitoring job and must never slow an install. A configuration
 switch pauses ONLY the D-0 slots (job `D0_SYNC`) for maintenance. Default = not paused: D-0 runs exactly as before.
 No schema change. Forecast numbers, D-1, weekly training, day-end jobs and the forecast refresh are unchanged (they

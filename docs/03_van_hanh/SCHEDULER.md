@@ -271,6 +271,8 @@ huấn luyện tuần, job cuối ngày (`EOD_FORECAST_SNAPSHOT`, `ACTUAL_CLOSE`
 
 - Cấu hình nhóm `schedule`: `d0_paused_until` (UTC ISO-8601, rỗng = không dừng) và `d0_paused_by` (ghi ai đặt). Lưu qua
   `settings_service` nên lịch sử cấu hình được giữ. Tối đa 6 giờ kể từ lúc đặt (dài hơn bị từ chối); HẾT HẠN LÀ TỰ CHẠY
+
+  Tạm dừng D-0 tối đa 6 giờ, KHÔNG gia hạn tự động trong chuỗi cài (từ lúc sao lưu tới kiểm sau cài); phép so DB trước khi cài KHÔNG nới (chủ dự án 14/11/2026).
   LẠI, không cần ghi gì. Trình sửa cấu hình chung không đổi các trường này.
 - Trong lúc dừng, mốc D-0 đến hạn được ghi SKIPPED `PAUSED_FOR_MAINTENANCE` và KHÔNG chạy bù sau đó (kể cả chính sách
   `d0_catchup_policy` = LATEST_ONCE); sau khi hết hạn các mốc kế tiếp chạy bình thường. "Chạy ngay" D-0 thủ công khi đang
