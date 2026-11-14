@@ -21,6 +21,24 @@ export function HorizonPicker({ value, onChange, options, estimateFrom }: { valu
   );
 }
 
+/** 1.4.12: the SEL2 runs cover the 20 days of the daily Excel (1..7 SEL2, 8..20 weekly estimate); the summary refuses more. */
+const SEL2_MAX_HORIZON = 20;
+
+/** The SEL2 summary in the shape the forecast block renders (the 1.3.x summary): the numbers are the API's, unchanged.
+ *  The method table has one row per "cach_tinh" (SEL2 days / weekly-estimate days) with the exact totals from the daily
+ *  totals: the API gives the methods of the SKU x FC series only page by page, never counts over all series. */
+function sel2View(d: any, horizon: number) {
+  if (!d?.run || d.horizon !== horizon) return null;
+  const by = new Map<string, number>();
+  for (const x of d.daily ?? []) by.set(x.cach_tinh, (by.get(x.cach_tinh) ?? 0) + x.total);
+  return {
+    run_id: d.run.id, horizon: d.horizon, grand_total: d.grand_total, n_series: d.n_series, start_date: d.start_date, end_date: d.end_date,
+    forecast_origin: d.run.forecast_date, data_as_of: d.run.data_as_of, data_source: d.run.data_source, actual: d.actual,
+    daily: d.daily ?? [], series: (d.series ?? []).slice(0, 10),
+    methods: Array.from(by, ([method, total]) => ({ method, n_series: d.n_series, total })),
+  };
+}
+
 export default function Dashboard() {
   const { t, pick } = useI18n();
   const sys = useSystem();
@@ -37,9 +55,21 @@ export default function Dashboard() {
   const s = statusReady && !sys.error ? sys.status : null;
   const run = s?.latest_forecast_run;
   const hRun = run ? Math.min(horizon, run.max_horizon) : null;
-  const fc = useAsync(() => (run && !settings.loading
+  // 1.4.12: with a published SEL2 run (detected exactly as the Results page does: the list of SEL2 runs is not empty) every
+  // forecast number of the block comes from the SEL2 summary = forecast_used of the daily Excel; the legacy run is only
+  // asked for when there is no SEL2 run (DEMO / manual import / before the first SEL2 run)
+  // asked again whenever the status is (sys.reload after a job / action); sel2Pending = the first answer is not in yet
+  const sel2Runs = useAsync(() => get("/api/daily-forecast/sel2-runs?limit=1").catch(() => []), [s]);
+  const sel2Pending = sel2Runs.loading && !sel2Runs.data;
+  const sel2 = Array.isArray(sel2Runs.data) && sel2Runs.data.length > 0;
+  const sel2Run: any = sel2 ? (sel2Runs.data as any[])[0] : null;
+  const sel2H = Math.min(horizon, SEL2_MAX_HORIZON);
+  const fc = useAsync(() => (run && !settings.loading && !sel2Pending && !sel2
     ? get(`/api/forecast-runs/${encodeURIComponent(run.id)}/summary?horizon=${hRun}&limit=10`) : Promise.resolve(null)),
-    [run?.id, hRun, settings.loading, s]);
+    [run?.id, hRun, settings.loading, s, sel2Pending, sel2]);
+  const sf = useAsync(() => (sel2 && !settings.loading
+    ? get(`/api/daily-forecast/sel2-summary?horizon=${sel2H}&limit=10`) : Promise.resolve(null)),
+    [sel2, sel2H, settings.loading, s]);
   const act = useAction();
   const [force, setForce] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -69,7 +99,8 @@ export default function Dashboard() {
   // a part that needs the status: loading while this visit's status (or a newer request) is on its way; "not available"
   // only once loading stopped without a status (the shell shows the error)
   const waiting = statusReady && !sys.loading ? <Empty text={t("common.not_available")} /> : <Loading />;
-  const f = fc.data && fc.data.run_id === run?.id ? fc.data : null;
+  const f = sel2 ? sel2View(sf.data, sel2H) : fc.data && fc.data.run_id === run?.id ? fc.data : null;
+  const shownRun: any = sel2Pending ? null : sel2 ? sel2Run : run;   // the run of the "model version" card ("—" until SEL2 is known)
   const fresh = s?.freshness;
   const latest = s?.latest_training_attempt;
   const accepted = s?.latest_accepted_training;
@@ -84,7 +115,8 @@ export default function Dashboard() {
         <button className="primary" onClick={train} disabled={act.busy || jobActive || !s?.scope}>
           <Icon name={jobActive ? "running" : "model"} className={jobActive ? "spin" : undefined} />{jobActive ? t("common.running") : t("dash.train_now")}</button>
       </>} />
-      <LegacyDataBanner />
+      {/* 1.4.12: no banner once the figures are the SEL2 ones; while the SEL2 run list is still loading none either (no flicker) */}
+      {!sel2 && !sel2Pending && <LegacyDataBanner />}
       <ForecastInfoLine />
       <ErrorBox error={act.error} />
       <OkBox text={act.ok} />
@@ -99,8 +131,8 @@ export default function Dashboard() {
           <Stat icon="quality" label={t("dash.data_status")}
             value={!s.scope ? <Pill status="NEEDS_CONFIG" /> : fresh?.stale ? <Pill status="STALE" /> : <Pill status="FRESH" />}
             sub={fresh?.stale && !fresh?.stale_enforced ? (t("common.source") + ": " + s.active_source + " — " + (pick({ vi: "không chặn publish", en: "does not block publishing" }))) : undefined} tone={fresh?.stale ? "warn" : ""} />
-          <Stat icon="model" label={<Term id="model_version">{t("fc.model_version")}</Term>} value={<span className="mono small">{run?.model_version ?? "—"}</span>}
-            sub={run ? `${t("fc.run_at")}: ${fmtTime(run.created_at)}` : undefined} />
+          <Stat icon="model" label={<Term id="model_version">{t("fc.model_version")}</Term>} value={<span className="mono small">{shownRun?.model_version ?? "—"}</span>}
+            sub={shownRun ? `${t("fc.run_at")}: ${fmtTime(shownRun.created_at)}` : undefined} />
         </div>
       )}
 
@@ -122,8 +154,12 @@ export default function Dashboard() {
         </div>
       )}
 
-      <Card icon="results" title={t("dash.latest_run")} actions={f && <HorizonPicker value={Math.min(horizon, run?.max_horizon ?? horizon)} onChange={setH} options={Array.from(new Set([...(run?.horizons ?? []), run?.max_horizon].filter(Boolean))).sort((a: any, b: any) => a - b) as number[]} />}>
-        {!s ? waiting : !run && fs?.status === "NO_FORECAST_FOR_ACTIVE_SOURCE" ? (
+      <Card icon="results" title={t("dash.latest_run")} actions={f && (sel2
+        ? <HorizonPicker value={sel2H} onChange={setH} estimateFrom={sf.data?.run?.estimate_from ?? 8} options={Array.from(new Set([...enabled.map((x) => Math.min(x, SEL2_MAX_HORIZON)), sel2H])).sort((a, b) => a - b)} />
+        : <HorizonPicker value={Math.min(horizon, run?.max_horizon ?? horizon)} onChange={setH} options={Array.from(new Set([...(run?.horizons ?? []), run?.max_horizon].filter(Boolean))).sort((a: any, b: any) => a - b) as number[]} />)}>
+        {!s ? waiting : sel2Pending ? <Loading /> : sel2 && sf.error ? <ErrorBox error={sf.error} />
+        : sel2 && !f ? (sf.loading || !sf.data ? <Loading /> : <Empty text={t("dash.no_run")} hint={t("dash.no_run_hint")} />)
+        : !sel2 && !run && fs?.status === "NO_FORECAST_FOR_ACTIVE_SOURCE" ? (
           <div className="alert warn" data-testid="dash-no-forecast">
             <b>{t("dash.no_fc_active").replace("{src}", s.active_source ?? "—")}</b>
             {fs.latest_attempt && (
@@ -134,18 +170,19 @@ export default function Dashboard() {
             <p className="small">{t("dash.no_fc_train").replace("{src}", s.active_source ?? "—")}</p>
             {fs.other_source_runs > 0 && <p className="small muted">{t("dash.no_fc_other").replace("{n}", String(fs.other_source_runs))}</p>}
           </div>
-        ) : !run ? <Empty text={t("dash.no_run")} hint={t("dash.no_run_hint")} />
-          : fc.error ? <ErrorBox error={fc.error} />
+        ) : !sel2 && !run ? <Empty text={t("dash.no_run")} hint={t("dash.no_run_hint")} />
+          : !sel2 && fc.error ? <ErrorBox error={fc.error} />
           : !f ? <Loading /> : (
           <>
-            {fs?.model_in_use && <AssessmentBox a={fs.model_in_use} compact />}
+            {sel2 ? <div className="alert info small" data-testid="assessment-sel2">{t("fc.sel2_no_quality")}</div>
+              : fs?.model_in_use && <AssessmentBox a={fs.model_in_use} compact />}
             <div className="grid4">
               <Stat icon="chart" label={`${t("dash.horizon_total")} (${f.horizon} ${t("common.days")})`} value={fmtNum(f.grand_total)} sub={`${fmtNum(f.n_series)} ${t("common.series")}`} />
               <Stat icon="calendar" label={`${t("fc.start")} → ${t("fc.end")}`} value={<span className="small">{fmtDate(f.start_date)} → {fmtDate(f.end_date)}</span>} />
               <Stat icon="clock" label={<Term id="origin">{t("fc.origin")}</Term>} value={fmtDate(f.forecast_origin)} sub={`${t("fc.data_as_of")}: ${fmtDate(f.data_as_of)}`} />
-              <Stat icon="file" label={t("fc.run_id")} value={<span className="mono small">{run.id}</span>} sub={<SourceBadge source={f.data_source} />} />
+              <Stat icon="file" label={t("fc.run_id")} value={<span className="mono small">{f.run_id}</span>} sub={<SourceBadge source={f.data_source} />} />
             </div>
-            {enabled.some((x) => x > run.max_horizon) && (
+            {!sel2 && run && enabled.some((x) => x > run.max_horizon) && (
               <div className="alert warn small">{t("hz.missing").replace("{h}", enabled.filter((x) => x > run.max_horizon).join(", "))} <Link to="/results">{t("nav.results")} →</Link></div>
             )}
             <h4>{t("dash.trend")}</h4>
@@ -164,10 +201,10 @@ export default function Dashboard() {
               <div>
                 <h4><Term id="fallback">{t("dash.methods")}</Term></h4>
                 <table className="tbl">
-                  <thead><tr><th>{t("fc.method")}</th><th className="num">{t("common.series")}</th><th className="num">{t("fc.total")}</th></tr></thead>
+                  <thead><tr><th>{sel2 ? t("fc.cach_tinh") : t("fc.method")}</th><th className="num">{t("common.series")}</th><th className="num">{t("fc.total")}</th></tr></thead>
                   <tbody>
                     {f.methods.map((m: any) => (
-                      <tr key={m.method}><td><MethodLabel code={m.method} /></td><td className="num">{fmtNum(m.n_series)}</td><td className="num">{fmtNum(m.total)}</td></tr>
+                      <tr key={m.method}><td>{sel2 ? <span data-testid="dash-cach-tinh">{t(`fc.cach.${m.method}`)}</span> : <MethodLabel code={m.method} />}</td><td className="num">{fmtNum(m.n_series)}</td><td className="num">{fmtNum(m.total)}</td></tr>
                     ))}
                   </tbody>
                 </table>
