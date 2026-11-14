@@ -76,7 +76,7 @@ SCHEDULE_SWITCHES = ("d1_enabled", "d0_enabled", "train_enabled", "d1_enabled_at
                      "refresh_enabled", "refresh_enabled_at", "report_enabled", "report_enabled_at")     # 1.3.1
 
 
-D0_PAUSE_FIELDS = ("d0_paused_until", "d0_paused_by")     # 1.4.13: set only through /api/d0/pause, never by this editor
+D0_PAUSE_FIELDS = ("d0_paused_until", "d0_paused_by", "d0_pause_windows")     # 1.4.13: set only through /api/d0/pause, never by this editor
 
 
 @router.post("/settings/{section}/reset")

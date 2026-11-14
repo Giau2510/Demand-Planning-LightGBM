@@ -319,6 +319,19 @@ class ScheduleSettings(BaseModel):
     # inside the pause is recorded SKIPPED PAUSED_FOR_MAINTENANCE and never run later. d0_paused_by = who set it.
     d0_paused_until: str = ""
     d0_paused_by: str = Field("", max_length=60)
+    # windows [from, until) (UTC ISO) of the pauses set through app/d0_pause.py, kept ~15 days: a D-0 slot whose time
+    # fell inside one is recorded PAUSED_FOR_MAINTENANCE even when the scheduler looks at it later (restart, next day)
+    d0_pause_windows: list[list[str]] = Field(default_factory=list)
+
+    @field_validator("d0_pause_windows")
+    @classmethod
+    def _d0_windows(cls, v):
+        for w in v:
+            if len(w) != 2:
+                raise ValueError("a D-0 pause window is [from, until]")
+            for x in w:
+                datetime.fromisoformat(x)
+        return v
 
     @field_validator("d0_paused_until")
     @classmethod
@@ -872,7 +885,13 @@ def get(section: str, conn=None):
 
 def save(section: str, value: dict | BaseModel, note: str | None = None, conn=None):
     cls = SECTIONS[section]
-    model = value if isinstance(value, cls) else cls.model_validate(value)
+    ctx = None
+    if section == "schedule" and not isinstance(value, cls):
+        # 1.4.13: the 6-hour limit of d0_paused_until is checked only when that value itself changes; an already
+        # stored pause is never re-rejected by another save (clock moved, time passed)
+        if value.get("d0_paused_until") == get(section, conn).d0_paused_until:
+            ctx = {"stored": True}
+    model = value if isinstance(value, cls) else cls.model_validate(value, context=ctx)
     js = model.model_dump_json()
 
     def _save(c):

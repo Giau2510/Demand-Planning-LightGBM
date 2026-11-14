@@ -128,8 +128,11 @@ def plan(now: datetime, sched, active_source: str, last_heartbeat: datetime | No
             for t in sched.d0_times:
                 k = d0_key(d, t)
                 if live("D0_SYNC", vn_slot(d, t)) and k not in existing and vn_slot(d, t) > last_heartbeat:
+                    # 1.4.13: a slot that fell inside a maintenance pause is recorded as such, evaluated later or not
+                    paused = d0_pause.slot_paused(sched, vn_slot(d, t), now)
                     actions.append({"action": "skip", "job_type": "D0_SYNC", "key": k, "trigger": "SCHEDULE",
-                                    "scheduled_for": vn_slot(d, t).isoformat(), "reason": "MISSED_SLOT_NO_BACKFILL"})
+                                    "scheduled_for": vn_slot(d, t).isoformat(),
+                                    "reason": d0_pause.REASON_CODE if paused else "MISSED_SLOT_NO_BACKFILL"})
             late = [(jt, day_end_time[jt]) for jt, _f in DAY_END_FLOWS] if d < today - timedelta(days=1) else []
             for jt, t in (("D1_SYNC", sched.d1_fallback_time), ("TRAIN_PUBLISH", sched.train_time), *late):
                 k = f"{jt}:{d.isoformat()}"
@@ -141,13 +144,13 @@ def plan(now: datetime, sched, active_source: str, last_heartbeat: datetime | No
     # ---- D0 slots today
     due_slots = [t for t in sched.d0_times if vn_slot(today, t) <= now and live("D0_SYNC", vn_slot(today, t))]
     missed = []
-    d0_paused = d0_pause.is_paused(sched, now)      # 1.4.13: maintenance pause of the D0 slots only (default: not paused)
     for t in due_slots:
         k = d0_key(today, t)
         if k in existing:
             continue
         slot = vn_slot(today, t)
-        if d0_paused:       # recorded once, never run later: not "missed", so no catch-up after the pause either
+        if d0_pause.slot_paused(sched, slot, now):      # 1.4.13: maintenance pause of the D0 slots only
+            # recorded once, never run later: not "missed", so no catch-up after the pause either
             actions.append({"action": "skip", "job_type": "D0_SYNC", "key": k, "trigger": "SCHEDULE",
                             "scheduled_for": slot.isoformat(), "reason": d0_pause.REASON_CODE})
         elif now - slot <= grace:

@@ -275,6 +275,12 @@ huấn luyện tuần, job cuối ngày (`EOD_FORECAST_SNAPSHOT`, `ACTUAL_CLOSE`
 - Trong lúc dừng, mốc D-0 đến hạn được ghi SKIPPED `PAUSED_FOR_MAINTENANCE` và KHÔNG chạy bù sau đó (kể cả chính sách
   `d0_catchup_policy` = LATEST_ONCE); sau khi hết hạn các mốc kế tiếp chạy bình thường. "Chạy ngay" D-0 thủ công khi đang
   dừng bị từ chối với mã `D0_PAUSED` (409).
+- Cửa sổ dừng `[từ, đến)` được lưu trong cấu hình (`d0_pause_windows`, giữ khoảng 15 ngày; `d0-resume` kết thúc cửa sổ
+  đang mở tại thời điểm bấm). Mốc D-0 của ngày trước mà giờ mốc nằm trong một cửa sổ dừng cũng được ghi
+  `PAUSED_FOR_MAINTENANCE` (không phải `MISSED_SLOT_NO_BACKFILL`) khi scheduler xét muộn (mở lại app sau nửa đêm hoặc sau
+  khi hết hạn), nên chốt cài "tối đa 1 mốc lỡ" không đếm các mốc này. Job D-0 đang CHẠY lúc đặt lệnh dừng KHÔNG bị hủy
+  (chốt cài vẫn chờ job đang chạy); job D-0 đang chờ thử lại (RETRY_WAIT, kể cả chạy tay) bị ghi SKIPPED
+  `PAUSED_FOR_MAINTENANCE` nếu đến lượt trong lúc dừng.
 - CLI: `python -m app.cli d0-pause --hours H [--by TEXT]` (H = 1..6, mặc định 6), `d0-resume [--by TEXT]`, `d0-status`
   (đang dừng?, đến lúc nào theo giờ Việt Nam, ai đặt, số phút còn lại; chỉ đọc). Mã thoát 0 = xong, 2 = từ chối.
 - API (app đang chạy): `GET /api/d0/pause`, `POST /api/d0/pause {hours, by}`, `POST /api/d0/resume {by}`.

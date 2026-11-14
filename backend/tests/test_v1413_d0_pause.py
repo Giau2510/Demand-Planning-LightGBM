@@ -158,10 +158,125 @@ def test_manual_d0_run_is_refused_while_paused_other_jobs_are_not(client, small_
     assert r.status_code == 409 and r.json()["code"] == "D0_PAUSED" and r.json()["vi"] and r.json()["en"]
     r2 = client.post("/api/schedules/d0/run")                   # the schedule page's "run now" button
     assert r2.status_code == 409 and r2.json()["code"] == "D0_PAUSED"
-    # a manual D-1 job is not looked at by the pause (it is not refused with D0_PAUSED)
+    # another job type is not looked at by the pause (it is not refused with D0_PAUSED)
     assert client.post("/api/jobs/run", json={"job_type": "ACTUAL_CLOSE"}).json().get("code") != "D0_PAUSED"
     client.post("/api/d0/resume", json={"by": "owner"})
     assert client.post("/api/jobs/run", json={"job_type": "D0_SYNC"}).json()["status"] == "SUCCEEDED"
+
+
+# ---------------------------------------------------------------- slots of past days, retries, running job
+def test_slot_inside_a_past_pause_is_recorded_paused_after_restart_next_day(small_demo):
+    _freeze(_at(17, 0))
+    sch = Scheduler()
+    sch.tick(_at(17, 0), wait=True)                          # heartbeat of the evening (D-0 still off: no run yet)
+    ss.update("schedule", {"d0_enabled": True, "d0_times": ["08:00", "18:00", "23:30"]})
+    d0_pause.pause(6, "CAI-1413-20261115")                   # 17:00 - 23:00
+    next_day = DAY + timedelta(days=1)
+    now = next_day.replace(hour=9, minute=0)                 # the app was closed all night and starts again
+    _freeze(now)
+    assert d0_pause.status()["paused"] is False
+    sch.tick(now, wait=True)
+    jobs = _jobs()
+    inside, after = _k("18:00"), _k("23:30")                 # 18:00 inside the pause, 23:30 after its expiry
+    assert jobs[inside]["status"] == "SKIPPED" and jobs[inside]["reason_code"] == "PAUSED_FOR_MAINTENANCE"
+    assert jobs[after]["reason_code"] == "MISSED_SLOT_NO_BACKFILL"
+    assert f"D0_SYNC:{DAY.date()}:CATCHUP" not in jobs        # nothing of yesterday is caught up
+    with db.read() as c:                                      # (only the usual single catch-up of the new day)
+        snaps = db.rows(c, "SELECT scheduled_slot FROM d0_snapshots")
+    assert all(x["scheduled_slot"].startswith(str(next_day.date())) for x in snaps)
+
+
+def _gate_missed(jobs, day, hhmm):
+    """The install gate's rule (scripts\ops\cai_1412.py missed(), R-I148 S2/S3) on the scheduler's own records: no
+    job row; SKIPPED MISSED_SLOT_NO_BACKFILL; FAILED unless the day's CATCHUP SUCCEEDED after the slot -> counted as
+    missed (reason text), else None. Rows are (status, reason_code, finished_at) like d0_slot_status."""
+    def st(key):
+        r = jobs.get(key)
+        return (r["status"], r["reason_code"], r["finished_at"]) if r else None
+    row, catchup = st(f"D0_SYNC:{day}T{hhmm}"), st(f"D0_SYNC:{day}:CATCHUP")
+    if row is None:
+        return "no job row"
+    if row[0] == "SKIPPED" and row[1] == "MISSED_SLOT_NO_BACKFILL":
+        return f"SKIPPED {row[1]}"
+    if row[0] == "FAILED":
+        slot = timeutil.vn_slot(day, hhmm)
+        later = bool(catchup and catchup[0] == "SUCCEEDED" and catchup[2] and timeutil.parse_iso(catchup[2]) > slot)
+        return None if later else "FAILED (no later catch-up SUCCEEDED)"
+    return None
+
+
+def test_pause_slots_after_midnight_restart_are_not_counted_missed_by_the_install_gate(small_demo):
+    _freeze(_at(17, 0))
+    sch = Scheduler()
+    sch.tick(_at(17, 0), wait=True)
+    ss.update("schedule", {"d0_enabled": True, "d0_times": ["08:00", "18:00", "20:00", "23:30"]})
+    d0_pause.pause(6, "CAI-1413-20261115")                    # 17:00 - 23:00: slots 18:00 and 20:00 inside
+    now = (DAY + timedelta(days=1)).replace(hour=0, minute=20)    # the app starts again after midnight
+    _freeze(now)
+    sch.tick(now, wait=True)
+    jobs = _jobs()
+    for hhmm in ("18:00", "20:00"):
+        assert jobs[_k(hhmm)]["reason_code"] == "PAUSED_FOR_MAINTENANCE"
+        assert _gate_missed(jobs, DAY.date(), hhmm) is None   # not a missed slot for the gate
+    assert _gate_missed(jobs, DAY.date(), "23:30") == "SKIPPED MISSED_SLOT_NO_BACKFILL"   # after expiry: normal
+
+
+def test_genuinely_missed_slot_without_pause_is_still_recorded_and_counted(small_demo):
+    _freeze(_at(17, 0))
+    sch = Scheduler()
+    sch.tick(_at(17, 0), wait=True)
+    ss.update("schedule", {"d0_enabled": True, "d0_times": ["08:00", "18:00", "23:30"]})
+    now = (DAY + timedelta(days=1)).replace(hour=0, minute=20)    # app down all evening, no pause
+    _freeze(now)
+    sch.tick(now, wait=True)
+    jobs = _jobs()
+    for hhmm in ("18:00", "23:30"):
+        assert jobs[_k(hhmm)]["reason_code"] == "MISSED_SLOT_NO_BACKFILL"
+        assert _gate_missed(jobs, DAY.date(), hhmm) == "SKIPPED MISSED_SLOT_NO_BACKFILL"
+    assert _gate_missed(jobs, DAY.date(), "09:00") == "no job row"
+
+
+def test_resume_ends_the_window_so_later_slots_are_not_paused(small_demo):
+    ss.update("schedule", {"d0_enabled": True})
+    _freeze(_at(9, 0))
+    d0_pause.pause(6, "owner")
+    _freeze(_at(11, 0))
+    d0_pause.resume("owner")
+    w = ss.get("schedule").d0_pause_windows
+    assert len(w) == 1 and timeutil.parse_iso(w[0][1]) == _at(11, 0)
+    sched = ss.get("schedule")
+    assert d0_pause.in_window(sched, _at(10, 0)) and not d0_pause.in_window(sched, _at(12, 0))
+
+
+def test_retry_wait_d0_job_does_not_run_inside_the_pause_even_when_manual(small_demo):
+    ss.update("schedule", {"d0_enabled": True})
+    _freeze(_at(11, 0))
+    row, _c = runner.get_or_create("D0_SYNC", "D0_SYNC:MANUAL:retrywait", "MANUAL", None, {}, 4)
+    runner._update(row["id"], status="RETRY_WAIT", reason_code="LOCKED", next_attempt_at=(_at(10, 0)).isoformat())
+    d0_pause.pause(1, "owner")
+    out = runner.execute("D0_SYNC", "D0_SYNC:MANUAL:retrywait", "MANUAL", None, {})
+    assert out["status"] == "SKIPPED" and out["reason_code"] == "PAUSED_FOR_MAINTENANCE"
+
+
+def test_running_d0_job_is_not_cancelled_when_the_pause_is_set(small_demo):
+    ss.update("schedule", {"d0_enabled": True})
+    _freeze(_at(10, 5))
+    row, _c = runner.get_or_create("D0_SYNC", _k("10:00"), "SCHEDULE", _at(10).isoformat(), {}, 4)
+    runner._update(row["id"], status="RUNNING", started_at=_at(10, 1).isoformat())
+    d0_pause.pause(2, "owner")
+    Scheduler().tick(_at(10, 6), wait=True)
+    assert _jobs()[_k("10:00")]["status"] == "RUNNING"       # left to finish; install gates wait for active jobs
+
+
+def test_stored_pause_is_not_rejected_by_other_schedule_saves(data_dir):
+    _freeze(_at(10, 0))
+    d0_pause.pause(6, "owner")
+    _freeze(_at(10, 0) - timedelta(days=2))                  # clock moved back: the stored pause is now > 6 h ahead
+    ss.update("schedule", {"slot_grace_minutes": 25})        # an unrelated save still works
+    assert ss.get("schedule").slot_grace_minutes == 25
+    far = (_at(10, 0) + timedelta(hours=5)).isoformat()      # but CHANGING the value is checked against the limit
+    with pytest.raises(ValueError):
+        ss.update("schedule", {"d0_paused_until": far})
 
 
 # ---------------------------------------------------------------- API

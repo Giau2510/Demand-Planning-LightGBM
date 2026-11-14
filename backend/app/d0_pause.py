@@ -14,6 +14,7 @@ from .messages import AppError
 from .timeutil import VN_TZ, now_iso, now_utc, parse_iso
 
 REASON_CODE = "PAUSED_FOR_MAINTENANCE"
+WINDOWS_KEEP = timedelta(days=15)       # past pause windows kept in the settings (the scheduler looks back 14 days)
 
 
 def paused_until(sched, now: datetime | None = None) -> datetime | None:
@@ -24,6 +25,16 @@ def paused_until(sched, now: datetime | None = None) -> datetime | None:
 
 def is_paused(sched, now: datetime | None = None) -> bool:
     return paused_until(sched, now) is not None
+
+
+def in_window(sched, slot: datetime) -> bool:
+    """A recorded pause window [from, until) contains `slot` (a D-0 slot time): the slot was inside a pause."""
+    return any(parse_iso(f) <= slot < parse_iso(u) for f, u in sched.d0_pause_windows)
+
+
+def slot_paused(sched, slot: datetime, now: datetime) -> bool:
+    """The D-0 slot is not run: the pause is active now, or the slot time fell inside a recorded pause window."""
+    return is_paused(sched, now) or in_window(sched, slot)
 
 
 def status(now: datetime | None = None) -> dict:
@@ -54,8 +65,11 @@ def pause(hours: float = ss.D0_PAUSE_MAX_HOURS, by: str | None = None) -> dict:
     if not 1 <= hours <= ss.D0_PAUSE_MAX_HOURS:
         raise AppError("D0_PAUSE_INVALID", 422, detail=f"hours must be 1..{ss.D0_PAUSE_MAX_HOURS}")
     by = _by(by)
-    until = (now_utc() + timedelta(hours=hours)).isoformat(timespec="seconds")
-    ss.update("schedule", {"d0_paused_until": until, "d0_paused_by": by},
+    now = now_utc()
+    until = (now + timedelta(hours=hours)).isoformat(timespec="seconds")
+    keep = [w for w in ss.get("schedule").d0_pause_windows if parse_iso(w[1]) > now - WINDOWS_KEEP]
+    ss.update("schedule", {"d0_paused_until": until, "d0_paused_by": by,
+                           "d0_pause_windows": [*keep, [now_iso(), until]]},
               note=f"D-0 maintenance pause until {until} by {by or '-'}")
     return status()
 
@@ -64,7 +78,10 @@ def resume(by: str | None = None) -> dict:
     """End the pause now (a no-op write is skipped when D-0 was not paused)."""
     by = _by(by)
     cur = ss.get("schedule")
-    if cur.d0_paused_until or cur.d0_paused_by:
-        ss.update("schedule", {"d0_paused_until": "", "d0_paused_by": ""},
+    now = now_utc()
+    # the window that is open now ends now (slots from now on run); older windows stay as they were
+    windows = [[f, now_iso()] if parse_iso(f) <= now < parse_iso(u) else [f, u] for f, u in cur.d0_pause_windows]
+    if cur.d0_paused_until or cur.d0_paused_by or windows != cur.d0_pause_windows:
+        ss.update("schedule", {"d0_paused_until": "", "d0_paused_by": "", "d0_pause_windows": windows},
                   note=f"D-0 maintenance pause ended at {now_iso()} by {by or '-'}")
     return status()
