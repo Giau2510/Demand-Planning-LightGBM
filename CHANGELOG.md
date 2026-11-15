@@ -5,6 +5,28 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.4.14 (Forecast Results merged into Daily forecast)
+
+Owner order 15/11/2026 (Task 8): the page "Kết quả dự báo" (Results, `/results`) is merged into "Dự báo hằng ngày"
+(`/daily-forecast`) and removed from the menu. UI only: no backend, schema or data change; forecast numbers are
+unchanged (official source stays `forecast_used` of SEL2; the new tab calls the same `sel2-summary` API as before).
+
+* "Dự báo hằng ngày", card "Số dự báo": two tabs (SEL2 run only) - "Dự báo chi tiết từng ngày" (the existing table,
+  unchanged) and "Tổng theo SKU × kho" (horizon picker, cards, daily trend, totals per SKU × FC with search, filters and
+  pages: what Results showed in SEL2 mode). The tab follows the run chosen on the page; `?tab=tong` opens it.
+* Menu: "Kết quả dự báo" removed. `/results` redirects to `/daily-forecast?tab=tong` when SEL2 runs are published and the
+  newest run is a SEL2 run; otherwise (DEMO / manual import / before the first SEL2 run / newest run not SEL2) the legacy
+  Results page still renders there, and the dashboard links to it in those modes. The dashboard link in SEL2 mode now
+  reads "Dự báo hằng ngày →". The tab keeps its state (horizon, search, filters) when switching tabs.
+* What the old Results page had in SEL2 mode and is gone or moved: its own run picker (now the "Lần làm mới" filter of the
+  "Số dự báo" card; the totals tab follows it); its "Xuất Excel" button (now the export of the "Số dự báo" card and the
+  "Excel hằng ngày" card); its detail tab on `sel2-values` with the per-row "Thứ" and "Thực tế đến hiện tại" and the
+  exact SKU / FC filters (now the daily page table and its filters); the empty explainer column; the "Độ chính xác"
+  card (always empty in SEL2 mode) and the inactive horizon-extend box; the separate trend card, page title and menu entry
+  (the trend is a heading inside the tab).
+* Cells / notices shared by the pages moved to `components/forecastCells.tsx` (Results re-exports them); the totals view
+  is `components/Sel2Totals.tsx`.
+
 ## 1.4.13 (D-0 maintenance pause)
 
 Owner 14/11/2026: the D-0 pause lasts at most 6 h and is NOT renewed automatically inside an install chain (backup to post-install check); the DB comparison before the install is NOT relaxed. Tạm dừng D-0 tối đa 6 giờ, KHÔNG gia hạn tự động trong chuỗi cài (từ lúc sao lưu tới kiểm sau cài); phép so DB trước khi cài KHÔNG nới (chủ dự án 14/11/2026).

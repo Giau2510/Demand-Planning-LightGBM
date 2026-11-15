@@ -5,7 +5,7 @@ import { useI18n } from "./i18n";
 import { ErrorBox, SourceBadge, useAction } from "./components/ui";
 import { Icon, type IconName } from "./components/icons";
 import Dashboard from "./pages/Dashboard";
-import Results from "./pages/Results";
+import ResultsRoute from "./pages/ResultsRoute";
 import DailyForecast from "./pages/DailyForecast";
 import ForecastSource from "./pages/ForecastSource";
 import ForecastHistory from "./pages/ForecastHistory";
@@ -83,7 +83,7 @@ export function TrialBanner() {
 
 /** Sidebar: [route, label key, icon]. The page header of each route uses the same icon. */
 const NAV: { group: string; items: [string, string, IconName][] }[] = [
-  { group: "nav.group.forecast", items: [["/", "nav.dashboard", "dashboard"], ["/results", "nav.results", "results"],
+  { group: "nav.group.forecast", items: [["/", "nav.dashboard", "dashboard"],
     ["/forecast-history", "nav.fhistory", "fhistory"], ["/performance", "nav.performance", "performance"], ["/daily-forecast", "nav.daily", "daily"],
     ["/forecast-source", "nav.fsource", "model"],
     ["/snapshots", "nav.snapshots", "snapshots"], ["/methodology", "nav.methodology", "methodology"],
@@ -247,7 +247,7 @@ export default function App() {
         {st.error ? <ErrorBox error={st.error} /> : null}
         <Routes>
           <Route path="/" element={<Dashboard />} />
-          <Route path="/results" element={<Results />} />
+          <Route path="/results" element={<ResultsRoute />} />
           <Route path="/forecast-history" element={<ForecastHistory />} />
           <Route path="/performance" element={<Performance />} />
           <Route path="/config" element={<Config />} />

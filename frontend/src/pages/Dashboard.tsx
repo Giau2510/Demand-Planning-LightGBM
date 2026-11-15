@@ -208,7 +208,7 @@ export default function Dashboard() {
                     ))}
                   </tbody>
                 </table>
-                <p><Link to="/results">{t("nav.results")} →</Link></p>
+                <p><Link to={sel2 ? "/daily-forecast?tab=tong" : "/results"}>{t(sel2 ? "nav.daily" : "nav.results")} →</Link></p>
               </div>
             </div>
           </>

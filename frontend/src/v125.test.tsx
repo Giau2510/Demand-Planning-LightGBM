@@ -29,10 +29,10 @@ function failingBackend() {
   }) as any;
 }
 
-const ROUTES: [string, string][] = [["/", "nav.dashboard"], ["/results", "nav.results"], ["/forecast-history", "nav.fhistory"], ["/performance", "nav.performance"],
+const ROUTES: [string, string][] = [["/", "nav.dashboard"], ["/forecast-history", "nav.fhistory"], ["/performance", "nav.performance"],
   ["/snapshots", "nav.snapshots"], ["/methodology", "nav.methodology"], ["/forecast-explainer", "nav.explainer"], ["/import", "nav.import"], ["/batches", "nav.batches"],
   ["/quality", "nav.quality"], ["/config", "nav.config"], ["/bigquery", "nav.bigquery"], ["/mapping", "nav.mapping"], ["/sql", "nav.sql"],
-  ["/features", "nav.features"], ["/schedules", "nav.schedules"], ["/jobs", "nav.jobs"], ["/system", "nav.system"]];
+  ["/daily-forecast", "nav.daily"], ["/features", "nav.features"], ["/schedules", "nav.schedules"], ["/jobs", "nav.jobs"], ["/system", "nav.system"]];
 
 describe("v1.2.5 shell and page frame", () => {
   it("every route renders in the shell with its page header, page icon and the matching active sidebar item", async () => {
@@ -63,9 +63,11 @@ describe("v1.2.5 shell and page frame", () => {
     fireEvent.click(screen.getByRole("button", { name: "Thu gọn thanh điều hướng" }));
     expect(shell.classList.contains("collapsed")).toBe(true);
     expect(localStorage.getItem("df.nav.collapsed")).toBe("1");
-    const link = r.container.querySelector(".side a[href='/results']")!;
-    expect(link.textContent).toBe("Kết quả dự báo");
-    expect(link.getAttribute("title")).toBe("Kết quả dự báo");
+    // 1.4.14: "Kết quả dự báo" left the menu (merged into the daily forecast page)
+    expect(r.container.querySelector(".side a[href='/results']")).toBeNull();
+    const link = r.container.querySelector(".side a[href='/daily-forecast']")!;
+    expect(link.textContent).toBe("Dự báo hằng ngày");
+    expect(link.getAttribute("title")).toBe("Dự báo hằng ngày");
     r.unmount();
     const again = await act(async () => render(wrap(<App />)));
     expect(again.container.querySelector(".shell")!.classList.contains("collapsed")).toBe(true);

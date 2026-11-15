@@ -30,6 +30,23 @@ const VALUES = { run: SRUN, total: 1, actual: null, rows: [{ sku_id: "MEDX.A", s
   target_date: "2026-11-05", horizon: 1, horizon_day: 1, weekday: 4, forecast_used: 6, forecast_qty: 6, lightgbm_forecast: 2, avg_demand: 5.4,
   forecast_source: "AVG_DEMAND", fallback_reason: "KHONG_CO_AVG_DUNG_LIGHTGBM", model_used: "MOC", method: "MOC" }] };
 
+// 1.4.14: the Results page of the SEL2 mode lives in the daily forecast page (tab "Tổng theo SKU × kho"); its mocks
+const DRUN = { ...RUN, horizon: 7, n_series: 1, n_lightgbm: 1, n_fallback: 0, trigger: "SCHEDULE" };
+const DSTATUS = { enabled: true, trial_mode: false, trial_label: null, refresh_enabled: true, refresh_deadline: "12:00", today: "2026-11-05",
+  last_run: DRUN, made_on: "2026-11-05", data_to: "2026-11-04", message: null, stale: false, outdated: false, last_report: null, trial_confirm_text: "" };
+const DVALUES = { run: DRUN, total: 1, page: 0, page_size: 100, horizons: [1, 2, 3, 4, 5, 6, 7], sel2: true, rows: [{ forecast_date: "2026-11-05",
+  target_date: "2026-11-05", horizon: 1, fc_code: "BD", sku_code: "MEDX.A", product_name: "Thuoc A", group_code: "A", lgb_raw: 2, final_qty: 6,
+  method: "MOC", cach_tinh: "SEL2", forecast_source: "AVG_DEMAND", flags: null }] };
+const dailyMocks = (u: string) => {
+  if (u.startsWith("/api/daily-forecast/status")) return json(DSTATUS);
+  if (u.startsWith("/api/daily-forecast/runs")) return json([DRUN]);
+  if (u.startsWith("/api/daily-forecast/values")) return json(DVALUES);
+  if (u.startsWith("/api/sel2/source-config")) return json({ items: [], total: 0 });
+  if (u.startsWith("/api/sel2/export")) return json({ items: [] });
+  if (u.startsWith("/api/accuracy-reports")) return json([]);
+  return null;
+};
+
 function backend(info: any = INFO) {
   const calls: string[] = [];
   globalThis.fetch = vi.fn(async (url: any) => {
@@ -43,6 +60,8 @@ function backend(info: any = INFO) {
     if (u.startsWith("/api/daily-forecast/sel2-summary")) return json(SUMMARY);
     if (u.startsWith("/api/daily-forecast/sel2-values")) return json(VALUES);
     if (u.startsWith("/api/jobs/active")) return json({});
+    const d = dailyMocks(u);
+    if (d) return d;
     return json({ code: "TEST_UNAVAILABLE" }, 503);
   }) as any;
   return calls;
@@ -74,46 +93,46 @@ describe("1.4.4 forecast info line", () => {
   });
 });
 
-describe("1.4.4 Results page in SEL2 mode", () => {
-  it("keeps title, tabs and table, reads the SEL2 summary and shows the info line", async () => {
+// 1.4.14: /results redirects to the daily forecast page, tab "Tổng theo SKU × kho" (same sel2-summary numbers, same table
+// minus the explainer column that a SEL2 run never had a value for); the run picker and the Excel link of the old page
+// are the daily page's own (run filter, "Số dự báo" export, daily Excel card)
+describe("1.4.4 Results page in SEL2 mode (1.4.14: merged tab of the daily forecast page)", () => {
+  it("keeps tabs and table, reads the SEL2 summary and shows the info line", async () => {
     const calls = backend();
     const r = await act(async () => render(wrap(<App />, "/results")));
-    await waitFor(() => expect(r.container.querySelector(".page-h h2")?.textContent).toBe("Kết quả dự báo"));
+    await waitFor(() => expect(r.container.querySelector(".page-h h2")?.textContent).toBe("Dự báo hằng ngày"));
     await waitFor(() => expect(screen.getByText("MEDX.A")).toBeTruthy());
     expect(screen.getAllByRole("tab").length).toBe(2);
+    expect(screen.getByTestId("daily-tab-totals").getAttribute("aria-selected")).toBe("true");
     expect(screen.getByTestId("forecast-info").textContent).toContain("SEL2 FRR-44");
     expect(calls.some((u) => u.startsWith("/api/daily-forecast/sel2-summary") && u.includes("run_id=FRR-44"))).toBe(true);
     expect(calls.some((u) => /\/api\/forecast-runs\/[^?]/.test(u))).toBe(false);     // no 1.3.x run detail / accuracy
     const row = screen.getByText("MEDX.A").closest("tr")!;
     // the 1.4.3 columns only (no SEL2 column added); the total is the sum of forecast_used
     const head = Array.from(row.closest("table")!.querySelectorAll("thead th")).map((th) => th.textContent);
-    expect(head).toEqual(["SKU", "Tên sản phẩm", "FC/kho", "Tổng trong khoảng (7 ngày)", "Thực tế hôm nay", "Phương pháp", ""]);
+    expect(head).toEqual(["SKU", "Tên sản phẩm", "FC/kho", "Tổng trong khoảng (7 ngày)", "Thực tế hôm nay", "Phương pháp"]);
     const cells = Array.from(row.querySelectorAll("td")).map((td) => td.textContent);
     expect(cells.length).toBe(head.length);
     expect(cells[3]).toBe("31");
     expect(row.textContent).not.toContain("LIGHTGBM");
-    expect((screen.getByTestId("run-select") as HTMLSelectElement).value).toBe("FRR-44");
-    expect(r.container.querySelector(`a[href="/api/sel2/export/2026-11-05"]`)).not.toBeNull();
+    expect(screen.queryByTestId("run-select")).toBeNull();                           // the old page's run picker is gone
   });
 
-  it("daily detail tab keeps the 1.4.3 columns, the quantity is forecast_used", async () => {
+  it("detail tab is the daily page's own table (replaces the old sel2-values tab): the quantity is forecast_used = final_qty", async () => {
     const calls = backend();
     await act(async () => render(wrap(<App />, "/results")));
     await waitFor(() => expect(screen.getByText("MEDX.A")).toBeTruthy());
-    await act(async () => { screen.getAllByRole("tab")[1].click(); });
-    await waitFor(() => expect(calls.some((u) => u.startsWith("/api/daily-forecast/sel2-values") && u.includes("run_id=FRR-44"))).toBe(true));
-    const row = await waitFor(() => {
-      const tr = screen.getByText("MEDX.A").closest("tr")!;
-      expect(tr.closest("table")!.querySelectorAll("thead th").length).toBe(10);   // 1.4.6: + Cách tính
-      return tr;
-    });
-    const head = Array.from(row.closest("table")!.querySelectorAll("thead th")).map((th) => th.textContent);
-    expect(head).toEqual(["SKU", "Tên sản phẩm", "FC/kho", "Ngày", "Thứ", "Số lượng dự báo", "Thực tế đến hiện tại", "Phương pháp", "Cách tính", ""]);
+    await act(async () => { screen.getByTestId("daily-tab-detail").click(); });
+    const table = await screen.findByTestId("daily-table");
+    expect(screen.getByTestId("daily-tab-detail").getAttribute("aria-selected")).toBe("true");
+    expect(calls.some((u) => u.startsWith("/api/daily-forecast/values"))).toBe(true);
+    const row = table.querySelector("tbody tr")!;
+    const head = Array.from(table.querySelectorAll("thead th")).map((th) => th.textContent);
+    expect(head).toContain("Số công bố");
     const cells = Array.from(row.querySelectorAll("td")).map((td) => td.textContent);
     expect(cells.length).toBe(head.length);
-    expect(cells[5]).toBe(String(VALUES.rows[0].forecast_used));
-    expect(row.textContent).not.toContain("AVG_DEMAND");
-    expect(row.textContent).not.toContain("KHONG_CO_AVG_DUNG_LIGHTGBM");
+    expect(cells[head.indexOf("Số công bố")]).toBe("6");
+    expect(row.textContent).toContain("MEDX.A");
   });
 });
 
@@ -137,6 +156,8 @@ describe("1.4.4 Results page in SEL2 mode keeps the 1.4.3 blocks", () => {
         series: SUMMARY.series.map((x) => ({ ...x, actual_today: 4 })) });
       if (u.startsWith("/api/daily-forecast/sel2-values")) return json({ ...VALUES, run: RUN2 });
       if (u.startsWith("/api/jobs/active")) return json({});
+      const d = dailyMocks(u);
+      if (d) return d;
       return json({ code: "TEST_UNAVAILABLE" }, 503);
     }) as any;
   }
@@ -160,8 +181,7 @@ describe("1.4.4 Results page in SEL2 mode keeps the 1.4.3 blocks", () => {
     const row = screen.getByText("MEDX.A").closest("tr")!;
     const cells = Array.from(row.querySelectorAll("td")).map((td) => td.textContent);
     expect(cells[4]).toBe("4");                                                        // actual so far today (D0)
-    expect(cells[6]).toBe("—");
-    expect(row.querySelector("button")).toBeNull();
+    expect(row.querySelector("button")).toBeNull();                                    // no explainer link (and no empty column) for SEL2
   });
 
   it("history banner names today's SEL2 publication instead of the backup snapshot", async () => {

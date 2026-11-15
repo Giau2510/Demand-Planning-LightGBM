@@ -75,7 +75,9 @@ describe("v1.2.5 Forecast & actual history page", () => {
     backend();
     const r = await act(async () => render(wrap(<App />, "/results")));
     const links = [...r.container.querySelectorAll(".side a")].map((a) => a.getAttribute("href"));
-    expect(links.slice(0, 4)).toEqual(["/", "/results", "/forecast-history", "/performance"]);
+    // 1.4.14: "/results" is no longer in the menu (merged into the daily forecast page)
+    expect(links.slice(0, 3)).toEqual(["/", "/forecast-history", "/performance"]);
+    expect(links).not.toContain("/results");
     await act(async () => { fireEvent.click(r.container.querySelector(".side a[href='/forecast-history']")!); });
     await waitFor(() => expect(r.container.querySelector(".page-h h2")?.textContent).toBe("Lịch sử Forecast & Thực tế"));
     expect(r.container.querySelector(".side a[aria-current=page]")?.textContent).toBe("Lịch sử Forecast & Thực tế");

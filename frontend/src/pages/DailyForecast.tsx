@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { get, post, qs } from "../api";
 import { numberLocale, useI18n } from "../i18n";
 import { useDailyStatus } from "../App";
@@ -6,7 +7,8 @@ import { Card, Confirm, DateInput, Empty, ErrorBox, Field, FilterBar, JobProgres
   SearchInput, Stat, fmtDate, fmtNum, fmtTime, useAction, useAsync } from "../components/ui";
 import { Icon } from "../components/icons";
 import ForecastInfoLine from "../components/ForecastInfoLine";
-import { CachTinh } from "./Results";
+import { CachTinh } from "../components/forecastCells";
+import Sel2Totals from "../components/Sel2Totals";
 
 const PAGE = 100;
 const GROUPS = ["A", "B", "C"];
@@ -44,8 +46,8 @@ export function rowSourceKind(run: any, lgbmKeys: Set<string> | null | undefined
 }
 
 /** 1.3.1 "Dự báo hằng ngày": the forecast refreshed every morning with the model in use (B5), its values (B3 / B8),
- *  the export, the weekly accuracy reports (B9) and the trial mode (B12). Nothing here changes the Results page or its
- *  exports. The trial mode is switched only here: off needs the typed text TAT-CHAY-THU-<today>, back on needs none;
+ *  the export, the weekly accuracy reports (B9) and the trial mode (B12). 1.4.14: the "Số dự báo" card also holds the
+ *  totals per SKU x kho of the former Results page (SEL2 mode). The trial mode is switched only here: off needs the typed text TAT-CHAY-THU-<today>, back on needs none;
  *  both refresh the global banner of the shell. */
 export default function DailyForecast() {
   const { t, pick } = useI18n();
@@ -69,6 +71,17 @@ export default function DailyForecast() {
     [runId, date, h, group, qd, from, to, page]);
   // 1.4.0 forecast source per SKU x FC (read only for a SEL2 run) and the daily Excel of the forecast day
   const sel2 = isSel2Run(values.data?.run);
+  // 1.4.14: the "Tổng theo SKU × kho" tab (the former Results page in SEL2 mode); ?tab=tong opens it (the /results redirect).
+  // Only a SEL2 run has it; while the first answer is not in, the requested tab is kept (no flash of the other tab)
+  const [sp, setSp] = useSearchParams();
+  const tong = sp.get("tab") === "tong" && (sel2 || (values.loading && !values.data));
+  const [totalsSeen, setTotalsSeen] = useState(false);
+  useEffect(() => { if (tong) setTotalsSeen(true); }, [tong]);
+  const setTab = (x: "tong" | "chi-tiet") => setSp((prev) => {
+    const n = new URLSearchParams(prev);
+    if (x === "tong") n.set("tab", "tong"); else n.delete("tab");
+    return n;
+  }, { replace: true });
   const lgbm = useAsync(() => (sel2 ? loadLightgbmKeys().catch(() => null) : Promise.resolve(null)), [sel2]);
   const [expDay, setExpDay] = useState("");
   const exportDay: string = expDay || values.data?.run?.forecast_date || status.data?.today || "";
@@ -240,79 +253,93 @@ export default function DailyForecast() {
       <Card icon="results" title={t("daily.values")}
         actions={run ? <a className="btn" href={`/api/daily-forecast/export.xlsx${qs({ run_id: run.id })}`} data-testid="daily-export">
           <Icon name="export" />{t("daily.export")}</a> : undefined}>
-        {run && (
-          <p className="small" data-testid="daily-run">{t("daily.run")}: <span className="mono">{run.id}</span> · {t("daily.made_on")} {fmtDate(run.forecast_date)}
-            {" · "}{t("daily.data_to")} {fmtDate(run.data_as_of)} · {t("daily.model")}: <span className="mono">{run.model_version}</span>
-            {run.trial_mode ? <> · <Pill status="WARNING" label={t("daily.trial")} /></> : null}</p>
-        )}
-        <FilterBar active={nFilters} onClear={clear}>
-          <Field label={t("daily.run")}>
-            <select value={runId} onChange={(e) => setRunId(e.target.value)} aria-label={t("daily.run")} data-testid="daily-run-select">
-              <option value="">{t("daily.run_latest")}</option>
-              {runList.map((r: any) => <option key={r.id} value={r.id}>{fmtDate(r.forecast_date)} · {fmtTime(r.created_at)} · {r.id}</option>)}
-            </select>
-          </Field>
-          <Field label={t("daily.forecast_date")}>
-            <DateInput value={date} onChange={(x) => { setDate(x); setRunId(""); }} ariaLabel={t("daily.forecast_date")} />
-          </Field>
-          <Field label={t("daily.day_n")}>
-            <select value={h} onChange={(e) => setH(e.target.value)} aria-label={t("daily.day_n")} data-testid="daily-horizon">
-              <option value="">{t("common.all")}</option>
-              {list(v?.horizons).map((x: number) => <option key={x} value={x}>{x}{estFrom && x >= estFrom ? ` (${t("fc.cach.UOC_TINH_THEO_TUAN")})` : ""}</option>)}
-            </select>
-          </Field>
-          <Field label={t("fc.target_from")}>
-            <DateInput value={from} onChange={setFrom} ariaLabel={t("fc.target_from")} />
-          </Field>
-          <Field label={t("fc.target_to")}>
-            <DateInput value={to} onChange={setTo} ariaLabel={t("fc.target_to")} />
-          </Field>
-          <Field label={t("daily.group")}>
-            <select value={group} onChange={(e) => setGroup(e.target.value)} aria-label={t("daily.group")} data-testid="daily-group">
-              <option value="">{t("common.all")}</option>
-              {GROUPS.map((g) => <option key={g} value={g}>{t(`daily.group.${g}`)}</option>)}
-            </select>
-          </Field>
-          <Field label={t("daily.search")}>
-            <SearchInput value={q} onChange={setQ} label={t("daily.search")} placeholder={t("daily.search_ph")} clearLabel={t("fc.search_clear")} />
-          </Field>
-        </FilterBar>
-        {estFrom && <p className="small" data-testid="daily-estimate-note"><Pill status="WARNING" label={t("fc.cach.UOC_TINH_THEO_TUAN")} /> {t("fc.estimate_note")}</p>}
-        <ErrorBox error={values.error} />
-        {values.loading && !v && <Loading />}
-        {v && !run && <Empty text={t("daily.no_values")} hint={lr ? undefined : t("daily.no_run_hint")} />}
-        {run && (
-          <div className="scroll">
-            <table className="tbl" data-testid="daily-table">
-              <thead><tr><th>{t("daily.made_on")}</th><th>{t("fc.date")}</th><th className="num">{t("daily.day_n")}</th><th>{t("fc.fc")}</th>
-                <th>{t("fc.sku")}</th><th>{t("fc.product_name")}</th><th>{t("daily.group")}</th><th className="num">{t("daily.lgb_raw")}</th>
-                <th className="num">{t("daily.final_qty")}</th><th>{t("fc.method")}</th>{sel2Rows && <th>{t("fc.cach_tinh")}</th>}{showSource && <th>{t("dexp.source_col")}</th>}
-                <th>{t("daily.flags")}</th></tr></thead>
-              <tbody>
-                {list(v.rows).map((x: any) => {
-                  const kind = sel2Rows && x.forecast_source ? (x.forecast_source === "LIGHTGBM" ? "LIGHTGBM" : "OTHER")
-                    : rowSourceKind(run, lgbmKeys, x.sku_code, x.fc_code);
-                  return (
-                  <tr key={`${x.fc_code}|${x.sku_code}|${x.horizon}`}>
-                    <td className="nowrap">{fmtDate(x.forecast_date)}</td><td className="nowrap">{fmtDate(x.target_date)}</td>
-                    <td className="num">{x.horizon}</td><td className="nowrap">{x.fc_code}</td><td className="sku">{x.sku_code}</td>
-                    <td className="pname">{x.product_name ?? "—"}</td>
-                    <td className="nowrap" title={x.group_code ? t(`daily.group.${x.group_code}`) : undefined}>{x.group_code ?? "—"}</td>
-                    <td className="num" title={x.lgb_raw === null || x.lgb_raw === undefined ? undefined : String(x.lgb_raw)}>{fmt3(x.lgb_raw)}</td><td className="num"><b>{fmtNum(x.final_qty)}</b></td>
-                    <td><MethodLabel code={x.method} /></td>
-                    {sel2Rows && <td className="nowrap"><CachTinh code={x.cach_tinh} /></td>}
-                    {showSource && <td className="nowrap" data-testid={`daily-src-${x.fc_code}-${x.sku_code}-${x.horizon}`}>
-                      {kind === "LIGHTGBM" ? <Pill status="OK" label={t("dexp.using_lgbm")} />
-                        : s.trial_label ? <Pill status="WARNING" label={pick(s.trial_label)} /> : <Pill status="INFO" label={t("fsrc.src.AVG_DEMAND")} />}</td>}
-                    <td className="small mono">{x.flags ?? ""}</td>
-                  </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+        {sel2 && (
+          <div className="tabs" role="tablist" aria-label={t("fc.table_view")}>
+            <button role="tab" aria-selected={!tong} className={!tong ? "tab active" : "tab"} onClick={() => setTab("chi-tiet")} data-testid="daily-tab-detail">{t("fc.daily_detail")}</button>
+            <button role="tab" aria-selected={tong} className={tong ? "tab active" : "tab"} onClick={() => setTab("tong")} data-testid="daily-tab-totals">{t("daily.tab_totals")}</button>
           </div>
         )}
-        <Pager page={page} total={v?.total ?? 0} size={v?.page_size ?? PAGE} unit={t("common.rows")} onPage={setPage} />
+        {/* once opened, the totals view stays mounted (hidden) so its horizon / search / filters survive a tab switch */}
+        {(tong || (totalsSeen && sel2)) && (
+          <div hidden={!tong}>{v ? <Sel2Totals runId={isSel2Run(run) ? run.id : ""} /> : <Loading />}</div>
+        )}
+        {!tong && (
+          <>
+          {run && (
+            <p className="small" data-testid="daily-run">{t("daily.run")}: <span className="mono">{run.id}</span> · {t("daily.made_on")} {fmtDate(run.forecast_date)}
+              {" · "}{t("daily.data_to")} {fmtDate(run.data_as_of)} · {t("daily.model")}: <span className="mono">{run.model_version}</span>
+              {run.trial_mode ? <> · <Pill status="WARNING" label={t("daily.trial")} /></> : null}</p>
+          )}
+          <FilterBar active={nFilters} onClear={clear}>
+            <Field label={t("daily.run")}>
+              <select value={runId} onChange={(e) => setRunId(e.target.value)} aria-label={t("daily.run")} data-testid="daily-run-select">
+                <option value="">{t("daily.run_latest")}</option>
+                {runList.map((r: any) => <option key={r.id} value={r.id}>{fmtDate(r.forecast_date)} · {fmtTime(r.created_at)} · {r.id}</option>)}
+              </select>
+            </Field>
+            <Field label={t("daily.forecast_date")}>
+              <DateInput value={date} onChange={(x) => { setDate(x); setRunId(""); }} ariaLabel={t("daily.forecast_date")} />
+            </Field>
+            <Field label={t("daily.day_n")}>
+              <select value={h} onChange={(e) => setH(e.target.value)} aria-label={t("daily.day_n")} data-testid="daily-horizon">
+                <option value="">{t("common.all")}</option>
+                {list(v?.horizons).map((x: number) => <option key={x} value={x}>{x}{estFrom && x >= estFrom ? ` (${t("fc.cach.UOC_TINH_THEO_TUAN")})` : ""}</option>)}
+              </select>
+            </Field>
+            <Field label={t("fc.target_from")}>
+              <DateInput value={from} onChange={setFrom} ariaLabel={t("fc.target_from")} />
+            </Field>
+            <Field label={t("fc.target_to")}>
+              <DateInput value={to} onChange={setTo} ariaLabel={t("fc.target_to")} />
+            </Field>
+            <Field label={t("daily.group")}>
+              <select value={group} onChange={(e) => setGroup(e.target.value)} aria-label={t("daily.group")} data-testid="daily-group">
+                <option value="">{t("common.all")}</option>
+                {GROUPS.map((g) => <option key={g} value={g}>{t(`daily.group.${g}`)}</option>)}
+              </select>
+            </Field>
+            <Field label={t("daily.search")}>
+              <SearchInput value={q} onChange={setQ} label={t("daily.search")} placeholder={t("daily.search_ph")} clearLabel={t("fc.search_clear")} />
+            </Field>
+          </FilterBar>
+          {estFrom && <p className="small" data-testid="daily-estimate-note"><Pill status="WARNING" label={t("fc.cach.UOC_TINH_THEO_TUAN")} /> {t("fc.estimate_note")}</p>}
+          <ErrorBox error={values.error} />
+          {values.loading && !v && <Loading />}
+          {v && !run && <Empty text={t("daily.no_values")} hint={lr ? undefined : t("daily.no_run_hint")} />}
+          {run && (
+            <div className="scroll">
+              <table className="tbl" data-testid="daily-table">
+                <thead><tr><th>{t("daily.made_on")}</th><th>{t("fc.date")}</th><th className="num">{t("daily.day_n")}</th><th>{t("fc.fc")}</th>
+                  <th>{t("fc.sku")}</th><th>{t("fc.product_name")}</th><th>{t("daily.group")}</th><th className="num">{t("daily.lgb_raw")}</th>
+                  <th className="num">{t("daily.final_qty")}</th><th>{t("fc.method")}</th>{sel2Rows && <th>{t("fc.cach_tinh")}</th>}{showSource && <th>{t("dexp.source_col")}</th>}
+                  <th>{t("daily.flags")}</th></tr></thead>
+                <tbody>
+                  {list(v.rows).map((x: any) => {
+                    const kind = sel2Rows && x.forecast_source ? (x.forecast_source === "LIGHTGBM" ? "LIGHTGBM" : "OTHER")
+                      : rowSourceKind(run, lgbmKeys, x.sku_code, x.fc_code);
+                    return (
+                    <tr key={`${x.fc_code}|${x.sku_code}|${x.horizon}`}>
+                      <td className="nowrap">{fmtDate(x.forecast_date)}</td><td className="nowrap">{fmtDate(x.target_date)}</td>
+                      <td className="num">{x.horizon}</td><td className="nowrap">{x.fc_code}</td><td className="sku">{x.sku_code}</td>
+                      <td className="pname">{x.product_name ?? "—"}</td>
+                      <td className="nowrap" title={x.group_code ? t(`daily.group.${x.group_code}`) : undefined}>{x.group_code ?? "—"}</td>
+                      <td className="num" title={x.lgb_raw === null || x.lgb_raw === undefined ? undefined : String(x.lgb_raw)}>{fmt3(x.lgb_raw)}</td><td className="num"><b>{fmtNum(x.final_qty)}</b></td>
+                      <td><MethodLabel code={x.method} /></td>
+                      {sel2Rows && <td className="nowrap"><CachTinh code={x.cach_tinh} /></td>}
+                      {showSource && <td className="nowrap" data-testid={`daily-src-${x.fc_code}-${x.sku_code}-${x.horizon}`}>
+                        {kind === "LIGHTGBM" ? <Pill status="OK" label={t("dexp.using_lgbm")} />
+                          : s.trial_label ? <Pill status="WARNING" label={pick(s.trial_label)} /> : <Pill status="INFO" label={t("fsrc.src.AVG_DEMAND")} />}</td>}
+                      <td className="small mono">{x.flags ?? ""}</td>
+                    </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <Pager page={page} total={v?.total ?? 0} size={v?.page_size ?? PAGE} unit={t("common.rows")} onPage={setPage} />
+          </>
+        )}
       </Card>
 
       {!expForbidden && <Card icon="export" title={t("dexp.title")}

@@ -1549,8 +1549,8 @@ export const DICT: Record<string, [string, string]> = {
   // 1.4.11: "being updated" banner (the link text between the two parts is nav.daily)
   "legacy.banner_before": ["Đang cập nhật: số liệu kiểu cũ, chưa cập nhật theo SEL2. Số chính thức xem ở trang ", "Being updated: legacy figures, not yet updated to SEL2. The official numbers are on the "],
   "legacy.banner_after": [".", " page."],
-  "daily.desc": ["Số dự báo được làm mới mỗi sáng bằng mô hình LightGBM đang dùng, sau khi dữ liệu D-1 về. Số công bố = 0 nếu giá trị LightGBM nhỏ hơn ngưỡng, ngược lại làm tròn lên. Màn hình Kết quả và các file xuất cũ không đổi.",
-    "The forecast refreshed every morning with the LightGBM model in use, after the D-1 data arrived. Published quantity = 0 when the LightGBM value is below the threshold, otherwise rounded up. The Results page and the existing exports do not change."],
+  "daily.desc": ["Số dự báo được làm mới mỗi sáng bằng mô hình LightGBM đang dùng, sau khi dữ liệu D-1 về. Số công bố = 0 nếu giá trị LightGBM nhỏ hơn ngưỡng, ngược lại làm tròn lên. Các file xuất cũ không đổi.",
+    "The forecast refreshed every morning with the LightGBM model in use, after the D-1 data arrived. Published quantity = 0 when the LightGBM value is below the threshold, otherwise rounded up. The existing exports do not change."],
   "daily.trial_note": ["Chế độ chạy thử đang bật (xem banner phía trên): số trên trang này và mọi file xuất mới đều mang nhãn chạy thử cho tới khi chủ dự án tắt chế độ này.",
     "The trial mode is on (see the banner above): every number on this page and every new export carries the trial label until the owner switches it off."],
   "daily.stale": ["Đã quá giờ chốt {d} mà chưa có dự báo làm mới của hôm nay. Số dự báo trước đó được giữ nguyên.", "The deadline {d} has passed without a refreshed forecast of today. The previous forecast is kept."],
@@ -1585,6 +1585,7 @@ export const DICT: Record<string, [string, string]> = {
   "daily.trial": ["Chạy thử", "Trial"],
   "daily.view": ["Xem", "View"],
   "daily.values": ["Số dự báo", "Forecast values"],
+  "daily.tab_totals": ["Tổng theo SKU × kho", "Totals by SKU × warehouse"],
   "daily.run": ["Lần làm mới", "Refresh run"],
   "daily.run_latest": ["Mới nhất", "Latest"],
   "daily.forecast_date": ["Ngày lập dự báo", "Forecast date"],

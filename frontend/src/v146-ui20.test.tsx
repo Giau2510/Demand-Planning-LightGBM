@@ -73,7 +73,8 @@ const typeDate = async (label: string, value: string) => {
   await act(async () => { fireEvent.change(input, { target: { value } }); });
 };
 
-describe("1.4.6 Results page: 20 days, estimate marked, date filter", () => {
+// 1.4.14: /results redirects to the daily forecast page, tab "Tổng theo SKU × kho"
+describe("1.4.6 Results page (1.4.14: merged tab of the daily forecast page): 20 days, estimate marked, date filter", () => {
   it("offers 1..20 days (default 7), marks 8..20 as estimate and explains it", async () => {
     backend();
     await act(async () => render(wrap("/results")));
@@ -98,16 +99,14 @@ describe("1.4.6 Results page: 20 days, estimate marked, date filter", () => {
     await typeDate("Đến ngày", "15/11/2026");
     await waitFor(() => expect(calls.some((u) => u.startsWith("/api/daily-forecast/sel2-summary") && u.includes("date_from=2026-11-08")
       && u.includes("date_to=2026-11-15") && u.includes("horizon=20"))).toBe(true));
-    await act(async () => { screen.getAllByRole("tab")[1].click(); });
-    await waitFor(() => expect(calls.some((u) => u.startsWith("/api/daily-forecast/sel2-values") && u.includes("date_from=2026-11-08")
-      && u.includes("date_to=2026-11-15"))).toBe(true));
+    // 1.4.14: the old sel2-values detail tab is the daily page's own table (its date filter is tested below)
   });
 
   it("daily detail marks the estimate rows in the column Cách tính", async () => {
     backend();
     await act(async () => render(wrap("/results")));
     await waitFor(() => expect(screen.getByText("MEDX.A")).toBeTruthy());
-    await act(async () => { screen.getAllByRole("tab")[1].click(); });
+    await act(async () => { screen.getByTestId("daily-tab-detail").click(); });
     const est = await screen.findByTestId("cach-tinh-estimate");
     const table = est.closest("table")!;
     const head = Array.from(table.querySelectorAll("thead th")).map((th) => th.textContent);
