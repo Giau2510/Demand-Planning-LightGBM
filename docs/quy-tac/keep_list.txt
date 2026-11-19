@@ -1,0 +1,68 @@
+# keep_list.txt - danh sach GIU cua bo don scripts\ops\don_dep_dinh_ky.ps1 (-KeepListMaster; chu du an 18/11/2026)
+# Moi dong: mot duong dan hoac mau ky tu dai dien (* ?). Duong dan tuong doi tinh tu ProjectRoot (D:\Buymed\Lightgbm AI).
+# Dong bat dau bang # la chu thich; chu thich cuoi dong sau ' #' ghi ly do + ngay chot.
+# Bo don TU CHOI xoa muc trung / nam trong / chua (la thu muc cha cua) mot muc giu, hoac khop mau (ca thu muc to tien),
+# ghi dong KEEP_LIST va lam tiep muc khac. File thieu / rong / co dong loi -> bo don KHONG xoa gi (fail-closed), thoat 1.
+# Sua file nay = doi danh sach giu: can chu du an duyet.
+#
+# Da MAT, KHONG ghi lai (chi ghi chu):
+#   U1 (4 zip truoc migration) xoa 14/11/2026 (reports\bao-cao\XOA_BACKUP_20261114.txt):
+#     backup-20261014-102304-pre-storage-migration.zip, backup-20261023-001008-pre-migration-v9.zip,
+#     backup-20261029-022523-pre-migration-v10.zip, backup-20261103-174339-pre-migration-v11.zip
+#   v12: backup-20261109-201909-pre-migration-v12.zip xoa 17/11/2026 (reports\bao-cao\DON_O_D_20261117.log)
+
+# --- Sao luu (<ProjectRoot>\backups); zip giu thi .sha256 / config-* di kem cung duoc giu ---
+backups\backup-20261117-035441-pre-1414.zip*    # sao luu pre-1414 moi nhat (truoc lan cai ban dang chay 1.4.14); 18/11/2026
+backups\config-20261117-035441-pre-1.4.14*      # cau hinh di kem sao luu pre-1414; 18/11/2026
+backups\backup-20261117-140716-pre-1414.zip*    # sao luu pre-1414 MOI NHAT, ban dung de cai that 1.4.14 (verified backup); them 18/11/2026 khi dieu phoi doi chieu thu muc backups
+backups\config-20261117-140716-pre-1.4.14*      # cau hinh di kem; 18/11/2026
+backups\backup-20261117-204011-cli.zip*         # sao luu install.ps1 luc cai 1.4.14 (21:27 17/11); them 18/11/2026 (khong chac, GIU)
+backups\backup-20261115-122507-pre-1413.zip*    # sao luu pre-1413 (ban truoc 1.4.13); 18/11/2026
+backups\config-20261115-122507-pre-1.4.13*      # cau hinh di kem; 18/11/2026
+backups\backup-20261115-101545-pre-1413.zip*    # sao luu pre-1413 (ban truoc 1.4.13); 18/11/2026
+backups\config-20261115-101545-pre-1.4.13*      # cau hinh di kem; 18/11/2026
+
+# --- Goi cai trong dist\ ---
+dist\DemandForecast-1.4.14-win64-portable.zip*  # goi cai ban dang chay 1.4.14 (+ .sha256); 18/11/2026
+dist\DemandForecast-1.4.13-win64-portable.zip*  # goi cai ban truoc 1.4.13 (+ .sha256); 18/11/2026
+dist\DemandForecast-RemoteAccess-1.2.1-20261017.zip*  # U7 (khong co so phien ban trong ten, + .sha256); 11/11/2026
+
+# --- Du lieu app ---
+data\runtime                                     # data_dir (theo bao cao bo don 11/11: D:\Buymed\Lightgbm AI\data\runtime); 18/11/2026
+
+# --- 7 muc du lieu 4b (reports\bao-cao\E_GIU_LAI_4B_20261111.md) ---
+reports\backtest-ngay8-20-20261109              # 4b muc 1; 11/11/2026
+reports\backtest-ngay8-20-20261107              # 4b muc 2; 11/11/2026
+reports\backtest-ngay8-20-20261106              # 4b muc 3; 11/11/2026
+reports\cai-tien-20261031\package               # 4b muc 4 (goi2_CUOI); 11/11/2026
+reports\don-dot-bien                            # 4b muc 5; 11/11/2026
+archive\worktrees\ban-143_20261107.zip          # 4b muc 6; 11/11/2026
+C:\Users\Giau Vo\AppData\Local\Temp\claude\d--Buymed-Lightgbm-AI\85d15b29-98c8-4fc7-bc4c-821aaa1df5dd\scratchpad\g1  # 4b muc 7 (ban sao DB g1); 11/11/2026
+
+# --- Bao cao / goi can giu ---
+reports\danh-gia-sku-30-ngay                    # U8 danh gia SKU 30 ngay; 18/11/2026
+reports\danh-gia-sku-30-ngay\*.xlsx             # U7/U8 file SKU30 (danh_gia_sku_30ngay_20261109.xlsx, sku_lech_nguon_72.xlsx); 18/11/2026
+reports\kiem-tra-cham-dung-20261113             # 18/11/2026
+reports\kiem-tra-4b-*                           # 18/11/2026
+reports\goi-cho-tech                            # 18/11/2026
+reports\ket-noi-du-lieu                         # 18/11/2026
+reports\bao-cao                                 # bao cao + ban sao luu bo don; 18/11/2026
+
+# --- Phien Claude Code ---
+C:\Users\Giau Vo\AppData\Local\Temp\claude\d--Buymed-Lightgbm-AI\145cefda-1716-4ca4-9121-024454354160  # U8 phien 145cefda (nhat ky runner dung ten phien nay); 11/11/2026
+
+# --- Chinh bo don va danh sach giu ---
+docs\quy-tac\keep_list.txt                      # file nay; 18/11/2026
+scripts\ops\don_dep_dinh_ky.ps1                 # 18/11/2026
+scripts\ops\don_dep_current.ps1                 # 18/11/2026
+scripts\ops\don_dep_giu.txt                     # 18/11/2026
+scripts\ops\don_dep_ket_luan.txt                # 18/11/2026
+
+# --- Muc U chua duyet xoa (reports\bao-cao\BAO_CAO_20261111_1045_E_KIEMKE.md muc (c)) ---
+reports\backtest-ngay1-7-20261107               # U3; 11/11/2026
+archive\worktrees\ban-142_20261107.zip          # U4; 11/11/2026
+archive\worktrees\ban-144_20261107.zip          # U4; 11/11/2026
+archive\worktrees\*.zip                         # U5 (worktree da nen vao archive\worktrees); 18/11/2026
+C:\Users\Giau Vo\AppData\Local\Programs\DemandForecast\1.4.0  # U6 (tac vu DemandForecastCleanup tro vao); 11/11/2026
+reports\cai-tien-deal-20261031                  # U2 (khong chac, GIU); 18/11/2026
+reports\cai-tien-dotbien-20261031               # U2 (khong chac, GIU); 18/11/2026
