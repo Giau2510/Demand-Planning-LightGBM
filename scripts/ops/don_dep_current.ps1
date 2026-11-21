@@ -7,9 +7,16 @@
            -ProjectRoot default: the folder holding this scripts\ folder (the cleanup refuses an installed version folder).
            <ProjectRoot>\scripts\ops\don_dep_giu.txt / don_dep_ket_luan.txt, when present, are passed as -KeepListFile /
            -ConcludedListFile (only to an installed script that has these parameters); else the installed copies are used.
+           Plan lock (1.4.15, owner 19/11/2026): -PlanHash / -KeepListHash (PLAN_HASH / KEEP_LIST_SHA256 of the approved
+           dry run) are passed on to an installed script that has these parameters. -Apply is refused (exit 2, nothing
+           run) when the installed script does not declare -KeepListMaster, -PlanHash and -KeepListHash in its param
+           block (read with the PowerShell parser) or cannot be parsed: 1.4.0 - 1.4.14 delete without these checks. A
+           dry run (no -Apply) still runs an older script.
 .EXAMPLE   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ops\don_dep_current.ps1 -ProjectRoot "D:\Buymed\Lightgbm AI"
+           ... the same + -Apply -PlanHash <PLAN_HASH> -KeepListHash <KEEP_LIST_SHA256>    (delete the approved plan)
 #>
-param([string]$ProjectRoot = "", [switch]$Apply, [switch]$IncludeDist, [string[]]$DistKeep = @(), [string]$TmpRoot = "")
+param([string]$ProjectRoot = "", [switch]$Apply, [switch]$IncludeDist, [string[]]$DistKeep = @(), [string]$TmpRoot = "",
+      [string]$PlanHash = "", [string]$KeepListHash = "")
 function Get-ArgPath([string]$Path) {
     # a trailing \ before the closing quote would escape it on the child command line; a drive root keeps its \
     if ($Path.Length -le 3) { return $Path }
@@ -28,6 +35,22 @@ if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
     Write-Host "Installed version $ver has no scripts\ops\don_dep_dinh_ky.ps1 ($script). Nothing run." -ForegroundColor Red
     exit 2
 }
+# parameters declared by the installed script (syntax tree, not a text search); $null = it cannot be parsed
+$params = $null
+try {
+    $perr = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($script, [ref]$null, [ref]$perr)
+    if (-not @($perr).Count) {
+        $params = @()
+        if ($ast.ParamBlock) { $params = @($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) }
+    }
+} catch { $params = $null }
+$hasLock = ($null -ne $params) -and (@("KeepListMaster", "PlanHash", "KeepListHash" | Where-Object { $params -notcontains $_ }).Count -eq 0)
+if ($Apply -and -not $hasLock) {
+    $why = if ($null -eq $params) { "cannot be parsed" } else { "has no -KeepListMaster / -PlanHash / -KeepListHash (keep list and plan lock missing)" }
+    Write-Host "-Apply refused: the installed cleanup of version $ver $why ($script). Nothing run." -ForegroundColor Red
+    exit 2
+}
 if (-not $ProjectRoot) { $ProjectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot) }
 $argList = @("-ProjectRoot", (Get-ArgPath $ProjectRoot))
 if ($TmpRoot) { $argList += @("-TmpRoot", (Get-ArgPath $TmpRoot)) }
@@ -41,6 +64,8 @@ if ($Apply) { $argList += "-Apply" }
 if ($IncludeDist) { $argList += "-IncludeDist" }
 $keep = @($DistKeep | ForEach-Object { "$_".Split(',') } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 if ($keep.Count) { $argList += @("-DistKeep", ($keep -join ',')) }
+if ($hasLock -and $PlanHash) { $argList += @("-PlanHash", $PlanHash.Trim()) }
+if ($hasLock -and $KeepListHash) { $argList += @("-KeepListHash", $KeepListHash.Trim()) }
 Write-Host "Installed version $ver`: $script"
 $ps = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script @argList

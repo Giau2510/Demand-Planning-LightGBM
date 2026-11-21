@@ -59,6 +59,34 @@
            -Groups <names> (comma list allowed) runs only these groups: backups, exports, logs, tmp, deploy_temp,
            reports, installs, dist_versions, dist, claude_temp; default = every group except claude_temp; an unknown
            name -> exit 2, nothing done.
+           Master keep list (owner 18/11/2026): -KeepListMaster (default <project>\docs\quy-tac\keep_list.txt), one path or
+           wildcard pattern (* ?) per line, relative = from <project>; "#" line = comment, " #" starts an end-of-line
+           comment (reason + date). Checked right before EVERY deletion of every group (and before prune-artifacts.ps1
+           -Apply): a candidate that equals, lies inside or contains (is a parent folder of) a kept path, or that (or
+           one of its parent folders) matches a pattern, is never deleted: "KEEP_LIST" line (path, matched entry, line
+           of the list), the run goes on with the other entries; a kept backup zip keeps its companions. Paths compared
+           case-insensitive, / = \, . and .. resolved, 8.3 names expanded, junction / symlink targets resolved. List
+           missing, empty (no entry) or with a line that cannot be read -> fail-closed: nothing deleted (every candidate
+           counts as blocked), exit 1, with -Apply ONE notice through scripts\ops\runner\notify.py. Every run prints the
+           table "MUC BI KEEP_LIST CHAN" (blocked count next to the candidate count).
+           Plan lock (1.4.15, owner 19/11/2026): every run prints and records PLAN_HASH (report plan_hash; the hashed text
+           is written to don_dep-<stamp>.plan.txt) and KEEP_LIST_SHA256 (report keep_list.sha256 = SHA-256 of the bytes
+           of the keep list that were parsed; empty when it cannot be read). PLAN_HASH = SHA-256 (lower-case hex) of a
+           canonical text (UTF-8 without BOM, LF, final LF): v=1, groups, include_dist, dist_keep, tmp_keep, claude_keep,
+           tmp_min_age_hours, claude_min_age_hours, project_root, tmp_root, keep_list, one "group|<name>|<status>" line
+           per group, then sorted (ordinal, lower case) "C|<group>|<kind>|<path>" lines for every candidate (logs:
+           "|<archive zip>" appended; dist: the prune-artifacts.ps1 plan) and "B|<group>|<path>|<entry>" lines for every
+           entry blocked by the keep list; no size and no time. -Apply needs -PlanHash and -KeepListHash (64 hex digits,
+           any case) equal to the values computed again by this run, after every group is computed and before anything
+           is archived or deleted; missing, malformed or different -> exit 2, nothing deleted, report mode APPLY_REFUSED
+           ("keep_list changed after the plan" / "plan changed"). A keep list that is not usable keeps the fail-closed
+           behaviour above (exit 1, notice) and nothing is applied. With -Apply, -KeepListMaster must be empty or resolve
+           to <project>\docs\quy-tac\keep_list.txt (else exit 2, nothing done). Right before deleting a folder
+           candidate: anything in it (or the folder itself) written at or after the start of the run -> not deleted
+           ("changed after the plan"). dist with -Apply -IncludeDist: prune-artifacts.ps1 -Apply runs only when its dry run
+           (same -Keep) lists exactly the planned dist candidates that still exist (dist_versions may have deleted some);
+           else, or when its output cannot be read, it is not run (error, exit 1); a dist\ / release\ entry that disappears
+           while it runs and is not planned -> error, exit 1.
            Info only: <project>\worktrees\<name> git worktrees whose version is installed, whose HEAD is on a
            remote-tracking branch, whose tag v<version> exists and whose status is clean -> "worktree_can_remove"
            (never removed here: scripts\ops\archive_worktree.py).
@@ -75,10 +103,10 @@
            <path>" or "NOT deleted <group> <path> - <reason>". Exit 0 ok, 1 error, 2 refused.
            The weekly task should run scripts\ops\don_dep_current.ps1 (runs the script of the INSTALLED version).
 .EXAMPLE   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ops\don_dep_dinh_ky.ps1            (plan only)
-           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ops\don_dep_dinh_ky.ps1 -Apply     (delete)
-           ... -Apply -IncludeDist -DistKeep 1.3.1      (also dist\ retention, keeping the 1.3.1 rollback package)
+           ... -Apply -PlanHash <PLAN_HASH> -KeepListHash <KEEP_LIST_SHA256>   (delete; the hashes of the approved plan)
+           ... -IncludeDist -DistKeep 1.3.1 (plan), then the same + -Apply -PlanHash .. -KeepListHash ..  (also dist\)
            ... -Groups tmp,claude_temp -TmpKeep src148 -ClaudeKeep 145cefda,85d15b29          (plan of these 2 groups)
-           ... -Groups tmp,claude_temp -TmpKeep src148 -ClaudeKeep 145cefda,85d15b29 -Apply   (delete in these 2 only)
+           ... the same arguments + -Apply -PlanHash <..> -KeepListHash <..>                  (delete in these 2 only)
 #>
 param([string]$ProjectRoot = "", [switch]$Apply, [switch]$IncludeDist, [string[]]$DistKeep = @(),
       [string]$KeepListFile = "", [string]$ConcludedListFile = "",   # reports lists (default: next to this script)
@@ -87,7 +115,9 @@ param([string]$ProjectRoot = "", [switch]$Apply, [switch]$IncludeDist, [string[]
       [int]$TmpMinAgeHours = 24, [string[]]$TmpKeep = @(),
       [string]$ClaudeTempRoot = "",             # default %TEMP%\claude (tests pass their own)
       [string[]]$ClaudeKeep = @(), [int]$ClaudeMinAgeHours = 24,
-      [string]$ClaudeProjectsRoot = "")         # session transcripts, default %USERPROFILE%\.claude\projects (read only)
+      [string]$ClaudeProjectsRoot = "",         # session transcripts, default %USERPROFILE%\.claude\projects (read only)
+      [string]$KeepListMaster = "",             # master keep list, default <project>\docs\quy-tac\keep_list.txt (read only)
+      [string]$PlanHash = "", [string]$KeepListHash = "")   # -Apply: PLAN_HASH / KEEP_LIST_SHA256 of the approved dry run
 $ErrorActionPreference = "Stop"
 $Now = Get-Date
 $Today = $Now.Date
@@ -356,6 +386,214 @@ if ($Selected -contains "claude_temp" -and $ClaudeKeep.Count) {
     }
 }
 
+# ------------------------------------------------------------------ master keep list (owner 18/11/2026)
+# the keep notes of 11/11 lived only in reports and logs, and kept backups were deleted: this list is checked in code
+# right before every deletion (Add-Candidate, Remove-Candidate, prune-artifacts.ps1 -Apply)
+$KeepListDefault = Join-Path $ProjectRoot "docs\quy-tac\keep_list.txt"
+$KeepListGiven = $KeepListMaster
+if (-not $KeepListMaster) { $KeepListMaster = $KeepListDefault }
+
+function Get-Sha256Hex([byte[]]$Bytes) {
+    # lower-case hex SHA-256
+    $h = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($h.ComputeHash($Bytes)).Replace("-", "")).ToLowerInvariant() } finally { $h.Dispose() }
+}
+
+function Get-RealPath([string]$Path) {
+    # $Path with each existing junction / symlink in it replaced by its target (keep list compare only); a part that
+    # does not exist or cannot be read is kept as given
+    $p = $Path
+    for ($n = 0; $n -lt 16; $n++) {
+        $rp = Get-ReparseInChain $p
+        if (-not $rp -or $rp.EndsWith("(attributes unreadable)")) { break }
+        try {
+            $tg = "$(@((Get-Item -LiteralPath $rp -Force -ErrorAction Stop).Target) | Where-Object { $_ } | Select-Object -First 1)"
+            if (-not $tg) { break }
+            if ($tg.StartsWith('\??\')) { $tg = $tg.Substring(4) }
+            if (-not [IO.Path]::IsPathRooted($tg)) { $tg = [IO.Path]::Combine((Split-Path -Parent $rp), $tg) }
+            $q = (Get-LongPath $tg) + $p.Substring($rp.Length)
+        } catch { break }
+        if ($q -ieq $p) { break }
+        $p = $q
+    }
+    return $p
+}
+
+function Get-KeepForms([string]$Path) {
+    # forms of a full path that are compared: long path (8.3 expanded, . and .. resolved) and its real path
+    $l = Get-LongPath $Path
+    $r = Get-RealPath $l
+    if ($r -ieq $l) { return @($l) }
+    return @($l, $r)
+}
+
+function Read-KeepList([string]$File) {
+    # .ok = $false (missing, unreadable, a line that cannot be read, no entry) -> fail-closed: every candidate is blocked
+    # .sha256 = SHA-256 of the very bytes that are parsed (read once; 1.4.15 plan lock), "" when they cannot be read
+    $kl = [ordered]@{ ok = $false; file = $File; entries = @(); error = ""; notified = $false; notify_note = ""; notice_status = "not_applicable"
+                      sha256 = "" }
+    if (-not (Test-Path -LiteralPath $File -PathType Leaf)) { $kl.error = "keep list not found: $File"; return $kl }
+    try {
+        $bytes = [IO.File]::ReadAllBytes($File)
+        $kl.sha256 = Get-Sha256Hex $bytes
+        # decoded like Get-Content -Encoding UTF8 did: a StreamReader (UTF-8, byte order mark detected and dropped),
+        # lines split at CR LF / LF / CR, no empty line after a final line break
+        $sr = New-Object IO.StreamReader((New-Object IO.MemoryStream(, $bytes)), (New-Object Text.UTF8Encoding $false), $true)
+        $raw = @()
+        try { while ($null -ne ($ln = $sr.ReadLine())) { $raw += $ln } } finally { $sr.Dispose() }
+    } catch { $kl.error = "keep list unreadable: $File ($($_.Exception.Message))"; return $kl }
+    $entries = @()
+    $no = 0
+    foreach ($line in $raw) {
+        $no += 1
+        $t = "$line".Trim()
+        if (-not $t -or $t.StartsWith("#")) { continue }
+        $s = ($t -replace '\s#.*$', '').Trim().Replace('/', '\')
+        try {
+            if (-not $s) { throw "no path before the comment" }
+            if ($s.IndexOfAny([IO.Path]::GetInvalidPathChars()) -ge 0) { throw "invalid character in path" }
+            if ($s -match '^[A-Za-z]:(?!\\)') { throw "drive without \ (drive-relative path)" }
+            if ($s.StartsWith('\') -and -not $s.StartsWith('\\')) { throw "path without a drive" }
+            if ($s.LastIndexOf(':') -gt 1) { throw "':' inside the path" }
+            if (-not [IO.Path]::IsPathRooted($s)) { $s = [IO.Path]::Combine($ProjectRoot, $s) }
+            if ($s.IndexOfAny([char[]]@('*', '?')) -lt 0) {
+                $entries += [pscustomobject]@{ line = $no; raw = $t; wild = $false; forms = @(Get-KeepForms ([IO.Path]::GetFullPath($s))) }
+                continue
+            }
+            # pattern: the folder before the first wildcard part is normalised; '.' / '..' after a wildcard cannot be
+            $segs = $s.TrimEnd('\').Split('\')
+            $idx = 0
+            while ($segs[$idx].IndexOfAny([char[]]@('*', '?')) -lt 0) { $idx += 1 }
+            if ($idx -eq 0) { throw "wildcard in the drive part" }
+            $rest = @($segs[$idx..($segs.Count - 1)])
+            if (@($rest | Where-Object { $_ -eq "." -or $_ -eq ".." -or $_ -eq "" }).Count) { throw "'.', '..' or '\\' after a wildcard" }
+            $pre = $segs[0..($idx - 1)] -join '\'
+            if ($pre -match '^[A-Za-z]:$') { $pre += '\' }
+            if ($pre.StartsWith('\\') -and $idx -lt 4) { throw "wildcard in the server / share part" }
+            $prefixes = @(Get-KeepForms ([IO.Path]::GetFullPath($pre)))
+            $tail = ($rest -join '\').Replace('`', '``').Replace('[', '`[').Replace(']', '`]')
+            $pats = @($prefixes | ForEach-Object { [Management.Automation.WildcardPattern]::Escape($_.TrimEnd('\')) + '\' + $tail })
+            $entries += [pscustomobject]@{ line = $no; raw = $t; wild = $true; prefixes = $prefixes; patterns = $pats }
+        } catch {
+            $kl.error = "keep list line $no cannot be read ($($_.Exception.Message)): $t"
+            return $kl
+        }
+    }
+    if ($entries.Count -eq 0) { $kl.error = "keep list has no entry (only comments / blank lines): $File"; return $kl }
+    $kl.entries = $entries
+    $kl.ok = $true
+    return $kl
+}
+
+function Get-PatternLiteral([string]$Pattern) {
+    # leading literal text of a -like pattern (escapes removed), up to its first wildcard character
+    $sb = New-Object System.Text.StringBuilder
+    for ($i = 0; $i -lt $Pattern.Length; $i++) {
+        $ch = $Pattern[$i]
+        if ($ch -eq '`' -and $i + 1 -lt $Pattern.Length) { $i += 1; [void]$sb.Append($Pattern[$i]); continue }
+        if ($ch -eq '*' -or $ch -eq '?' -or $ch -eq '[') { break }
+        [void]$sb.Append($ch)
+    }
+    return $sb.ToString()
+}
+
+function Find-PatternInTree([string]$Dir, $Patterns) {
+    # first entry below folder $Dir (any depth) that matches one of $Patterns ('*' also crosses '\'), or why the folder
+    # could not be checked (fail-closed); $null = nothing below matches or $Dir is not a folder. Junctions / symlinks
+    # below $Dir are not followed (their own path is still compared). Only patterns whose literal start is compatible
+    # with $Dir are tried (no other entry below $Dir can match), so most folders are never listed
+    $d = $Dir.TrimEnd('\') + '\'
+    $pats = @(foreach ($p in $Patterns) {
+        $l = Get-PatternLiteral $p
+        if ($l.StartsWith($d, [StringComparison]::OrdinalIgnoreCase) -or $d.StartsWith($l, [StringComparison]::OrdinalIgnoreCase)) { $p }
+    })
+    if (-not $pats.Count -or -not (Test-Path -LiteralPath $Dir -PathType Container)) { return $null }
+    $n = 0
+    try {
+        $stack = New-Object System.Collections.Stack
+        $stack.Push((New-Object IO.DirectoryInfo $Dir))
+        while ($stack.Count) {
+            foreach ($fi in $stack.Pop().EnumerateFileSystemInfos()) {
+                $n += 1
+                if ($n -gt $Script:KeepTreeMax) { return [ordered]@{ fail = "more than $($Script:KeepTreeMax) entries below, not all checked" } }
+                foreach ($p in $pats) { if ($fi.FullName -like $p) { return [ordered]@{ path = $fi.FullName } } }
+                if ($fi -is [IO.DirectoryInfo] -and -not ($fi.Attributes -band [IO.FileAttributes]::ReparsePoint)) { $stack.Push($fi) }
+            }
+        }
+    } catch { return [ordered]@{ fail = "entries below cannot be listed ($($_.Exception.GetType().Name))" } }
+    return $null
+}
+
+function Get-KeepListMatch([string]$Path) {
+    # the keep list entry that forbids deleting $Path, else $null; list not usable -> always a match (fail-closed)
+    if (-not $KeepMaster.ok) { return [ordered]@{ entry = "(keep list not usable)"; line = 0; how = "fail-closed: $($KeepMaster.error)" } }
+    $forms = @(Get-KeepForms $Path)
+    foreach ($e in $KeepMaster.entries) {
+        foreach ($c in $forms) {
+            if ($e.wild) {
+                # the path itself and every parent folder against the pattern
+                $a = $c
+                while ($a) {
+                    if (@($e.patterns | Where-Object { $a -like $_ }).Count) {
+                        $how = if ($a -ieq $c) { "matches the pattern" } else { "inside $a (matches the pattern)" }
+                        return [ordered]@{ entry = $e.raw; line = $e.line; how = $how }
+                    }
+                    $a = [IO.Path]::GetDirectoryName($a)
+                }
+                # a parent of the folder the pattern looks in can hold matches
+                foreach ($k in $e.prefixes) {
+                    if (Test-Under $k $c) { return [ordered]@{ entry = $e.raw; line = $e.line; how = "contains $k (where the pattern matches)" } }
+                }
+                # a folder that holds (at any depth) an entry matching the pattern (KL-4: reports\*\package, x\*.zip)
+                $t = Find-PatternInTree $c $e.patterns
+                if ($t) {
+                    $how = if ($t.Contains("fail")) { "contains kept (pattern): fail-closed, $($t.fail)" } else { "contains kept (pattern) $($t.path)" }
+                    return [ordered]@{ entry = $e.raw; line = $e.line; how = $how }
+                }
+            } else {
+                foreach ($k in $e.forms) {
+                    if (Test-Under $c $k) {
+                        $how = if ($c.TrimEnd('\') -ieq $k.TrimEnd('\')) { "is a kept path" } else { "inside kept $k" }
+                        return [ordered]@{ entry = $e.raw; line = $e.line; how = $how }
+                    }
+                    if (Test-Under $k $c) { return [ordered]@{ entry = $e.raw; line = $e.line; how = "contains kept $k" } }
+                }
+            }
+        }
+    }
+    return $null
+}
+
+function Test-KeepListBlocked($G, [string]$Path) {
+    # called right before every deletion / selection: $true = never delete $Path (recorded once per group + path)
+    $m = Get-KeepListMatch $Path
+    if (-not $m) { return $false }
+    $key = "$($G.group)|$Path".ToLowerInvariant()
+    if (-not $Script:KeepBlockedSeen.ContainsKey($key)) {
+        $Script:KeepBlockedSeen[$key] = $true
+        [void]$Script:KeepBlocked.Add([ordered]@{ group = $G.group; path = $Path; entry = $m.entry; line = $m.line; how = $m.how })
+        [void]$G.skipped.Add([ordered]@{ path = $Path; reason = "KEEP_LIST: $($m.how); entry '$($m.entry)' (keep list line $($m.line)): not deleted" })
+    }
+    return $true
+}
+
+if ($Apply -and $KeepListGiven) {
+    # 1.4.15: -Apply reads only the master keep list of the project (a plan made with another list is not applied)
+    $kg = @(Get-KeepForms ([IO.Path]::GetFullPath($KeepListGiven)))
+    $kd = @(Get-KeepForms ([IO.Path]::GetFullPath($KeepListDefault)))
+    if ($kg[$kg.Count - 1] -ine $kd[$kd.Count - 1]) {
+        Write-Host "-Apply: -KeepListMaster must be empty or $KeepListDefault (given: $KeepListGiven). Nothing done." -ForegroundColor Red
+        exit 2
+    }
+}
+$KeepMaster = Read-KeepList $KeepListMaster
+$Script:KeepTreeMax = 200000                      # entries listed below one candidate folder for a pattern, then blocked
+$Script:KeepBlocked = New-Object System.Collections.ArrayList
+$Script:KeepBlockedSeen = @{}
+if (-not $KeepMaster.ok) {
+    Write-Host "KEEP_LIST ERROR: $($KeepMaster.error). Fail-closed: nothing is deleted (every candidate counts as blocked)." -ForegroundColor Red
+}
+
 # never deleted, whatever a group finds (prefix match, case-insensitive, long paths: no 8.3 short names)
 $Protected = [ordered]@{}
 $Protected[$LocalApp.TrimEnd('\') + '\'] = "%LOCALAPPDATA%\DemandForecast"
@@ -394,6 +632,7 @@ function New-Group([string]$Name, [string[]]$Roots) {
 function Add-Candidate($G, [string]$Path, [string]$Kind, [long]$Bytes, [datetime]$Time, [string]$Reason, [string]$Allow = "") {
     $why = Get-ProtectReason $Path $Allow
     if ($why) { [void]$G.skipped.Add([ordered]@{ path = $Path; reason = "protected ($why)" }); return $null }
+    if (Test-KeepListBlocked $G $Path) { return $null }
     $c = [ordered]@{ path = $Path; kind = $Kind; bytes = $Bytes; age_days = [math]::Round(($Now - $Time).TotalDays, 1)
                      last_write = $Time.ToString("s"); reason = $Reason }
     if ($Allow) { $c["allow"] = $Allow }
@@ -508,6 +747,10 @@ function Get-BackupGroup {
         foreach ($z in @($before | Where-Object { ($it - $_.t).TotalMinutes -le 20 })) {
             if (-not $keep.ContainsKey($z.name)) { $keep[$z.name] = "taken within 20 min before install of $($ins.version) $($it.ToString('s'))" }
         }
+    }
+    foreach ($z in $srt) {
+        # keep list (18/11): a listed zip is kept like a retained one, so its .sha256 / config-* companions stay too
+        if (-not $keep.ContainsKey($z.name) -and (Test-KeepListBlocked $g $z.item.FullName)) { $keep[$z.name] = "KEEP_LIST" }
     }
     $g["kept"] = New-Object System.Collections.ArrayList
     foreach ($z in $srt) {
@@ -1019,6 +1262,8 @@ function Get-DistGroup {
         $path = Join-Path $ProjectRoot $Matches[1]
         $reason = $Matches[2]
         if (-not (Test-Path -LiteralPath $path)) { continue }
+        # keep list: a kept plan entry stops prune-artifacts.ps1 -Apply (Invoke-DistApply)
+        if (Test-KeepListBlocked $g $path) { $g["keep_list_blocked"] = $true; continue }
         $it = Get-Item -LiteralPath $path -Force
         if ($it.PSIsContainer) { $t = Get-Tree $path; $bytes = Get-Sum $t.files } else { $bytes = $it.Length }
         # listed only: dist\ is protected here, deletion is left to prune-artifacts.ps1 itself
@@ -1039,6 +1284,7 @@ function Remove-Candidate($G, $C) {
     $allow = if ($C.Contains("allow")) { $C.allow } else { "" }
     $why = Get-ProtectReason $p $allow
     if ($why) { [void]$G.errors.Add("${p}: refused, protected ($why)"); return }
+    if (Test-KeepListBlocked $G $p) { return }
     try {
         if (-not (Test-Path -LiteralPath $p)) { Add-Skip $G $p "gone before deletion"; return }
         $it = Get-Item -LiteralPath $p -Force
@@ -1092,6 +1338,9 @@ function Remove-Candidate($G, $C) {
         if ($it.PSIsContainer) {
             $t = Get-Tree $p
             if ($t.reparse.Count -or $t.errors.Count) { Add-TreeIssues $G $t; Add-Skip $G $p "reparse point / unreadable entry at deletion time: not deleted"; return }
+            # 1.4.15: a folder written during this run (the folder itself or anything in it) is not the planned one
+            $new = @(@($it) + $t.files.ToArray() + $t.dirs.ToArray() | Where-Object { $_.LastWriteTime -ge $Now } | Select-Object -First 1)
+            if ($new.Count) { Add-Skip $G $p "changed after the plan ($($new[0].FullName) written at or after the start of this run): not deleted"; return }
         }
         Remove-Item -LiteralPath $p -Recurse -Force -Confirm:$false
         $C["deleted"] = $true
@@ -1143,6 +1392,12 @@ function Invoke-LogArchive($G) {
 
 function Invoke-DistApply($G) {
     if (-not $IncludeDist) { return }
+    # keep list: prune-artifacts.ps1 deletes its own plan, so it never runs while the list is not usable or one of its
+    # plan entries is kept (checked again here, right before)
+    $kb = @($G.candidates | Where-Object { Test-KeepListBlocked $G $_.path })
+    if (-not $KeepMaster.ok -or $G.Contains("keep_list_blocked") -or $kb.Count) {
+        [void]$G.errors.Add("prune-artifacts.ps1 -Apply not run: KEEP_LIST $(if ($KeepMaster.ok) { 'keeps an entry of its plan' } else { 'not usable' })"); return
+    }
     $prune = Join-Path $ProjectRoot "scripts\prune-artifacts.ps1"
     foreach ($r in @((Join-Path $ProjectRoot "dist"), (Join-Path $ProjectRoot "release"))) {
         # checked again right before the deletion (see Get-DistGroup)
@@ -1155,13 +1410,123 @@ function Invoke-DistApply($G) {
     $p = @{ Apply = $true }
     $pk = @(@($DistKeep) + @(if ($Inst.ok) { $Inst.keep }) | Sort-Object -Unique)    # + current / previous (08/11)
     if ($pk.Count) { $p["Keep"] = $pk }
+    # 1.4.15 (H1): prune-artifacts.ps1 -Apply deletes the plan it computes again, so its dry run (same -Keep) right
+    # before must list exactly the planned candidates that still exist (dist_versions may have deleted some of them)
+    $expect = @{}
+    foreach ($c in $G.candidates) { if (Test-Path -LiteralPath $c.path) { $expect[(Get-LongPath $c.path).ToLowerInvariant()] = $c } }
+    $dry = Get-PruneDeletePaths $prune $pk
+    if (-not $dry.ok) { [void]$G.errors.Add("prune-artifacts.ps1 -Apply not run: its dry run cannot be compared with the plan ($($dry.error))"); return }
+    $extra = @($dry.paths | Where-Object { -not $expect.ContainsKey($_) })
+    $miss = @($expect.Keys | Where-Object { $dry.paths -notcontains $_ })
+    $G["apply_check"] = [ordered]@{ planned_existing = $expect.Count; dry_run_delete = $dry.paths.Count; not_planned = $extra; planned_not_listed = $miss }
+    if ($extra.Count -or $miss.Count) {
+        [void]$G.errors.Add("prune-artifacts.ps1 -Apply not run: its dry run differs from the plan (not planned: $($extra -join ', '); planned, not listed: $($miss -join ', '))"); return
+    }
+    $before = Get-DistEntries
     try {
         $out = @(& $prune @p *>&1 | ForEach-Object { "$_" })
         $G["apply_output"] = $out
         foreach ($c in $G.candidates) {
-            if (-not (Test-Path -LiteralPath $c.path)) { $c["deleted"] = $true; $G.deleted_count += 1; $G.deleted_bytes += $c.bytes }
+            $k = (Get-LongPath $c.path).ToLowerInvariant()
+            if ($expect.ContainsKey($k) -and -not (Test-Path -LiteralPath $c.path)) { $c["deleted"] = $true; $G.deleted_count += 1; $G.deleted_bytes += $c.bytes }
         }
     } catch { [void]$G.errors.Add("prune-artifacts.ps1 -Apply: $($_.Exception.Message)") }
+    # anything under dist\ / release\ gone that the plan did not list -> error (exit 1)
+    $after = @{}
+    foreach ($e in (Get-DistEntries)) { $after[$e] = $true }
+    foreach ($e in $before) {
+        if (-not $after.ContainsKey($e) -and -not $expect.ContainsKey($e)) { [void]$G.errors.Add("${e}: disappeared while prune-artifacts.ps1 -Apply ran, not in the plan") }
+    }
+}
+
+function Get-PruneDeletePaths([string]$Prune, $Keep) {
+    # DELETE rows of a prune-artifacts.ps1 dry run (lower-case long paths); .ok = $false when its output cannot be read
+    # completely: an exception, a DELETE row in another format, or no final "Dry run: nothing deleted." line
+    $r = [ordered]@{ ok = $false; paths = @(); error = "" }
+    $p = @{}
+    if (@($Keep).Count) { $p["Keep"] = @($Keep) }
+    try { $out = @(& $Prune @p *>&1 | ForEach-Object { "$_" }) }
+    catch { $r.error = "dry run failed: $($_.Exception.Message)"; return $r }
+    $paths = @()
+    foreach ($line in $out) {
+        if ($line -notmatch '^DELETE\b') { continue }
+        if ($line -notmatch '^DELETE\s+\S+ MB  (.+?)  - (.*)$') { $r.error = "DELETE row not understood: $line"; return $r }
+        $paths += (Get-LongPath (Join-Path $ProjectRoot $Matches[1])).ToLowerInvariant()
+    }
+    if (-not @($out | Where-Object { $_.StartsWith("Dry run: nothing deleted.") }).Count) { $r.error = "no 'Dry run: nothing deleted.' line (output incomplete)"; return $r }
+    $r.paths = @($paths | Sort-Object -Unique)
+    $r.ok = $true
+    return $r
+}
+
+function Get-DistEntries {
+    # top-level entries of dist\ and release\ (prune-artifacts.ps1 deletes only these), lower-case long paths
+    $res = @()
+    foreach ($r in @((Join-Path $ProjectRoot "dist"), (Join-Path $ProjectRoot "release"))) {
+        if (Test-Path -LiteralPath $r -PathType Container) {
+            $res += @(Get-ChildItem -LiteralPath $r -Force | ForEach-Object { (Get-LongPath $_.FullName).ToLowerInvariant() })
+        }
+    }
+    return $res
+}
+
+function Send-KeepListNotice {
+    # ONE notice per -Apply run with an unusable keep list: toast + phone through scripts\ops\runner\notify.py (status
+    # text only, no path); python = <project>\.venv; not found -> recorded in the report, never raised. Sent only when
+    # notify.py exits 0; a failed notice is logged (notice_status = failed) and tried again by the next -Apply run
+    $ErrorActionPreference = "Continue"           # notify.py may write to stderr; only its exit code matters here
+    $KeepMaster.notice_status = "failed"
+    $py = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+    $nf = @((Join-Path $PSScriptRoot "runner\notify.py"), (Join-Path $ProjectRoot "scripts\ops\runner\notify.py")) |
+          Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+    if (-not (Test-Path -LiteralPath $py -PathType Leaf) -or -not $nf) { $KeepMaster.notify_note = "notice not sent: python or runner\notify.py not found"; return }
+    try {
+        & $py $nf "Bo don dung: KEEP_LIST loi" "don_dep_dinh_ky.ps1 -Apply: keep_list thieu / rong / co dong loi. Khong xoa gi (fail-closed). Xem logs\don_dep." --priority high 2>&1 | Out-Null
+        $rc = $LASTEXITCODE
+        if ($rc -eq 0) { $KeepMaster.notified = $true; $KeepMaster.notice_status = "sent" }
+        $KeepMaster.notify_note = if ($rc -eq 0) { "notify.py exit code 0" } else { "notice not sent: notify.py exit code $rc" }
+    } catch { $KeepMaster.notify_note = "notice not sent: $($_.Exception.GetType().Name)" }
+}
+
+# ------------------------------------------------------------------ plan lock (1.4.15, owner 19/11/2026)
+function Get-SortedText($Items) {
+    # lower case (invariant), ordinal sort (never culture dependent), one line per item
+    $l = New-Object System.Collections.Generic.List[string]
+    foreach ($i in @($Items)) { if ($null -ne $i) { $l.Add("$i".ToLowerInvariant()) } }
+    $l.Sort([StringComparer]::Ordinal)
+    return , $l
+}
+
+function Get-PlanText($Results) {
+    # canonical plan text (PLAN_HASH): run options, group status, every candidate and every keep list block; no size,
+    # no time; paths lower case with \ ; LF line ends and a final LF
+    $kl = @(Get-KeepForms ([IO.Path]::GetFullPath($KeepListMaster)))
+    $t = New-Object System.Collections.Generic.List[string]
+    $t.Add("v=1")
+    $t.Add("groups=" + ((Get-SortedText $Selected) -join ','))
+    $t.Add("include_dist=" + $(if ($IncludeDist) { "1" } else { "0" }))
+    $t.Add("dist_keep=" + ((Get-SortedText $DistKeep) -join ','))
+    $t.Add("tmp_keep=" + ((Get-SortedText $TmpKeep) -join ','))
+    $t.Add("claude_keep=" + ((Get-SortedText $ClaudeKeep) -join ','))
+    $t.Add("tmp_min_age_hours=$TmpMinAgeHours")
+    $t.Add("claude_min_age_hours=$ClaudeMinAgeHours")
+    $t.Add("project_root=" + $ProjectRoot.ToLowerInvariant())
+    $t.Add("tmp_root=" + $TmpRoot.ToLowerInvariant())
+    $t.Add("keep_list=" + $kl[$kl.Count - 1].ToLowerInvariant())
+    $rows = New-Object System.Collections.Generic.List[string]
+    foreach ($g in $Results) {
+        $st = if ($g.errors.Count -and $g.status -eq "ok") { "error" } else { $g.status }    # as the report shows it
+        $t.Add("group|$($g.group)|$st".ToLowerInvariant())
+        foreach ($c in $g.candidates) {
+            $r = "$($g.group)|$($c.kind)|$($c.path.Replace('/', '\'))"
+            if ($c.Contains("archive")) { $r += "|$($c.archive.Replace('/', '\'))" }
+            $rows.Add("C|" + $r.ToLowerInvariant())
+        }
+    }
+    foreach ($b in $Script:KeepBlocked) { $rows.Add("B|" + "$($b.group)|$($b.path.Replace('/', '\'))|$($b.entry)".ToLowerInvariant()) }
+    $rows.Sort([StringComparer]::Ordinal)
+    foreach ($r in $rows) { $t.Add($r) }
+    return ($t -join "`n") + "`n"
 }
 
 # ------------------------------------------------------------------ main
@@ -1191,7 +1556,33 @@ foreach ($fn in @($fns.Keys)) {
         $results += , $g
     }
 }
-if ($Apply) {
+# 1.4.15 plan lock: hash of the plan just computed, compared BEFORE anything is archived or deleted
+$PlanBytes = (New-Object Text.UTF8Encoding $false).GetBytes((Get-PlanText $results))
+$PlanHashNow = Get-Sha256Hex $PlanBytes
+$Refused = @()
+$gate = if (-not $Apply) { "DRY_RUN" } elseif (-not $KeepMaster.ok) { "KEEP_LIST_NOT_USABLE" } else { "MATCHED" }
+if ($gate -eq "MATCHED") {
+    # keep list not usable: the fail-closed behaviour of 18/11 stays (every candidate blocked, exit 1, notice)
+    $hexRe = '^[0-9a-fA-F]{64}$'
+    $ph = $PlanHash.Trim().ToLowerInvariant(); $kh = $KeepListHash.Trim().ToLowerInvariant()
+    if (-not $ph) { $Refused += "-PlanHash missing: run without -Apply, check the plan, then pass its PLAN_HASH" }
+    elseif ($ph -notmatch $hexRe) { $Refused += "-PlanHash is not a SHA-256 (64 hex digits): $PlanHash" }
+    if (-not $kh) { $Refused += "-KeepListHash missing: pass the KEEP_LIST_SHA256 of the plan" }
+    elseif ($kh -notmatch $hexRe) { $Refused += "-KeepListHash is not a SHA-256 (64 hex digits): $KeepListHash" }
+    if ($kh -match $hexRe -and $kh -ne $KeepMaster.sha256) { $Refused += "keep_list changed after the plan (KEEP_LIST_SHA256 now $($KeepMaster.sha256), -KeepListHash $kh)" }
+    if ($ph -match $hexRe -and $ph -ne $PlanHashNow) { $Refused += "plan changed (PLAN_HASH now $PlanHashNow, -PlanHash $ph): run the dry run again and check it" }
+    if ($Refused.Count) {
+        $gate = "REFUSED"
+        $mode = "APPLY_REFUSED"
+        $report.mode = $mode
+        foreach ($r in $Refused) { Write-Host "APPLY REFUSED: $r" -ForegroundColor Red }
+        Write-Host "Nothing deleted (exit 2)." -ForegroundColor Red
+    }
+}
+$report["plan_hash"] = $PlanHashNow
+$report["apply_gate"] = $gate
+if ($Refused.Count) { $report["apply_refused_reasons"] = @($Refused) }
+if ($Apply -and -not $Refused.Count) {
     foreach ($g in $results) {
         if ($g.status -ne "ok") { continue }
         $g["applied"] = $true
@@ -1221,11 +1612,24 @@ $report.kept_uncertain = $uncertain
 try { $report.worktrees = Get-WorktreeInfo }
 catch { $report.errors += "worktree info: $($_.Exception.Message)" }
 $failed = @($results | Where-Object { $_.status -eq "error" }).Count -gt 0
-$report.exit_code = if ($failed) { 1 } else { 0 }
+if (-not $KeepMaster.ok) {
+    $failed = $true                               # keep list not usable: nothing deleted, exit 1
+    if ($Apply) { Send-KeepListNotice }           # once per run
+}
+$report["keep_list"] = [ordered]@{ file = $KeepMaster.file; ok = $KeepMaster.ok; entries = @($KeepMaster.entries).Count; error = $KeepMaster.error
+                                   blocked_count = $Script:KeepBlocked.Count; blocked = $Script:KeepBlocked
+                                   notified = $KeepMaster.notified; notify_note = $KeepMaster.notify_note
+                                   notice_status = $KeepMaster.notice_status; sha256 = $KeepMaster.sha256 }
+$planFile = Join-Path $outDir "don_dep-$stamp.plan.txt"
+$report["plan_text_file"] = $planFile
+$exitCode = if ($Refused.Count) { 2 } elseif ($failed) { 1 } else { 0 }
+$report.exit_code = $exitCode
 
 $gb = { param($b) "{0:N3} GB" -f ($b / 1GB) }
 $lines = @("Don dep dinh ky / periodic cleanup  mode=$mode  $($Now.ToString('s'))  project=$ProjectRoot  groups=$($Selected -join ',')")
-if (-not $Apply) { $lines += "DRY RUN: nothing deleted. Re-run with -Apply to delete the candidates (dist only with -IncludeDist)." }
+if (-not $Apply) { $lines += "DRY RUN: nothing deleted. To delete exactly these candidates: the same arguments + -Apply -PlanHash <PLAN_HASH> -KeepListHash <KEEP_LIST_SHA256> (dist only with -IncludeDist)." }
+foreach ($r in $Refused) { $lines += "APPLY REFUSED: $r" }
+if ($Refused.Count) { $lines += "APPLY REFUSED: nothing archived or deleted, exit 2." }
 foreach ($g in $results) {
     $lines += ("{0,-13} {1,-8} candidates {2,5}  {3,12}  before {4,12}  after {5,12}{6}  uncertain {7}  skipped {8}  errors {9}  {10}" -f
                $g.group, $g.status, $g.candidate_count, (& $gb $g.candidate_bytes), (& $gb $g.before_bytes), (& $gb $g.after_bytes),
@@ -1236,6 +1640,18 @@ $lines += ("TOTAL         candidates {0,5}  {1,12}  before {2,12}  after {3,12} 
            (& $gb $tot.deleted_bytes), $tot.kept_uncertain_count, (& $gb $tot.kept_uncertain_bytes))
 if (-not $Apply) { $lines += "* after = projection if applied (logs: archives add their compressed size; dist = prune-artifacts.ps1 plan, not in the totals)" }
 foreach ($u in $uncertain) { $lines += ("kept_uncertain  {0,-13} {1,12}  {2}  - {3}" -f $u.group, (& $gb $u.bytes), $u.path, $u.reason) }
+# keep list (18/11): blocked entries next to the candidates (dist plan entries are not in the candidate total)
+$lines += ("MUC BI KEEP_LIST CHAN / blocked by the keep list: {0}  |  {1}: {2}  |  keep list {3} ({4})" -f $Script:KeepBlocked.Count,
+           $(if ($Apply) { "candidates" } else { "se xoa / to delete" }), $tot.candidate_count, $KeepMaster.file,
+           $(if ($KeepMaster.ok) { "$(@($KeepMaster.entries).Count) entries" } else { "NOT USABLE" }))
+foreach ($b in $Script:KeepBlocked) { $lines += ("KEEP_LIST  {0,-13} {1}  - {2}; entry '{3}' (keep list line {4})" -f $b.group, $b.path, $b.how, $b.entry, $b.line) }
+if (-not $KeepMaster.ok) {
+    $lines += "KEEP_LIST ERROR: $($KeepMaster.error). Fail-closed: nothing deleted, exit 1."
+    if ($Apply) { $lines += "KEEP_LIST notice: $(if ($KeepMaster.notified) { 'da bao / sent once' } else { 'BAO THAT BAI / notify FAILED (next -Apply run tries again)' }) ($($KeepMaster.notify_note))" }
+}
+# plan lock (1.4.15): the two hashes -Apply must be given (the hashed text: the .plan.txt next to the report)
+$lines += "PLAN_HASH: $PlanHashNow"
+$lines += "KEEP_LIST_SHA256: $(if ($KeepMaster.sha256) { $KeepMaster.sha256 } else { '(keep list not read)' })"
 if ($Apply) {
     # owner 08/11: every candidate of an APPLY run in the .txt, deleted or not (with the reason)
     foreach ($g in $results) {
@@ -1251,7 +1667,8 @@ if ($Apply) {
                 if ($er.Count) { $why = "error: $($er[$er.Count - 1])" }
             }
             if (-not $why) {
-                $why = if (-not $g.Contains("applied")) { "group not applied (status $($g.status))" }
+                $why = if ($Refused.Count) { "apply refused (plan / keep list hash), exit 2" }
+                       elseif (-not $g.Contains("applied")) { "group not applied (status $($g.status))" }
                        elseif ($g.group -eq "dist" -and -not $IncludeDist) { "dist: deleted only with -IncludeDist" }
                        else { "no reason recorded" }
             }
@@ -1271,14 +1688,14 @@ try {
                          updated_at = $Now.ToString("s"); installs = $Script:InstallHistory }
         $h | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $HistFile -Encoding UTF8
     }
+    [IO.File]::WriteAllBytes($planFile, $PlanBytes)          # exactly the bytes of PLAN_HASH
     $json = Join-Path $outDir "don_dep-$stamp.json"
     $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $json -Encoding UTF8
     $lines += "Report: $json"
     Set-Content -LiteralPath (Join-Path $outDir "don_dep-$stamp.txt") -Value $lines -Encoding UTF8
 } catch {
     $lines += "Report NOT written: $($_.Exception.Message)"
-    $failed = $true
+    if ($exitCode -eq 0) { $exitCode = 1 }
 }
 foreach ($l in $lines) { Write-Host $l }
-if ($failed) { exit 1 }
-exit 0
+exit $exitCode

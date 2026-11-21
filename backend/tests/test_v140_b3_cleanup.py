@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -57,7 +58,11 @@ def _set_times(tmp: Path, items: list[tuple[Path, datetime]]) -> None:
     assert p.returncode == 0, (p.stdout + p.stderr).decode("utf-8", errors="replace")
 
 
-def _run(script: Path, args: list[str], la: Path) -> tuple[int, str]:
+_VALID_KEEP = "# unrelated entry: keeps nothing these tests select\nzz_no_such_folder_zz\n"
+_HASH_LINE = re.compile(r"^(PLAN_HASH|KEEP_LIST_SHA256): ([0-9a-f]{64})\s*$", re.M)
+
+
+def _exec(script: Path, args: list[str], la: Path) -> tuple[int, str]:
     env = dict(os.environ)
     env["LOCALAPPDATA"] = str(la)
     temp = la.parent / "TEMP"                       # the deploy_temp group never sees the real %TEMP%
@@ -66,6 +71,33 @@ def _run(script: Path, args: list[str], la: Path) -> tuple[int, str]:
     p = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script),
                         *args], capture_output=True, timeout=300, env=env)
     return p.returncode, (p.stdout + p.stderr).decode("utf-8", errors="replace")
+
+
+def _run(script: Path, args: list[str], la: Path, lock: bool = True) -> tuple[int, str]:
+    """Runs a script. For the cleanup: a valid master keep list is always given. With -Apply (1.4.15 plan lock) the keep
+    list is the project's own docs\\quy-tac\\keep_list.txt (the only one -Apply accepts) and, when `lock` is true, the
+    same arguments are run first WITHOUT -Apply and their PLAN_HASH / KEEP_LIST_SHA256 are passed to the -Apply run (what
+    the owner does by hand). A dry run that prints no hash (refused, keep list not usable) passes none: the -Apply run
+    then shows its own refusal / fail-closed behaviour."""
+    args = list(args)
+    if Path(script).name == "don_dep_dinh_ky.ps1":
+        if "-Apply" in args and "-KeepListMaster" not in args:
+            proj = Path(args[args.index("-ProjectRoot") + 1]) if "-ProjectRoot" in args else Path(script).resolve().parents[2]
+            if proj.is_dir():
+                kf = proj / "docs" / "quy-tac" / "keep_list.txt"
+                kf.parent.mkdir(parents=True, exist_ok=True)
+                kf.write_text(_VALID_KEEP, encoding="ascii")
+            if lock and "-PlanHash" not in args:
+                code, out = _exec(script, [a for a in args if a != "-Apply"], la)
+                h = dict(_HASH_LINE.findall(out))
+                if "PLAN_HASH" in h and "KEEP_LIST_SHA256" in h:
+                    args += ["-PlanHash", h["PLAN_HASH"], "-KeepListHash", h["KEEP_LIST_SHA256"]]
+        elif "-KeepListMaster" not in args:
+            # 18/11/2026: the master keep list is mandatory (missing = fail-closed); a valid one that keeps an unrelated path
+            kf = la.parent / "_valid_keep_list.txt"
+            kf.write_text(_VALID_KEEP, encoding="ascii")
+            args += ["-KeepListMaster", str(kf)]
+    return _exec(script, args, la)
 
 
 def _report(out: str) -> dict:
@@ -669,7 +701,8 @@ def test_worktree_info_lists_finished_worktrees_only(tmp_path: Path):
     assert (res["busy"] / "new.txt").is_file() and (res["done"] / ".git").is_dir()
 
 
-_STUB_CLEANUP = ("param([string]$ProjectRoot = '', [switch]$Apply, [switch]$IncludeDist, [string[]]$DistKeep = @(), [string]$TmpRoot = '')\n"
+_STUB_CLEANUP = ("param([string]$ProjectRoot = '', [switch]$Apply, [switch]$IncludeDist, [string[]]$DistKeep = @(), [string]$TmpRoot = '',\n"
+                 "      [string]$KeepListMaster = '', [string]$PlanHash = '', [string]$KeepListHash = '')   # 1.4.15: -Apply needs these\n"
                  "Set-Content -LiteralPath (Join-Path $PSScriptRoot 'ran.txt') -Encoding UTF8 "
                  "-Value \"root=$ProjectRoot|apply=$Apply|dist=$IncludeDist|keep=$($DistKeep -join ',')|tmp=$TmpRoot\"\n"
                  "exit 3\n")

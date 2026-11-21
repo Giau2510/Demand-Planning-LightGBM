@@ -37,6 +37,7 @@ documents itself in its header; this file is the overview.
 | `don_dep_dinh_ky.ps1`, `register-don-dep-task.ps1` | Weekly cleanup (dry run unless `-Apply`); see its header and the rules below. |
 | `don_dep_current.ps1` | Stable entry point of the cleanup: runs `don_dep_dinh_ky.ps1` of the INSTALLED version (`current.txt`); exit 2 when `current.txt` or that script is missing. |
 | `don_dep_giu.txt`, `don_dep_ket_luan.txt` | `reports\` folders kept entirely / concluded experiments (read next to the script that runs). |
+| `<project>\docs\quy-tac\keep_list.txt` | Master keep list of the cleanup (`-KeepListMaster`, owner 18/11/2026): paths / wildcard patterns never deleted by any group. |
 | `ops_config.py` | Machine paths of all the Python scripts above (next section). |
 | `tests\` | Isolated tests (temporary folders, fake ntfy / app servers, no production access). |
 
@@ -101,6 +102,43 @@ of the INSTALLED version (`-Direct` registers this folder's script instead). The
 `don_dep_giu.txt` / `don_dep_ket_luan.txt` next to itself (the installed copy), except that the wrapper passes
 `<ProjectRoot>\scripts\ops\don_dep_giu.txt` / `don_dep_ket_luan.txt` (`-KeepListFile` / `-ConcludedListFile`) when they
 exist and the installed script has these parameters.
+
+Master keep list (owner 18/11/2026): `<ProjectRoot>\docs\quy-tac\keep_list.txt` (`-KeepListMaster` overrides it), one
+path or wildcard pattern (`*` `?`) per line, relative to `<ProjectRoot>`, `#` comment lines and ` #` end-of-line comments
+(reason + date). It is checked right before every deletion of every group (`Test-KeepListBlocked`, also before
+`prune-artifacts.ps1 -Apply`): a candidate that equals, lies inside or contains a kept path, or that (or a parent folder)
+matches a pattern, or a folder holding (at any depth) an entry that matches a pattern (`contains kept (pattern)`; a folder
+that cannot be listed counts as kept), is not deleted and logged as a `KEEP_LIST` line; a kept backup zip keeps its
+companions. Missing, empty or unreadable list (one bad line is enough) -> fail-closed: nothing deleted, exit 1, with
+`-Apply` one notice through `runner\notify.py` (`<ProjectRoot>\.venv` python): `notice_status` sent only when notify.py
+exits 0, else `failed` (logged `BAO THAT BAI / notify FAILED`) and the next `-Apply` run tries again. Every run prints
+the table `MUC BI KEEP_LIST CHAN`.
+
+Plan lock (1.4.15, owner 19/11/2026). How to delete:
+1. Dry run (no `-Apply`, the arguments you want, e.g. `-Groups tmp,claude_temp -TmpKeep ...`). It prints and records
+   `PLAN_HASH` (report `plan_hash`; the hashed text is `logs\don_dep\don_dep-<stamp>.plan.txt`) and `KEEP_LIST_SHA256`
+   (report `keep_list.sha256`: SHA-256 of the keep list bytes that were parsed).
+2. Check the plan (`.txt` / `.plan.txt`: every candidate, every `KEEP_LIST` block) and approve it.
+3. Run the SAME arguments + `-Apply -PlanHash <PLAN_HASH> -KeepListHash <KEEP_LIST_SHA256>` (directly or through
+   `don_dep_current.ps1`, which passes both on). The plan is computed again; a missing / malformed hash or a different
+   value -> exit 2, nothing archived or deleted, report `mode = APPLY_REFUSED` with the reasons (`keep_list changed after
+   the plan`, `plan changed`). The plan changes with the arguments (groups, `-IncludeDist`, `-DistKeep`, `-TmpKeep`,
+   `-ClaudeKeep`, ages, roots, keep list path), the group status, every candidate path (logs: also its archive zip) and
+   every keep list block (no size, no time); entries also age into the plan (30 days, 7 days, 24 h): apply soon after the
+   dry run, else make a new one.
+
+With `-Apply`, `-KeepListMaster` must be empty or `<ProjectRoot>\docs\quy-tac\keep_list.txt` (else exit 2). A keep list
+that is not usable keeps the fail-closed behaviour above (exit 1, notice), whatever the hashes. Right before a folder
+candidate is deleted, a folder written at or after the start of the run (itself or anything in it) is skipped
+(`changed after the plan`). `-IncludeDist`: `prune-artifacts.ps1 -Apply` (which computes its own list again) runs only
+when its dry run (same `-Keep`) lists exactly the planned dist candidates that still exist (`dist_versions` may have
+removed some); otherwise, or when its output cannot be read (needs the final `Dry run: nothing deleted.` line), it is not
+run (error, exit 1); a `dist\` / `release\` entry that disappears during its run and is not planned -> error, exit 1.
+`don_dep_current.ps1 -Apply` is refused (exit 2) when the INSTALLED script does not declare `-KeepListMaster`,
+`-PlanHash` and `-KeepListHash` (versions 1.4.0 - 1.4.14); its dry run still runs. RISK: the old task
+`DemandForecastCleanup` calls `...\1.4.0\scripts\ops\don_dep_dinh_ky.ps1 -Apply` directly, which knows neither the keep
+list nor the plan lock: keep it DISABLED; before enabling it again (owner approval, after 1.4.15 is installed) back the
+task up and point it at `don_dep_current.ps1` (a weekly task cannot pass the hash of a plan approved the same week).
 
 | Group | Candidates |
 |---|---|
