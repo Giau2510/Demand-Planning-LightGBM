@@ -23,6 +23,7 @@ import Features from "./pages/Features";
 import SqlSources from "./pages/SqlSources";
 import Jobs from "./pages/Jobs";
 import Schedules from "./pages/Schedules";
+import AdvancedSettings from "./pages/AdvancedSettings";
 import System from "./pages/System";
 
 /** `reload` always asks again (after a change); `refresh` shares a request already running, so a page that opens while
@@ -90,7 +91,7 @@ const NAV: { group: string; items: [string, string, IconName][] }[] = [
     ["/forecast-explainer", "nav.explainer", "explain"]] },
   { group: "nav.group.data", items: [["/import", "nav.import", "import"], ["/batches", "nav.batches", "batches"], ["/quality", "nav.quality", "quality"]] },
   { group: "nav.group.admin", items: [["/config", "nav.config", "config"], ["/bigquery", "nav.bigquery", "bigquery"], ["/mapping", "nav.mapping", "mapping"],
-    ["/sql", "nav.sql", "sql"], ["/features", "nav.features", "features"], ["/schedules", "nav.schedules", "schedules"], ["/jobs", "nav.jobs", "jobs"],
+    ["/sql", "nav.sql", "sql"], ["/features", "nav.features", "features"], ["/schedules", "nav.schedules", "schedules"], ["/advanced-settings", "nav.advanced", "config"], ["/jobs", "nav.jobs", "jobs"],
     ["/system", "nav.system", "system"]] },
 ];
 
@@ -262,6 +263,7 @@ export default function App() {
           <Route path="/features" element={<Features />} />
           <Route path="/sql" element={<SqlSources />} />
           <Route path="/schedules" element={<Schedules />} />
+          <Route path="/advanced-settings" element={<AdvancedSettings />} />
           <Route path="/jobs" element={<Jobs />} />
           <Route path="/system" element={<System />} />
           <Route path="/daily-forecast" element={<DailyForecast />} />

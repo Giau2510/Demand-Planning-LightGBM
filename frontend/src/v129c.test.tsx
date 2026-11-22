@@ -25,22 +25,42 @@ function mock(route: (u: string, c: Call) => any) {
 }
 
 describe("v1.2.9c model-input start rule", () => {
-  it("defaults to the window start and saves OPEN_HOURS_COVERAGE explicitly", async () => {
+  it("defaults to the window start; the old card shows it read-only and the change goes through the guarded card (text + reason)", async () => {
     const data_policy = { stale_check_sources: ["BIGQUERY"], max_data_lag_days: 2, late_data_lookback_days: 3, min_date: null,
       price_outlier_factor: 10, window_start_date: "2026-01-01" };
-    const calls = mock((u, c) => c.method === "PUT" ? c.body : u.startsWith("/api/settings") ? { data_policy,
-      quality: {}, horizons: { enabled: [7], choices: [7], max_allowed_days: 365 }, model: { feature_lags: true, feature_rolling: true,
-        feature_price: true, forecast_strategy: "DIRECT" } } : {});
+    const gfields = { window_start_date: "2026-01-01", history_change_policy: "FOLLOW_SOURCE", history_day_check: true, source_time_travel_hours: 160,
+      training_start_rule: "WINDOW_START" };
+    const CONFIRM = "DOI-CHINH-SACH-DU-LIEU-2026-11-23";
+    const calls = mock((u, c) => {
+      if (u === "/api/data-policy/guarded/preview") return { before: { training_start_rule: "WINDOW_START" }, after: c.body.patch, changed: ["training_start_rule"],
+        high_risk: true, needs_confirm_text: true, needs_acknowledged: false, impact: null, impacts: [], notes: [], warnings: [], busy: { busy: false } };
+      if (u === "/api/data-policy/guarded" && c.method === "POST") return { applied: c.body.patch, version: 2 };
+      if (u === "/api/data-policy/guarded") return { fields: gfields, defaults: { ...gfields, history_change_policy: "KEEP_OBSERVED_LINES" }, version: 1,
+        confirm_text: CONFIRM, high_risk_fields: ["history_change_policy", "window_start_date", "training_start_rule"], reason_min_length: 10,
+        locked_fields: ["window_start_date"], history: [] };
+      if (c.method === "PUT") return c.body;
+      return u.startsWith("/api/settings") ? { data_policy,
+        quality: {}, horizons: { enabled: [7], choices: [7], max_allowed_days: 365 }, model: { feature_lags: true, feature_rolling: true,
+          feature_price: true, forecast_strategy: "DIRECT" } } : {};
+    });
     await act(async () => { render(wrap(<Config />)); });
     const sel = (await screen.findByTestId("cfg-training-start-rule")) as HTMLSelectElement;
     expect(sel.value).toBe("WINDOW_START");                              // never saved = the rule before
+    expect(sel.disabled).toBe(true);                                     // the old card only shows it
     expect(document.body.textContent).toContain("Ngày đầu tiên có giờ mở bán (tạm thời)");
-    fireEvent.change(sel, { target: { value: "OPEN_HOURS_COVERAGE" } });
+    // the old Save with nothing changed sends nothing (the rule is not part of what that card writes)
     fireEvent.click(within(sel.closest("section")!).getByRole("button", { name: "Lưu" }));
-    await waitFor(() => expect(calls.some((c) => c.method === "PUT" && c.url === "/api/settings/data_policy")).toBe(true));
-    const put = calls.find((c) => c.method === "PUT")!;
-    expect(put.body.training_start_rule).toBe("OPEN_HOURS_COVERAGE");
-    expect(put.body.window_start_date).toBe("2026-01-01");             // the read floor is not changed
+    await act(async () => { await Promise.resolve(); });
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
+    // the change itself: guarded card, preview, typed text + reason, apply
+    fireEvent.click(await screen.findByTestId("gp-tsr-OPEN_HOURS_COVERAGE"));
+    await act(async () => { fireEvent.click(screen.getByTestId("gp-preview")); });
+    fireEvent.change(screen.getByTestId("gp-confirm-input"), { target: { value: CONFIRM } });
+    fireEvent.change(screen.getByTestId("gp-reason"), { target: { value: "dung gio mo ban lam moc" } });
+    await act(async () => { fireEvent.click(screen.getByTestId("gp-apply")); });
+    const post = calls.find((c) => c.method === "POST" && c.url === "/api/data-policy/guarded")!;
+    expect(post.body).toMatchObject({ patch: { training_start_rule: "OPEN_HOURS_COVERAGE" }, expected: { training_start_rule: "WINDOW_START" }, confirm_text: CONFIRM });
+    expect(calls.some((c) => c.method === "PUT" && c.url === "/api/settings/data_policy")).toBe(false);
   });
 });
 

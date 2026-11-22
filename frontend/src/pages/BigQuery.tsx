@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { get, post, put } from "../api";
 import { useSystem } from "../App";
 import { useI18n } from "../i18n";
 import GoogleAuth from "./GoogleAuth";
-import { Card, DateInput, ErrorBox, Field, Loading, OkBox, PageHeader, Pill, YesNo, fmtBytes, fmtDate, fmtNum, fmtPct, fmtTime, useAction, useAsync } from "../components/ui";
+import { Card, Confirm, DateInput, ErrorBox, Field, Loading, OkBox, PageHeader, Pill, YesNo, fmtBytes, fmtDate, fmtNum, fmtPct, fmtTime, useAction, useAsync } from "../components/ui";
 import { Icon } from "../components/icons";
 
 function Issues({ items, tone }: { items: any[]; tone: "bad" | "warn" }) {
@@ -169,7 +169,9 @@ const AUX_TABLES = ["openhours", "avg_demand", "avg_demand_hist", "product_names
 
 /** 1.2.0: the table of each feed, configured and checked separately (metadata only, no query, no cost). A table is saved
  * only after a PASSED check of that exact id; the D-1 table cannot change while production mode is on. */
-export function SourceTables() {
+/** `onSaved` (the page): the connection card reads its values again, so its next Save does not send the table that was just saved
+ *  with its OLD value (the server refuses a changed registry key with 409 SETTINGS_FIELD_GUARDED). */
+export function SourceTables({ onSaved }: { onSaved?: () => void } = {}) {
   const { t } = useI18n();
   const st = useAsync(() => get("/api/bigquery/source-tables"), []);
   const act = useAction();
@@ -192,7 +194,7 @@ export function SourceTables() {
           <button data-testid={`table-${kind}-check`} disabled={act.busy}
             onClick={async () => { const r = await act.run(() => post(`/api/bigquery/source-tables/${kind}/check`, { table_id: ids[kind] })); if (r) setRes({ ...res, [kind]: r }); }}><Icon name="quality" size={14} />{t("bq.table_check")}</button>
           <button className="primary" data-testid={`table-${kind}-save`} disabled={act.busy || (kind === "d1" && s.production_enabled && ids.d1 !== s.table_id)}
-            onClick={async () => { const r = await act.run(() => put(`/api/bigquery/source-tables/${kind}`, { table_id: ids[kind] }), t("common.saved")); if (r) { setRes({}); st.reload(); } }}><Icon name="save" size={14} />{t("bq.table_save")}</button>
+            onClick={async () => { const r = await act.run(() => put(`/api/bigquery/source-tables/${kind}`, { table_id: ids[kind] }), t("common.saved")); if (r) { setRes({}); st.reload(); onSaved?.(); } }}><Icon name="save" size={14} />{t("bq.table_save")}</button>
           {lc ? <Pill status={lc.status === "PASSED" ? "OK" : "FAILED"} label={`${lc.status} · ${fmtTime(lc.checked_at)}`} /> : <span className="muted">{t("bq.table_never_checked")}</span>}
           {s.optional && !(ids[kind] ?? "").trim() && <span className="muted" data-testid={`table-${kind}-unused`}>{t("bq.table_unused")}</span>}
           {kind === "d0" && <span className="muted">{t("bq.table_mode")}: <b>{s.mode}</b></span>}
@@ -223,14 +225,37 @@ export default function BigQuery() {
   const [out, setOut] = useState<any>(null);
   const [est, setEst] = useState({ start: "", end: "" });
   const act = useAction();
+  const [askReset, setAskReset] = useState(false);
+  const [kept, setKept] = useState<string[] | null>(null);
+  const base = useRef<any>(null);      // the settings as last read: a field the user did not edit takes the new server value on every read
   useEffect(() => {
-    if (st.data) setV(st.data.settings);
+    if (!st.data) return;
+    const fresh = st.data.settings;
+    const prev = base.current;           // taken NOW: React may run the updater below later, after base.current was replaced
+    setV((cur: any) => {
+      if (!cur || !prev) return fresh;
+      const merged = { ...fresh };
+      for (const k of Object.keys(cur)) if (JSON.stringify(cur[k]) !== JSON.stringify(prev[k])) merged[k] = cur[k];   // an edit in progress stays
+      return merged;
+    });
+    base.current = fresh;
   }, [st.data]);
   if (!v) return <div className="stack"><PageHeader icon="bigquery" title={t("nav.bigquery")} desc={t("page.bigquery.desc")} />{st.error ? <ErrorBox error={st.error} /> : <Loading />}</div>;
   const set = (p: any) => setV({ ...v, ...p });
   const save = async () => {
     const r = await act.run(() => put("/api/settings/bigquery", v), t("common.saved"));
     if (r) { setV(r); st.reload(); }
+  };
+  // 1.4.15: the reset puts back only what is NOT the connection (project, dataset, table, mapping, sign-in ... are kept)
+  const doReset = async () => {
+    setAskReset(false);
+    const r = await act.run(() => post("/api/settings/bigquery/reset"), t("bq.reset_done"));
+    if (r) {
+      const { kept_keys, ...rest } = r;
+      setV(rest);
+      setKept(Array.isArray(kept_keys) ? kept_keys : []);
+      st.reload();
+    }
   };
   const call = async (path: string, body?: any) => {
     setOut(null);
@@ -252,8 +277,17 @@ export default function BigQuery() {
       {!configured && <div className="alert warn"><b>{t("bq.not_configured")}</b><br />{t("bq.blocked_note")}</div>}
       <ErrorBox error={act.error} />
       <OkBox text={act.ok} />
+      {kept && (
+        <div className="alert info small" data-testid="bq-reset-kept"><b>{t("bq.reset_kept")}</b> <span className="mono">{kept.join(", ")}</span></div>
+      )}
+      <Confirm open={askReset} title={t("bq.reset")} confirmLabel={t("bq.reset_confirm")} onCancel={() => setAskReset(false)} onConfirm={() => void doReset()}>
+        <p className="small" data-testid="bq-reset-help">{t("bq.reset_help")}</p>
+      </Confirm>
       <GoogleAuth onChange={() => st.reload()} />
-      <Card icon="config" title={t("bq.settings")} actions={<button className="primary" onClick={save} disabled={act.busy}><Icon name="save" />{t("common.save")}</button>}>
+      <Card icon="config" title={t("bq.settings")} actions={<>
+        <button data-testid="bq-reset" onClick={() => setAskReset(true)} disabled={act.busy}><Icon name="reset" />{t("bq.reset")}</button>
+        <button className="primary" onClick={save} disabled={act.busy}><Icon name="save" />{t("common.save")}</button>
+      </>}>
         <div className="form-grid">
           <Field label={t("bq.project")}><input value={v.project_id} onChange={(e) => set({ project_id: e.target.value })} /></Field>
           <Field label={t("bq.dataset")}><input value={v.dataset_id} onChange={(e) => set({ dataset_id: e.target.value })} placeholder="(chưa có / not provided)" /></Field>
@@ -288,7 +322,7 @@ export default function BigQuery() {
         <p className="small muted">{t("bq.cost_note")}</p>
       </Card>
 
-      <SourceTables />
+      <SourceTables onSaved={() => st.reload()} />
 
       <Card icon="quality" title={t("bq.checks")}>
         <div className="row wrap">

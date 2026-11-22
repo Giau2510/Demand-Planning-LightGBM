@@ -3,6 +3,7 @@ import { get } from "../api";
 import { useI18n } from "../i18n";
 import { Card, Code, ErrorBox, Loading, PageHeader, Pill, SourceBadge, Stat, Term, fmtDate, fmtDateish, fmtNum, fmtPct, fmtTime, useAsync } from "../components/ui";
 import { Icon } from "../components/icons";
+import HeldLinesCard from "../components/HeldLinesCard";
 
 export default function DataQuality() {
   const { t } = useI18n();
@@ -55,6 +56,7 @@ export default function DataQuality() {
           </Card>
         </>
       )}
+      <HeldLinesCard />
     </div>
   );
 }

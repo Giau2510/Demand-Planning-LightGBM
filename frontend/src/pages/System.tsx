@@ -4,6 +4,7 @@ import { useSystem } from "../App";
 import { useI18n } from "../i18n";
 import { Card, Empty, ErrorBox, OkBox, PageHeader, fmtBytes, fmtDatesInText, fmtTime, useAction, useAsync } from "../components/ui";
 import { Icon } from "../components/icons";
+import SettingsPortable from "../components/SettingsPortable";
 
 export default function System() {
   const { t } = useI18n();
@@ -83,6 +84,7 @@ export default function System() {
         )}
         <p className="small muted">{t("sys.restore_help")}</p>
       </Card>
+      <SettingsPortable />
       <Card icon="file" title={t("sys.audit")}>
         <div className="scroll">
           <table className="tbl small">

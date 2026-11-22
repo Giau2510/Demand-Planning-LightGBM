@@ -4,6 +4,7 @@ import { get, post, put, qs } from "../api";
 import { useI18n } from "../i18n";
 import { Card, Code, Empty, ErrorBox, Field, FilterBar, Loading, OkBox, PageHeader, Pill, Term, fmtDatesInText, fmtDuration, fmtTime, jobOutcome, useAction, useAsync } from "../components/ui";
 import { Icon } from "../components/icons";
+import SpikeEstimateCard from "../components/SpikeEstimateCard";
 
 const TYPES = ["D1_SYNC", "D0_SYNC", "TRAIN_PUBLISH"];
 /** Pill tone per effective flow state (same as the schedule page). */
@@ -103,6 +104,8 @@ export default function Jobs() {
           {TYPES.map((jt) => <button key={jt} className="prod" title={t("common.prod_action")} onClick={() => run(jt)} disabled={act.busy}><Icon name="run" />{t("job.run_now")}: {t(`job.${jt}`)}</button>)}
         </div>
       </Card>
+      <SpikeEstimateCard />
+
       <Card icon="jobs" title={t("job.list")}>
         <FilterBar active={[type, status].filter(Boolean).length} onClear={() => { setType(""); setStatus(""); }}
           extra={<button className="small" onClick={jobs.reload} disabled={jobs.loading}><Icon name="refresh" size={14} />{t("common.refresh")}</button>}>

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { I18nProvider } from "./i18n";
 import DataPolicyGuarded from "./components/DataPolicyGuarded";
@@ -10,8 +10,10 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 const wrap = (el: React.ReactNode) => <I18nProvider><MemoryRouter>{el}</MemoryRouter></I18nProvider>;
 beforeEach(() => localStorage.clear());
 
-const FIELDS = { window_start_date: "2026-01-01", history_change_policy: "FOLLOW_SOURCE", history_day_check: true, source_time_travel_hours: 160 };
-const DEFAULTS = { window_start_date: "2026-01-01", history_change_policy: "KEEP_OBSERVED_LINES", history_day_check: true, source_time_travel_hours: 160 };
+const FIELDS = { window_start_date: "2026-01-01", history_change_policy: "FOLLOW_SOURCE", history_day_check: true, source_time_travel_hours: 160,
+  training_start_rule: "WINDOW_START" };
+const DEFAULTS = { window_start_date: "2026-01-01", history_change_policy: "KEEP_OBSERVED_LINES", history_day_check: true, source_time_travel_hours: 160,
+  training_start_rule: "WINDOW_START" };
 const CONFIRM = "DOI-CHINH-SACH-DU-LIEU-2026-11-22";
 const HIST = [
   { id: 56, changed_at: "2026-10-30T02:21:00+00:00", note: "OWNER DECISION KEEP_OBSERVED_LINES -> FOLLOW_SOURCE", values: { ...FIELDS },
@@ -20,7 +22,7 @@ const HIST = [
     previous_values: { ...FIELDS, history_change_policy: "KEEP_OBSERVED_LINES", source_time_travel_hours: 48 } },
 ];
 const state = (over: any = {}) => ({ fields: FIELDS, defaults: DEFAULTS, version: 56, confirm_text: CONFIRM, reason_min_length: 10,
-  high_risk_fields: ["history_change_policy", "window_start_date"], locked_fields: ["window_start_date"],
+  high_risk_fields: ["history_change_policy", "window_start_date", "training_start_rule"], locked_fields: ["window_start_date"],
   locked_reason_code: "WINDOW_START_CHANGES_RELOAD", history: HIST, ...over });
 
 interface Call { url: string; method: string; body: any }
@@ -37,9 +39,10 @@ function backend(o: { state?: any; preview?: (patch: any) => any; apply?: () => 
     if (u === "/api/data-policy/guarded/preview") {
       const patch = body.patch;
       if (o.preview) return json(o.preview(patch));
-      const high = "history_change_policy" in patch || "window_start_date" in patch;
+      const HIGH = ["history_change_policy", "window_start_date", "training_start_rule"];
+      const high = Object.keys(patch).some((k) => HIGH.includes(k));
       return json({ before: Object.fromEntries(Object.keys(patch).map((k) => [k, (st.fields as any)[k]])), after: patch, changed: Object.keys(patch),
-        high_risk: high, needs_confirm_text: high, needs_acknowledged: Object.keys(patch).some((k) => k !== "history_change_policy" && k !== "window_start_date"),
+        high_risk: high, needs_confirm_text: high, needs_acknowledged: Object.keys(patch).some((k) => !HIGH.includes(k)),
         impact: null, warnings: [] });
     }
     if (u === "/api/data-policy/guarded" && method === "POST") {
@@ -47,6 +50,7 @@ function backend(o: { state?: any; preview?: (patch: any) => any; apply?: () => 
       st = state({ fields: { ...st.fields, ...body.patch }, version: st.version + 1 });
       return json({ applied: body.patch, version: st.version });
     }
+    if (u === "/api/settings/data_policy" && method === "PUT") return json(body);
     if (u === "/api/settings") return json({ data_policy: { stale_check_sources: ["DEMO"], max_data_lag_days: 1, late_data_lookback_days: 3, min_date: null,
       training_start_rule: "WINDOW_START", price_outlier_factor: 5 } });
     return json({ code: "TEST_UNAVAILABLE" }, 503);
@@ -69,8 +73,16 @@ describe("1.4.15 guarded data-policy card", () => {
     // window_start_date: read-only value with the explanation, no input
     expect(screen.getByTestId("gp-window-value").textContent).toBe("01/01/2026");
     expect(screen.queryByLabelText("Ngày bắt đầu cửa sổ dữ liệu mô hình")).toBeNull();
-    expect(screen.getByTestId("gp-window-locked").textContent).toBe("Chưa cho đổi ở bản này: đổi ngày này làm D-1 dùng cho kiểm tra lại nguồn rồi nạp lại toàn bộ dữ liệu từ ngày mới (có thể ghi đè dữ liệu 2025). Cần quy trình riêng có chủ dự án duyệt.");
+    expect(screen.getByTestId("gp-window-locked").textContent).toBe("Chưa cho đổi ở bản này: đổi ngày này làm D-1 dừng chờ kiểm tra lại nguồn rồi nạp lại toàn bộ dữ liệu từ ngày mới (có thể ghi đè dữ liệu 2025). Cần quy trình riêng có chủ dự án duyệt.");
     expect(screen.queryByText(/dữ liệu trước ngày này vẫn được lưu/i)).toBeNull();
+    // why it is locked and how to change it: plain words, with the verified facts
+    const why = screen.getByTestId("gp-window-why").textContent!;
+    expect(why).toContain("Vì sao khóa và cách đổi khi cần");
+    for (const fact of ["BQ_VALIDATION_REQUIRED", "Kiểm tra dữ liệu toàn kỳ", "1,4–1,7 GB", "735 giây", "1,27 GB", "MUỘN hơn", "SỚM hơn", "GHI ĐÈ", "dữ liệu 2025", "MISSING",
+      "báo phiên điều phối", "sao lưu trước", "ngoài khung đêm", "ghi lại giá trị cũ"]) expect(why, fact).toContain(fact);
+    // the fifth field: the model-input start rule
+    expect((screen.getByTestId("gp-tsr-WINDOW_START") as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByTestId("gp-running-training_start_rule")).toBeTruthy();
     // policy label: code default first (never shown as the standard value), then the running value and the 30/10 decision
     const run = screen.getByTestId("gp-running-history_change_policy").textContent!;
     expect(run).toContain("Mặc định của mã: Giữ dòng đã thấy (KEEP_OBSERVED_LINES). Đang chạy: Theo nguồn (FOLLOW_SOURCE).");
@@ -147,7 +159,11 @@ describe("1.4.15 guarded data-policy card", () => {
     expect(imp).toContain("Áp dụng từ lần D-1 kế tiếp. Đang giữ 12.345+ dòng.");
     expect(imp).toContain("Nếu đặt Giữ dòng đã thấy: dòng nguồn bỏ vẫn được giữ.");
     expect(imp).not.toContain("{");
-    expect(screen.getByTestId("gp-undo-note-preview").textContent).toBe("Hoàn tác chỉ trả lại cài đặt, không trả lại dữ liệu đã ghi (dữ liệu cần sync-rollback).");
+    const un = screen.getByTestId("gp-undo-note-preview").textContent!;
+    expect(un).toContain("Hoàn tác chỉ trả lại cài đặt, không trả lại dữ liệu đã ghi.");
+    expect(un).toContain('thẻ "Quay lại lần đồng bộ"');                      // the card by its real name (no "sync-rollback" jargon)
+    expect(un).toContain("chỉ chắc chắn khi chưa có lần ghi nào sau đó");
+    expect(un).not.toContain("sync-rollback");
     expect(screen.getByTestId("gp-undo-note-log").textContent).toContain("Hoàn tác chỉ trả lại cài đặt");
     expect(screen.getByTestId("gp-confirm-text").textContent).toBe(CONFIRM);
     expect(screen.queryByTestId("gp-ack")).toBeNull();
@@ -224,7 +240,7 @@ describe("1.4.15 guarded data-policy card", () => {
   });
 
   it.each([["DATA_POLICY_INVALID_VALUE", 422, "Giá trị mới không hợp lệ"], ["DATA_POLICY_EXPECTED_REQUIRED", 422, "Thiếu giá trị cũ"],
-    ["DATA_POLICY_UNKNOWN_FIELD", 422, "không thuộc 4 mục"], ["DATA_POLICY_BUSY", 409, "Hệ thống đang chạy job hoặc trong khung đêm 23:45-00:15 / 00:45-03:45; thử lại sau"],
+    ["DATA_POLICY_UNKNOWN_FIELD", 422, "không thuộc 5 mục"], ["DATA_POLICY_BUSY", 409, "Hệ thống đang chạy job hoặc trong khung đêm 23:45-00:15 / 00:45-03:45; thử lại sau"],
     ["DATA_POLICY_FIELD_LOCKED", 422, "đang bị khóa"], ["NO_CHANGE", 400, "giống hệt giá trị đang chạy"]])(
     "%s (%i) is shown by its code with its own text", async (code, status, text) => {
       backend({ apply: () => json({ code, vi: "x", en: "x", detail: "d", params: {} }, status) });
@@ -363,11 +379,177 @@ describe("1.4.15 guarded data-policy card", () => {
     expect((screen.getByTestId("gp-apply") as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("training_start_rule: running value + default, plain description, high-risk (text + reason), impact as sentences with the effective dates", async () => {
+    const calls = backend({ preview: (patch) => ({ before: { training_start_rule: "WINDOW_START" }, after: patch, changed: ["training_start_rule"], high_risk: true,
+      needs_confirm_text: true, needs_acknowledged: false, busy: { busy: false },
+      impact: { kind: "TRAINING_START", window_start_date: "2026-01-01", coverage_start: "2026-03-05", effective_current: "2026-01-01", effective_after: "2026-03-05",
+        delta_days: 63, applies_from: "NEXT_DATA_WINDOW_READ" },
+      notes: ["TRAINING_START_CHANGES_MODEL_INPUT"], warnings: [] }) });
+    await mount();
+    const run = screen.getByTestId("gp-running-training_start_rule").textContent!;
+    expect(run).toContain("Đang chạy: Ngày bắt đầu cửa sổ dữ liệu (mặc định)");
+    expect(run).toContain("Mặc định của mã: Ngày bắt đầu cửa sổ dữ liệu (mặc định)");
+    const desc = screen.getByTestId("gp-tsr-desc").textContent!;
+    expect(desc).toContain("Đổi cửa sổ dữ liệu ĐẦU VÀO");
+    expect(desc).toContain("KHÔNG xóa dữ liệu đã lưu");
+    expect(desc).toContain("NGAY ở lần đọc cửa sổ dữ liệu kế tiếp");
+    expect(desc).toContain("KHÔNG đổi số dự báo SEL2 đang dùng");
+    expect(desc).toContain("model đang dùng không bị học lại");
+    expect((screen.getByTestId("gp-tsr-WINDOW_START") as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByTestId("gp-tsr-OPEN_HOURS_COVERAGE"));
+    await act(async () => { fireEvent.click(screen.getByTestId("gp-preview")); });
+    expect(posts(calls)[0].body).toEqual({ patch: { training_start_rule: "OPEN_HOURS_COVERAGE" } });
+    expect(screen.getByTestId("gp-impact-train").textContent).toBe(
+      "Có hiệu lực ngay ở lần đọc cửa sổ dữ liệu kế tiếp (không cần chờ học lại). Ngày hiệu lực của cửa sổ đầu vào: 01/01/2026 → 05/03/2026. Cửa sổ ngắn hơn 63 ngày.");
+    expect(screen.getByTestId("gp-note-TRAINING_START_CHANGES_MODEL_INPUT").textContent).toContain("đổi cửa sổ dữ liệu đầu vào");
+    // high risk: the typed text + a reason are needed
+    const apply = screen.getByTestId("gp-apply") as HTMLButtonElement;
+    expect(apply.disabled).toBe(true);
+    fireEvent.change(screen.getByTestId("gp-confirm-input"), { target: { value: CONFIRM } });
+    fireEvent.change(screen.getByTestId("gp-reason"), { target: { value: "chu du an dong y doi" } });
+    expect(apply.disabled).toBe(false);
+    await act(async () => { fireEvent.click(apply); });
+    const ap = posts(calls).find((c) => c.url === "/api/data-policy/guarded")!;
+    expect(ap.body).toMatchObject({ patch: { training_start_rule: "OPEN_HOURS_COVERAGE" }, expected: { training_start_rule: "WINDOW_START" }, confirm_text: CONFIRM });
+  });
+
+  it("training_start_rule impact without an estimate (coverage_start / effective dates null) says it cannot be estimated", async () => {
+    backend({ preview: (patch) => ({ before: {}, after: patch, changed: ["training_start_rule"], high_risk: true, needs_confirm_text: true, needs_acknowledged: false,
+      impact: { kind: "TRAINING_START", window_start_date: "2026-01-01", coverage_start: null, effective_current: "2026-01-01", effective_after: null, delta_days: null,
+        applies_from: "NEXT_DATA_WINDOW_READ" },
+      notes: ["NO_ESTIMATE_TIMEOUT", "NO_ESTIMATE_ERROR"], warnings: [] }) });
+    await mount();
+    fireEvent.click(screen.getByTestId("gp-tsr-OPEN_HOURS_COVERAGE"));
+    await act(async () => { fireEvent.click(screen.getByTestId("gp-preview")); });
+    expect(screen.getByTestId("gp-impact-train").textContent).toBe("Có hiệu lực ngay ở lần đọc cửa sổ dữ liệu kế tiếp (không cần chờ học lại). Không ước tính được ngày hiệu lực, có thể do quá lâu.");
+    expect(screen.getByTestId("gp-note-NO_ESTIMATE_TIMEOUT").textContent).toContain("Không ước tính được tác động");
+    expect(screen.getByTestId("gp-note-NO_ESTIMATE_ERROR").textContent).toContain("Ước tính tác động bị lỗi");
+    // the raw English busy detail is not shown any more
+    expect(screen.queryByTestId("gp-busy-detail")).toBeNull();
+  });
+
+  it("a patch of policy + training start rule shows both estimates from impacts (the training one is only there; impact is the first)", async () => {
+    const held = { kind: "HELD_LINES", active_held_lines: 7, capped: false, applies_from: "NEXT_D1" };
+    const train = { kind: "TRAINING_START", window_start_date: "2026-01-01", coverage_start: "2026-03-05", effective_current: "2026-01-01", effective_after: "2026-03-05",
+      delta_days: 63, applies_from: "NEXT_DATA_WINDOW_READ" };
+    backend({ preview: (patch) => ({ before: {}, after: patch, changed: ["history_change_policy", "training_start_rule"], high_risk: true, needs_confirm_text: true,
+      needs_acknowledged: false, impact: held, impacts: [held, train], notes: [], warnings: [], busy: { busy: false } }) });
+    await mount();
+    fireEvent.click(screen.getByTestId("gp-policy-KEEP_OBSERVED_LINES"));
+    fireEvent.click(screen.getByTestId("gp-tsr-OPEN_HOURS_COVERAGE"));
+    await act(async () => { fireEvent.click(screen.getByTestId("gp-preview")); });
+    expect(screen.getByTestId("gp-impact-held").textContent).toBe("Áp dụng từ lần D-1 kế tiếp. Đang giữ 7 dòng.");
+    expect(screen.getByTestId("gp-impact-train").textContent).toContain("Cửa sổ ngắn hơn 63 ngày.");
+  });
+
+  it("impact null with the estimate only in impacts is still shown (and impact alone still works for older servers)", async () => {
+    const train = { kind: "TRAINING_START", window_start_date: "2026-01-01", coverage_start: "2026-03-05", effective_current: "2026-01-01", effective_after: "2026-03-05",
+      delta_days: 63, applies_from: "NEXT_DATA_WINDOW_READ" };
+    backend({ preview: (patch) => ({ before: {}, after: patch, changed: ["training_start_rule"], high_risk: true, needs_confirm_text: true, needs_acknowledged: false,
+      impact: null, impacts: [train], notes: [], warnings: [] }) });
+    await mount();
+    fireEvent.click(screen.getByTestId("gp-tsr-OPEN_HOURS_COVERAGE"));
+    await act(async () => { fireEvent.click(screen.getByTestId("gp-preview")); });
+    expect(screen.getByTestId("gp-impact-train").textContent).toContain("05/03/2026");
+    expect(screen.queryByTestId("gp-impact-held")).toBeNull();
+  });
+
+  it("a busy preview locks Apply and shows why (night window, running jobs, overdue jobs left out); warning codes are sentences", async () => {
+    backend({ preview: (patch) => ({ before: {}, after: patch, changed: ["history_day_check"], high_risk: false, needs_confirm_text: false, needs_acknowledged: true,
+      busy: { busy: true, detail: "night window", window: "23:45-00:15", jobs: [{ id: "J-1", job_type: "D1_SYNC", status: "RUNNING", last_mark: "2026-11-23T00:50:00Z" }, { id: "J-2", job_type: "TRAIN", status: "RUNNING" }],
+      stale_ignored: [{ id: "J-0", job_type: "OLD_JOB", status: "RUNNING" }] },
+      impact: null, notes: [], warnings: ["NO_IMPACT_ESTIMATE:history_change_policy,training_start_rule", "NO_CHANGE"] }) });
+    await mount();
+    fireEvent.click(screen.getByTestId("gp-day-check"));
+    await act(async () => { fireEvent.click(screen.getByTestId("gp-preview")); });
+    fireEvent.click(screen.getByTestId("gp-ack"));
+    expect((screen.getByTestId("gp-apply") as HTMLButtonElement).disabled).toBe(true);        // locked although the box is ticked
+    expect(screen.getByTestId("gp-busy-window").textContent).toBe("Đang trong khung đêm: 23:45-00:15.");
+    expect(screen.getByTestId("gp-busy-jobs").textContent).toBe("Job đang chạy: D1_SYNC, TRAIN.");
+    expect(screen.getByTestId("gp-stale-ignored").textContent).toBe("Job quá hạn được bỏ qua khi kiểm tra bận: OLD_JOB.");
+    const w = screen.getByTestId("gp-warnings").textContent!;
+    expect(w).toContain("Chưa có ước tính ảnh hưởng cho: Khi nguồn bỏ một dòng đơn đã nạp, Quy tắc ngày bắt đầu dữ liệu cho mô hình.");
+    expect(w).toContain("Giá trị mới giống hệt giá trị đang chạy.");
+    expect(w).not.toContain("NO_CHANGE");
+  });
+
+  it("a preview that is not busy leaves Apply enabled, and overdue jobs left out are still told", async () => {
+    backend({ preview: (patch) => ({ before: {}, after: patch, changed: ["history_day_check"], high_risk: false, needs_confirm_text: false, needs_acknowledged: true,
+      busy: { busy: false, window: null, jobs: [], stale_ignored: ["OLD_JOB"] }, impact: null, notes: [], warnings: [] }) });
+    await mount();
+    fireEvent.click(screen.getByTestId("gp-day-check"));
+    await act(async () => { fireEvent.click(screen.getByTestId("gp-preview")); });
+    fireEvent.click(screen.getByTestId("gp-ack"));
+    expect((screen.getByTestId("gp-apply") as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByTestId("gp-busy")).toBeNull();
+    expect(screen.getByTestId("gp-stale-ignored")).toBeTruthy();
+  });
+
+  it("undo restores only the fields in changed_fields of that row", async () => {
+    const hist = [{ id: 70, changed_at: "2026-11-02T02:21:00+00:00", note: "x", values: { ...FIELDS }, changed_fields: ["history_day_check"],
+      previous_values: { ...FIELDS, history_day_check: false, source_time_travel_hours: 50 } }];
+    const calls = backend({ state: state({ history: hist }) });
+    await mount();
+    await act(async () => { fireEvent.click(screen.getByTestId("gp-undo-70")); });
+    expect((screen.getByTestId("gp-day-check") as HTMLInputElement).checked).toBe(false);         // restored
+    expect((screen.getByTestId("gp-hours") as HTMLInputElement).value).toBe("160");               // not in changed_fields: untouched
+    await act(async () => { fireEvent.click(screen.getByTestId("gp-preview")); });
+    expect(posts(calls)[0].body).toEqual({ patch: { history_day_check: false } });
+  });
+
+  it("the old card: training_start_rule is display only and points to the new card; the note lists the 5 items that Save / Reset never change", async () => {
+    backend();
+    await act(async () => { render(wrap(<Config />)); });
+    const note = await screen.findByTestId("cfg-guarded-note");
+    const oldCard = note.closest("section") as HTMLElement;
+    const sel = within(oldCard).getByTestId("cfg-training-start-rule") as HTMLSelectElement;
+    expect(sel.disabled).toBe(true);
+    expect(within(oldCard).getByTestId("cfg-tsr-moved").textContent).toContain("Sửa ở thẻ");
+    const box = within(oldCard).getByTestId("cfg-guarded-reset-note");
+    expect(box.textContent).toContain("KHÔNG đặt lại");
+    const items = Array.from(box.querySelectorAll("li")).map((li) => li.textContent);
+    expect(items).toHaveLength(5);
+    for (const name of ["Khi nguồn bỏ một dòng đơn đã nạp", "Ngày bắt đầu cửa sổ dữ liệu mô hình", "Kiểm lại ngày cũ sau mỗi lần nạp D-1",
+      "Số giờ lùi tối đa khi đối chiếu bản cũ của nguồn", "Quy tắc ngày bắt đầu dữ liệu cho mô hình"]) {
+      expect(items.some((i) => i!.includes(name) && i!.includes("sửa ở thẻ bên dưới")), name).toBe(true);
+    }
+  });
+
+  it("the old card: Save shows 'field: old -> new' in a confirmation box and sends only after it; no change = nothing is sent", async () => {
+    const calls = backend();
+    await act(async () => { render(wrap(<Config />)); });
+    const note = await screen.findByTestId("cfg-guarded-note");
+    const oldCard = note.closest("section") as HTMLElement;
+    const save = () => within(oldCard).getByRole("button", { name: "Lưu" });
+    const puts = () => calls.filter((c) => c.method === "PUT");
+    // nothing changed: nothing is sent, the user is told
+    await act(async () => { fireEvent.click(save()); });
+    expect(puts()).toHaveLength(0);
+    expect(screen.getByText("Không có thay đổi nào để lưu (chưa gửi gì lên máy chủ).")).toBeTruthy();
+    expect(screen.queryByTestId("cfg-save-diff")).toBeNull();
+    // a real change: the box lists it; Cancel sends nothing
+    const lag = within(oldCard).getAllByRole("spinbutton")[0] as HTMLInputElement;
+    expect(lag.value).toBe("1");
+    fireEvent.change(lag, { target: { value: "5" } });
+    await act(async () => { fireEvent.click(save()); });
+    expect(screen.getByTestId("cfg-save-diff").textContent).toBe("Độ trễ dữ liệu tối đa (ngày): 1 → 5");
+    await act(async () => { fireEvent.click(screen.getByText("Hủy")); });
+    expect(puts()).toHaveLength(0);
+    expect(screen.queryByTestId("cfg-save-diff")).toBeNull();
+    // confirm: now it is sent
+    await act(async () => { fireEvent.click(save()); });
+    await act(async () => { fireEvent.click(screen.getByText("Lưu các thay đổi này")); });
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    expect(puts()[0]).toMatchObject({ url: "/api/settings/data_policy" });
+    expect(puts()[0].body.max_data_lag_days).toBe(5);
+  });
+
   it("the old 'Chính sách dữ liệu' card of the Config page has the note, and the new card sits right below it", async () => {
     backend();
     const r = await act(async () => render(wrap(<Config />)));
     const note = await screen.findByTestId("cfg-guarded-note");
-    expect(note.textContent).toBe("4 mục chính sách đồng bộ chỉnh ở thẻ bên dưới");
+    expect(note.textContent).toBe("5 mục chính sách đồng bộ chỉnh ở thẻ bên dưới");
+    expect(screen.getByTestId("cfg-old-undo-note").textContent).toContain("chưa có nút hoàn tác trong 1.4.15");     // 1.4.15 lot 6
     const oldCard = note.closest("section")!;
     expect(oldCard.textContent).toContain("Chính sách dữ liệu");
     const next = oldCard.nextElementSibling!;

@@ -3,6 +3,7 @@ import { get, post, put } from "../api";
 import { useI18n } from "../i18n";
 import { Card, Code, ErrorBox, Field, JobProgress, Loading, OkBox, PageHeader, Pill, fmtDate, fmtTime, jobOutcome, useAction, useAsync, weekdayLabel } from "../components/ui";
 import { Icon, type IconName } from "../components/icons";
+import D0Controls from "../components/D0Controls";
 
 /** Pill tone for the effective state reported by the backend (never computed from the form). */
 const STATE_PILL: Record<string, string> = { OFF: "SKIPPED", ON: "OK", ON_NOT_READY: "RETRY_WAIT", ON_NOT_LOADED: "PENDING",
@@ -308,6 +309,8 @@ export default function Schedules() {
           </>)}
         </FlowCard>
       )}
+
+      <D0Controls />
 
       <Card icon="info" title={t("sch.offline.title")}>
         <ul className="small" data-testid="offline-rules">

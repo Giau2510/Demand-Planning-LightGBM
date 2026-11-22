@@ -2,34 +2,60 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { get, post, put } from "../api";
 import { useI18n } from "../i18n";
-import { Card, DateInput, ErrorBox, Field, Loading, OkBox, PageHeader, Term, fmtDatesInText, fmtPct, fmtTime, useAction, useAsync } from "../components/ui";
+import { Card, Confirm, DateInput, ErrorBox, Field, Loading, OkBox, PageHeader, Term, fmtDate, fmtDatesInText, fmtPct, fmtTime, useAction, useAsync } from "../components/ui";
 import { Icon } from "../components/icons";
 import DataPolicyGuarded from "../components/DataPolicyGuarded";
+import PresetsCard from "../components/PresetsCard";
 
 type Setter = (patch: Record<string, any>) => void;
 
-function Section({ section, title, children, warning }: { section: string; title: ReactNode; warning?: ReactNode; children: (v: any, set: Setter) => ReactNode }) {
+/** Section "Lưu" with a confirmation box: `ignore` = keys the server does not take from this card (not listed), `labels` = names shown */
+interface ConfirmDiff { ignore: string[]; labels: Record<string, string> }
+
+function Section({ section, title, children, warning, confirmDiff }: { section: string; title: ReactNode; warning?: ReactNode; confirmDiff?: ConfirmDiff; children: (v: any, set: Setter) => ReactNode }) {
   const { t } = useI18n();
   const remote = useAsync(() => get("/api/settings"), []);
   const [v, setV] = useState<any>(null);
   const [showHist, setShowHist] = useState(false);
   const hist = useAsync(() => (showHist ? get(`/api/settings/${section}/history`) : Promise.resolve(null)), [showHist]);
   const act = useAction();
+  const [base, setBase] = useState<any>(null);   // the values as last loaded / saved: the "old" side of the confirmation box
+  const [pending, setPending] = useState<[string, string, string][] | null>(null);
   useEffect(() => {
-    if (remote.data) setV(remote.data[section]);
+    if (remote.data) { setV(remote.data[section]); setBase(remote.data[section]); }
   }, [remote.data, section]);
   if (!v) return <Card title={title}><Loading /></Card>;
   const set: Setter = (patch) => setV({ ...v, ...patch });
-  const save = async () => {
+  const send = async () => {
     const r = await act.run(() => put(`/api/settings/${section}`, v), t("common.saved"));
     if (r) {
       setV(r);
+      setBase(r);
       hist.reload();
     }
   };
+  const fmtVal = (k: string, x: unknown) => {
+    if (x === null || x === undefined || x === "") return "—";
+    if (Array.isArray(x)) return x.join(", ") || "—";
+    if (typeof x === "boolean") return x ? t("common.yes") : t("common.no");
+    return k === "min_date" ? fmtDate(String(x)) : String(x);
+  };
+  const save = async () => {
+    if (!confirmDiff) { await send(); return; }
+    // card with a confirmation box: only the fields that really changed are listed; nothing changed = nothing is sent
+    const rows: [string, string, string][] = Object.keys(v)
+      .filter((k) => !confirmDiff.ignore.includes(k) && JSON.stringify(v[k]) !== JSON.stringify(base?.[k]))
+      .map((k): [string, string, string] => [confirmDiff.labels[k] ?? k, fmtVal(k, base?.[k]), fmtVal(k, v[k])]);
+    if (!rows.length) {
+      act.setError(null);
+      act.setOk(t("cfg.nothing_to_save"));
+      return;
+    }
+    setPending(rows);
+  };
   const reset = async () => {
     const r = await act.run(() => post(`/api/settings/${section}/reset`), t("common.saved"));
-    if (r) setV(r);
+    if (r) { setV(r); setBase(r); }
   };
   return (
     <Card title={title} actions={<>
@@ -41,6 +67,13 @@ function Section({ section, title, children, warning }: { section: string; title
       <ErrorBox error={act.error} />
       <OkBox text={act.ok} />
       <div className="form-grid">{children(v, set)}</div>
+      <Confirm open={!!pending} title={t("cfg.save_confirm_title")} confirmLabel={t("cfg.save_confirm_btn")}
+        onCancel={() => setPending(null)} onConfirm={() => { setPending(null); void send(); }}>
+        <p className="small">{t("cfg.save_confirm_intro")}</p>
+        <ul className="small" data-testid="cfg-save-diff">
+          {(pending ?? []).map(([n, o, w]) => <li key={n}>{n}: {o} → <b>{w}</b></li>)}
+        </ul>
+      </Confirm>
       {showHist && hist.data && (
         <details open className="hist">
           <summary>{t("common.history")}</summary>
@@ -169,6 +202,9 @@ export function FeatureGroups({ v, set }: { v: any; set: Setter }) {
   );
 }
 
+// the data_policy fields that the guarded card below edits; the generic Save / Reset of the old card never changes them
+const GUARDED_KEYS = ["window_start_date", "history_change_policy", "history_day_check", "source_time_travel_hours", "training_start_rule"];
+
 export default function Config() {
   const { t } = useI18n();
   return (
@@ -222,7 +258,19 @@ export default function Config() {
         )}
       </Section>
 
-      <Section section="data_policy" title={t("cfg.data_policy")} warning={<p className="small muted" data-testid="cfg-guarded-note">{t("gp.old_note")}</p>}>
+      <Section section="data_policy" title={t("cfg.data_policy")}
+        confirmDiff={{ ignore: GUARDED_KEYS, labels: { stale_check_sources: t("cfg.stale_sources"), max_data_lag_days: t("cfg.max_lag"), late_data_lookback_days: t("cfg.late_lookback"),
+          min_date: t("cfg.min_date"), price_outlier_factor: t("cfg.price_outlier") } }}
+        warning={<>
+          <p className="small muted" data-testid="cfg-guarded-note">{t("gp.old_note")}</p>
+          <p className="small muted" data-testid="cfg-old-undo-note">{t("cfg.old_undo_note")}</p>
+          <div className="alert info small" data-testid="cfg-guarded-reset-note">
+            <b>{t("cfg.guarded_reset_title")}</b>
+            <ul>
+              {["gp.policy", "gp.window", "gp.day_check", "gp.hours", "gp.tsr"].map((k) => <li key={k}>{t("cfg.guarded_reset_item").replace("{n}", t(k))}</li>)}
+            </ul>
+          </div>
+        </>}>
         {(v, set) => (
           <>
             <Field label={<Term id="freshness">{t("cfg.stale_sources")}</Term>}>
@@ -239,12 +287,12 @@ export default function Config() {
             <Field label={t("cfg.late_lookback")}><Num v={v} k="late_data_lookback_days" set={set} /></Field>
             <Field label={t("cfg.min_date")}><DateInput value={v.min_date ?? ""} onChange={(d) => set({ min_date: d || null })} /></Field>
             <Field label={t("cfg.training_start_rule")}>
-              <select data-testid="cfg-training-start-rule" value={v.training_start_rule ?? "WINDOW_START"}
-                onChange={(e) => set({ training_start_rule: e.target.value })}>
+              <select data-testid="cfg-training-start-rule" value={v.training_start_rule ?? "WINDOW_START"} disabled>
                 <option value="WINDOW_START">{t("cfg.tsr.WINDOW_START")}</option>
                 <option value="OPEN_HOURS_COVERAGE">{t("cfg.tsr.OPEN_HOURS_COVERAGE")}</option>
               </select>
               <span className="small muted">{t("cfg.training_start_rule_desc")}</span>
+              <span className="small muted" data-testid="cfg-tsr-moved">{t("cfg.tsr_moved")}</span>
             </Field>
             <Field label={t("cfg.price_outlier")}><Num v={v} k="price_outlier_factor" set={set} step={0.5} /></Field>
           </>
@@ -283,6 +331,8 @@ export default function Config() {
           </>
         )}
       </Section>
+
+      <PresetsCard />
     </div>
   );
 }

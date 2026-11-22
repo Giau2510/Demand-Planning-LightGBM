@@ -4,6 +4,8 @@ import { get, post, put } from "../api";
 import { useI18n } from "../i18n";
 import { Card, DateInput, ErrorBox, Field, Loading, OkBox, PageHeader, Pill, fmtBytes, fmtNum, fmtTime, useAction, useAsync } from "../components/ui";
 import { Icon } from "../components/icons";
+import OpenHoursReread from "../components/OpenHoursReread";
+import SyncRollbackCard from "../components/SyncRollbackCard";
 
 function vstatus(v: any) {
   return v?.validation?.status ?? "UNCHECKED";
@@ -316,6 +318,8 @@ export default function SqlSources() {
   return (
     <div className="stack">
       {header}
+      <OpenHoursReread />
+      <SyncRollbackCard />
       <SyncStatus />
       <Feed kind="history" data={s.data.history} reload={s.reload} />
       <Feed kind="d0" data={s.data.d0} reload={s.reload} />
