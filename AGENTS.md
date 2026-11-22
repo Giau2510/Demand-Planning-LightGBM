@@ -34,6 +34,7 @@ where report data lives: **[docs/README.md](docs/README.md)**. Most used:
 | VPS deployment (Linux, prepared, not deployed) | [docs/03_van_hanh/TRIEN-KHAI-VPS.md](docs/03_van_hanh/TRIEN-KHAI-VPS.md) |
 | Web UI design system (tokens, icons, components) | [docs/02_kien_truc_du_lieu/UI-DESIGN-SYSTEM.md](docs/02_kien_truc_du_lieu/UI-DESIGN-SYSTEM.md) |
 | Forecast & actual history (D+1 storage, session choice, actual status, KPI) | [docs/02_kien_truc_du_lieu/LICH-SU-FORECAST.md](docs/02_kien_truc_du_lieu/LICH-SU-FORECAST.md) |
+| Advanced settings and guarded write buttons (1.4.15, user guide) | [docs/CAI-DAT-NANG-CAO.md](docs/CAI-DAT-NANG-CAO.md) |
 | Version history | [CHANGELOG.md](CHANGELOG.md) |
 
 ## 2. Inspect before changing

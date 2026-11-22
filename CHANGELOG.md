@@ -5,7 +5,7 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
-## 1.4.15 (cleanup script: plan lock and master keep list - in preparation, not installed)
+## 1.4.15 (cleanup script: plan lock and master keep list; advanced settings and guarded data tools - in preparation, not installed)
 
 Owner 18/11/2026 (master keep list) and 19/11/2026 (plan lock), with the fixes approved 22/11/2026. Only the cleanup
 script `scripts\ops\don_dep_dinh_ky.ps1`, its launcher `scripts\ops\don_dep_current.ps1`, `scripts\ops\README.md` and
@@ -57,6 +57,49 @@ total budget part of S5 (only its comments are done); the wrong reason printed f
 later group fails; handling of a folder whose deletion stops half way; the 7
 proposed keep list lines; any change of the scheduled task `DemandForecastCleanup` (it stays DISABLED; it still calls
 the 1.4.0 script with `-Apply` directly, which bypasses the keep list and the plan lock).
+
+**Application: advanced settings and guarded data tools** (owner 22-23/11/2026, `reports/ban-1415/KE_HOACH_GIAO_DIEN_1415.md`;
+user guide [docs/CAI-DAT-NANG-CAO.md](docs/CAI-DAT-NANG-CAO.md)). No schema change. Every write path below has: a
+read-only preview, a typed text of the Vietnam day + a reason of at least 10 characters (or "I understand" for a LOW
+key), a check of the values seen at the preview (409 `SETTINGS_CHANGED_ELSEWHERE` / a stale signature), a busy gate
+(active jobs and the production windows 23:45-00:15 / 00:45-03:45), an audit row and an undo path. Status at the time of
+writing: tests written (`backend/tests/test_v1415_*.py`), NOT yet run; no package built.
+
+* Data policy (lot 1): the generic editor `PUT /api/settings/data_policy` and its reset keep `window_start_date`,
+  `history_change_policy`, `history_day_check`, `source_time_travel_hours`; these change only through
+  `/api/data-policy/guarded` (preview, expected value, `DOI-CHINH-SACH-DU-LIEU-<day>` for `history_change_policy` /
+  `training_start_rule`). `window_start_date` stays LOCKED (`DATA_POLICY_FIELD_LOCKED`: it is part of the BigQuery
+  mapping hash, a change forces a full validation and a full reload).
+* Settings registry + `/api/settings-advanced` (lot 2): every setting without a box of its own, with its risk level -
+  LOW ("Tôi hiểu"), HIGH (`DOI-CAI-DAT-AN-<day>`), PURCHASE (`DOI-CAI-DAT-ANH-HUONG-MUA-HANG-<day>`; changes the forecast /
+  purchase numbers), READONLY (fixed rule or system state), OWN_PATH (changed on its own page). A retention can only be
+  increased. Undo by audit row. The generic editor refuses a changed registry key (`SETTINGS_FIELD_GUARDED`).
+  `spike_cleaning` / `spike_e4_n` editable at PURCHASE level (owner decision 23/11/2026).
+* Settings export / import (lot 2B, API + CLI `settings-export` / `settings-import`): a JSON file with a SHA-256; never
+  secrets, OAuth, the BigQuery connection / mapping / paths, SQL sources, flow switches, D-0 pause, trial mode;
+  import = preview, then all selected sections or none with `NHAP-CAI-DAT-<day>` (+ the PURCHASE / HIGH texts for those
+  keys); undo of one import.
+* Release of held lines (lot 3, `/api/held-lines`): preview with a signature of the selected lines, at most 450 lines /
+  6,000 units per release, `NHA-DONG-GIU-<day>`, automatic backup first (free space >= 1.5 x (database + WAL + estimated
+  zip)), background thread (one at a time, heartbeat, an interrupted task never blocks), every gate checked again inside
+  the write transaction. `history_sync.release_holds` gains `expected_ids` / `before_write` (None = the CLI behaviour).
+* Read the open hours again (lot 4, `/api/open-hours-reread`): only days with NO stored open-hours row, at most 60 days,
+  `DOC-LAI-GIO-MO-BAN-<day>`, read-only BigQuery (dry run + byte cap), insert-only (a stored value is never overwritten;
+  a source NULL stays MISSING, never 0); the refresh watermark (`aux_source_reads`) is not touched.
+* Undo of one history-sync run (lot 5, `/api/sync-runs`, `/api/sync-rollback`): `rollbackable` per run, preview,
+  `QUAY-LAI-DONG-BO-<day>`, automatic backup, background thread; restores the demand rows of that run only (models and
+  forecasts trained on the changed data are not undone). `history_sync.rollback` gains `before_write`.
+* Presets and spike estimate (lot 6, `/api/presets`, `/api/spike-lines/estimate`): `AP-DUNG-PRESET-LGBM-CHOT-<day>`, a
+  flow not ready refuses the whole apply; the preset no longer sets `log_retention_days` and never lowers a retention
+  (also in the CLI); the editable keys are undone by the Advanced settings Undo. The spike estimate is a BigQuery dry run
+  only.
+* Operations locks: the write buttons refuse while a lock file named by `DF_OPS_LOCK`, `DF_HEAVY_LOCK` or
+  `DF_RUN_DIR\OPS_LOCK|HEAVY_LOCK` exists; when none of these variables is set the locks are not checked
+  (`ops_lock_checked: false`).
+
+Not included (postponed, reasons in the user guide): #16 `sel2-bootstrap` from the UI; #21 the other CLI commands
+(`history-check`, `sel2-avg-read` and the write commands); opening `window_start_date`; operations locks on a machine
+without the lock variables; undo of the old generic settings card.
 
 ## 1.4.14 (Forecast Results merged into Daily forecast)
 
