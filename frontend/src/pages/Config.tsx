@@ -4,6 +4,7 @@ import { get, post, put } from "../api";
 import { useI18n } from "../i18n";
 import { Card, DateInput, ErrorBox, Field, Loading, OkBox, PageHeader, Term, fmtDatesInText, fmtPct, fmtTime, useAction, useAsync } from "../components/ui";
 import { Icon } from "../components/icons";
+import DataPolicyGuarded from "../components/DataPolicyGuarded";
 
 type Setter = (patch: Record<string, any>) => void;
 
@@ -221,7 +222,7 @@ export default function Config() {
         )}
       </Section>
 
-      <Section section="data_policy" title={t("cfg.data_policy")}>
+      <Section section="data_policy" title={t("cfg.data_policy")} warning={<p className="small muted" data-testid="cfg-guarded-note">{t("gp.old_note")}</p>}>
         {(v, set) => (
           <>
             <Field label={<Term id="freshness">{t("cfg.stale_sources")}</Term>}>
@@ -249,6 +250,8 @@ export default function Config() {
           </>
         )}
       </Section>
+
+      <DataPolicyGuarded />
 
       <Section section="import" title={t("cfg.import")}>
         {(v, set) => (

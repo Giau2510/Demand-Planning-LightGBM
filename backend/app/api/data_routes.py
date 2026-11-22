@@ -68,6 +68,13 @@ def put_settings(section: str, body: dict):
         if changed:
             raise AppError("SCHEDULE_SWITCH_VIA_FLOW_API", 409, detail=", ".join(changed))
         body = {**body, **{k: cur[k] for k in SCHEDULE_SWITCHES}, **{k: cur[k] for k in D0_PAUSE_FIELDS}}
+    if section == "data_policy":
+        # 1.4.15: the guarded fields change only through /api/data-policy/guarded (expected value, confirmation, audit);
+        # a value sent here is ignored, read and save in one transaction so a concurrent guarded change is never undone
+        with db.tx() as c:
+            cur = ss.get("data_policy", c).model_dump()
+            body = {**body, **{k: cur[k] for k in DATA_POLICY_GUARDED}}
+            return ss.save(section, body, note="updated via UI", conn=c).model_dump()
     return ss.save(section, body, note="updated via UI").model_dump()
 
 
@@ -77,6 +84,10 @@ SCHEDULE_SWITCHES = ("d1_enabled", "d0_enabled", "train_enabled", "d1_enabled_at
 
 
 D0_PAUSE_FIELDS = ("d0_paused_until", "d0_paused_by", "d0_pause_windows")     # 1.4.13: set only through /api/d0/pause, never by this editor
+
+
+# 1.4.15: set only through /api/data-policy/guarded (api/data_policy_routes.py), never by this editor or its reset
+DATA_POLICY_GUARDED = ("window_start_date", "history_change_policy", "history_day_check", "source_time_travel_hours")
 
 
 @router.post("/settings/{section}/reset")
@@ -93,6 +104,12 @@ def reset_settings(section: str):
         trial = ss.get("daily_forecast").trial_mode
         return ss.save("daily_forecast", {**ss.DailyForecastSettings().model_dump(), "trial_mode": trial},
                        note="reset (trial mode kept)").model_dump()
+    if section == "data_policy":       # 1.4.15: a reset never changes the guarded fields nor the training start rule
+        with db.tx() as c:
+            cur = ss.get("data_policy", c).model_dump()
+            keep = {k: cur[k] for k in DATA_POLICY_GUARDED + ("training_start_rule",)}
+            return ss.save("data_policy", {**ss.DataPolicySettings().model_dump(), **keep},
+                           note="reset (guarded fields kept)", conn=c).model_dump()
     return ss.reset(section).model_dump()
 
 

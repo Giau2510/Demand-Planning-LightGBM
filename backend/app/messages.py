@@ -554,6 +554,33 @@ CATALOG: dict[str, tuple[str, str]] = {
                                     "This scope already has spike flags (training data of the spike cleaning) — --initial runs only with --reflag (derives the flags of every cached line again)."),
     "SPIKE_CLEANING_SKIPPED": ("Làm sạch đơn đột biến đang bật nhưng chưa có dấu đột biến đủ mới cho ngày này — lần chạy dùng số bán gốc (không làm sạch).",
                                "Spike cleaning is on but no recent enough spike flags exist for this day — the run uses the raw demand (no cleaning)."),
+    # 1.4.15 guarded data_policy fields (api/data_policy_routes.py)
+    "SETTINGS_CHANGED_ELSEWHERE": ("Cấu hình đã bị thay đổi ở nơi khác sau khi bạn mở màn hình (giá trị hiện tại khác giá trị bạn thấy) — chưa lưu gì. Hãy tải lại để xem giá trị hiện tại rồi làm lại.",
+                                   "The setting was changed elsewhere after you opened the screen (the current value differs from the one you saw) — nothing was saved. Reload to see the current value and try again."),
+    "DATA_POLICY_CONFIRM_REQUIRED": ("Thay đổi chính sách dữ liệu cần xác nhận: trường rủi ro cao (history_change_policy, window_start_date) cần gõ đúng cụm xác nhận của hôm nay và lý do ít nhất 10 ký tự; trường khác cần đánh dấu đã hiểu (acknowledged) — chưa lưu gì.",
+                                     "A data-policy change needs a confirmation: a high-risk field (history_change_policy, window_start_date) needs today's typed confirmation text and a reason of at least 10 characters; the other fields need acknowledged = true — nothing was saved."),
+    "DATA_POLICY_UNKNOWN_FIELD": ("Chỉ đổi được 1 đến 4 trường được bảo vệ của chính sách dữ liệu (window_start_date, history_change_policy, history_day_check, source_time_travel_hours) — có trường không hợp lệ, chưa lưu gì.",
+                                  "Only 1 to 4 guarded data-policy fields can be changed (window_start_date, history_change_policy, history_day_check, source_time_travel_hours) — a field is not valid, nothing was saved."),
+    "DATA_POLICY_EXPECTED_REQUIRED": ("Thiếu giá trị cũ (expected) của một trường cần đổi — không biết bạn đang sửa từ giá trị nào, chưa lưu gì.",
+                                      "The previous value (expected) of a field to change is missing — the value being changed from is unknown, nothing was saved."),
+    "DATA_POLICY_INVALID_VALUE": ("Giá trị mới của chính sách dữ liệu không hợp lệ (sai kiểu, ngoài khoảng cho phép, ngày sai dạng YYYY-MM-DD hoặc ở tương lai) — chưa lưu gì.",
+                                  "The new data-policy value is invalid (wrong type, out of the allowed range, a date not in YYYY-MM-DD form or in the future) — nothing was saved."),
+    "NO_CHANGE": ("Giá trị mới giống hệt giá trị hiện tại — không có gì để lưu.",
+                  "The new values equal the current values — nothing to save."),
+    "DATA_POLICY_FIELD_LOCKED": ("Ngày bắt đầu cửa sổ dữ liệu (window_start_date) đang bị khoá, không đổi ở đây: giá trị này nằm trong mã cấu hình BigQuery, đổi nó làm D-1 bị từ chối (BQ_VALIDATION_REQUIRED) cho tới khi kiểm tra lại toàn kỳ, rồi NẠP LẠI TOÀN BỘ và ghi đè dữ liệu từ ngày mới (có thể thay dữ liệu 2025) — chưa lưu gì.",
+                                 "The data window start (window_start_date) is locked and cannot be changed here: it is part of the BigQuery mapping hash, so a change makes D-1 refuse (BQ_VALIDATION_REQUIRED) until a new full-period validation, then a FULL reload overwrites the data from the new date (it can replace 2025 data) — nothing was saved."),
+    "WINDOW_START_CHANGES_RELOAD": ("Đổi ngày bắt đầu cửa sổ dữ liệu làm đổi mã cấu hình BigQuery: D-1 dừng cho tới khi kiểm tra lại toàn kỳ, sau đó nạp lại toàn bộ và ghi đè từ ngày mới. Vì vậy trường này đang bị khoá.",
+                                    "Changing the data window start changes the BigQuery mapping hash: D-1 stops until a new full-period validation, then everything is reloaded and overwritten from the new date. This field is therefore locked."),
+    "DATA_POLICY_BUSY": ("Đang có việc D-1 / làm mới dự báo / huấn luyện chạy hoặc chờ chạy lại, hoặc đang trong khung giờ vận hành (23:45–00:15, 00:45–03:45 giờ Việt Nam) — chưa lưu gì. Hãy thử lại sau.",
+                         "A D-1 / forecast refresh / training job is running or waiting to retry, or this is a production window (23:45–00:15, 00:45–03:45 Vietnam time) — nothing was saved. Try again later."),
+    "APPLIES_AT_NEXT_D1": ("Thay đổi có hiệu lực từ lần D-1 kế tiếp; dữ liệu đã lưu không đổi ngay.",
+                           "The change takes effect from the next D-1; stored data does not change at once."),
+    "FOLLOW_SOURCE_DROPS_REMOVED_LINES": ("FOLLOW_SOURCE: dòng đơn mà nguồn đã bỏ (huỷ, chưa xác nhận, đổi phạm vi) sẽ không còn được giữ trong số bán đã lưu.",
+                                          "FOLLOW_SOURCE: order lines the source dropped (cancelled, unconfirmed, scope change) are no longer kept in the stored demand."),
+    "KEEP_OBSERVED_LINES_HOLDS_REMOVED_LINES": ("KEEP_OBSERVED_LINES: dòng đơn mà nguồn đã bỏ sau đó vẫn được giữ trong số bán đã lưu.",
+                                                "KEEP_OBSERVED_LINES: order lines the source drops later stay in the stored demand."),
+    "UNDO_SETTINGS_ONLY": ("Hoàn tác chỉ trả lại cài đặt, không trả lại dữ liệu D-1 đã ghi theo cài đặt mới; trả lại dữ liệu cần history_sync.rollback.",
+                           "An undo restores the setting only, not the data a D-1 already wrote under the new setting; restoring data needs history_sync.rollback."),
 }
 
 
@@ -588,7 +615,8 @@ def category(code: str) -> str:
                 "SCHEDULE_NOT_REGISTERED", "REFRESH_SCHEDULE_DISABLED", "REFRESH_WAITS_FOR_D1", "REPORT_SCHEDULE_DISABLED",
                 "DAILY_FORECAST_DISABLED", "TRIAL_MODE_CONFIRM_REQUIRED", "FEATURE_TABLE_CONFIRM_REQUIRED",
                 "FEATURE_TABLE_VIA_OWN_API", "FEATURE_TABLE_SET_BY_TRAINING", "HORIZON_WEIGHT_INCOMPLETE",
-                "HORIZON_WEIGHT_DIRECT_ONLY", "TRIAL_MODE_CHANGED"):
+                "HORIZON_WEIGHT_DIRECT_ONLY", "TRIAL_MODE_CHANGED", "SETTINGS_CHANGED_ELSEWHERE",
+                "DATA_POLICY_CONFIRM_REQUIRED", "DATA_POLICY_FIELD_LOCKED", "DATA_POLICY_BUSY"):
         return "CONFIG"
     if code in ("INTERNAL_ERROR",):
         return "INTERNAL"
