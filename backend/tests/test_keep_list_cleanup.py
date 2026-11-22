@@ -1908,3 +1908,344 @@ def test_t14_vi_an_entry_dist_versions_already_deleted_is_not_expected_from_the_
     assert chk["planned_existing"] == 2 and chk["dry_run_delete"] == 2, chk       # pkg is gone: neither expected nor listed
     _gone(a, b, pkg)
     assert _prune_calls(w)[-1] == "apply=True"
+
+
+# ================================================================== 1.4.15 S-a: a failing keep list check / an unexpected error stops the apply
+# Technique (as _inject_touch): the COPY of the script in the fake tool folder gets three one-line additions: a flag set right
+# before the apply loop ($Script:DfApplyPhase: the plan, also computed inside the -Apply run, is untouched), and a throw at the
+# start of Test-KeepListBlocked ($env:DF_TEST_KLTHROW) or of Get-ProtectReason ($env:DF_TEST_PROTTHROW) when the path holds
+# that text. Limit: the injection finds its places by the text of the function headers and the apply loop (asserted once each:
+# a rename of these lines makes the helper fail loudly, not silently pass).
+
+_STOP = "zzstop"                                                       # in the names of the entries that must make the script throw
+
+
+def _inject_throw(w: World) -> None:
+    p = w.tool / CLEANUP.name
+    src = p.read_bytes()
+    marks = {
+        b"function Test-KeepListBlocked($G, [string]$Path) {":
+            b" if ($Script:DfApplyPhase -and $env:DF_TEST_KLTHROW -and $Path.ToLowerInvariant().Contains($env:DF_TEST_KLTHROW)) { throw 'injected keep list failure' }",
+        b'function Get-ProtectReason([string]$Path, [string]$Allow = "") {':
+            b" if ($Script:DfApplyPhase -and $env:DF_TEST_PROTTHROW -and $Path.ToLowerInvariant().Contains($env:DF_TEST_PROTTHROW)) { throw 'injected unexpected failure' }",
+    }
+    for m, add in marks.items():
+        assert src.count(m) == 1, m
+        src = src.replace(m, m + add)
+    loop = b"if ($Apply -and -not $Refused.Count) {"
+    assert src.count(loop) == 1
+    p.write_bytes(src.replace(loop, b"$Script:DfApplyPhase = [bool]($Apply -and -not $Refused.Count)\n" + loop))
+
+
+def _old_tmp(w: World, *names: str) -> list[Path]:
+    out = [_file(w.tmproot / n / "f.txt").parent for n in names]
+    w.age(3, *out)
+    return out
+
+
+def _report_files(rep: dict, out: str) -> tuple[Path, Path, Path]:
+    j = Path([ln.strip()[len("Report: "):] for ln in out.splitlines() if ln.strip().startswith("Report: ")][-1])
+    return j, j.with_suffix(".txt"), Path(rep["plan_text_file"])
+
+
+def test_sa_s1_a_keep_list_check_that_throws_keeps_that_candidate_and_error_exit_1_the_others_are_deleted(w: World):
+    _inject_throw(w)
+    keepme, ok1, ok2 = _old_tmp(w, f"a_{_STOP}_dir", "ok1", "ok2")
+    w.write_keep(["# unrelated", r"reports\no_such_folder"])
+    code, out, rep = w.run("tmp", apply=True, env_extra={"DF_TEST_KLTHROW": _STOP})
+    assert code == 1, out
+    assert rep["mode"] == "APPLY" and rep["apply_gate"] == "MATCHED" and rep["exit_code"] == 1   # the plan matched: the failure came later
+    assert "apply_stopped" not in rep and "APPLY STOPPED" not in out        # a candidate error is not a stop of the apply
+    g = _groups(rep)["tmp"]
+    assert {_n(keepme), _n(ok1), _n(ok2)} <= _cands(rep, "tmp")
+    assert g["status"] == "error"
+    errs = [e for e in _list(g["errors"]) if "keep list check failed" in e]
+    assert len(errs) == 1 and _n(keepme) in _n(errs[0]) and "injected keep list failure" in errs[0] and errs[0].endswith(": not deleted"), g["errors"]
+    _alive(keepme)
+    _gone(ok1, ok2)
+    assert rep["totals"]["deleted_count"] == 2 and g["deleted_count"] == 2
+    lines = _txt_report(out)
+    assert any(ln.startswith("NOT deleted tmp ") and str(keepme).lower() in ln.lower() and "keep list check failed" in ln for ln in lines), lines
+    assert not any(ln.startswith("NOT deleted tmp ") and (str(ok1).lower() in ln.lower() or str(ok2).lower() in ln.lower()) for ln in lines)
+
+
+def test_sa_s1_the_same_failure_in_a_group_other_than_tmp_is_fail_closed_too(w: World):
+    _inject_throw(w)
+    victim, control = _old_export_days(w)                                 # exports go through Remove-Candidate as well
+    w.write_keep(["# unrelated", r"reports\no_such_folder"])
+    code, out, rep = w.run("exports", apply=True, env_extra={"DF_TEST_KLTHROW": victim.name})
+    assert code == 1, out
+    assert any("keep list check failed" in e and _n(victim) in _n(e) for e in _list(_groups(rep)["exports"]["errors"]))
+    _alive(victim)
+    _gone(control)
+
+
+def test_sa_s2_an_unexpected_error_in_the_apply_stops_this_and_the_next_groups_and_still_writes_the_reports(w: World):
+    _inject_throw(w)
+    ex_victim, ex_control = _old_export_days(w)                           # group exports comes BEFORE tmp: deleted first
+    t1, t2 = _old_tmp(w, f"{_STOP}_1", f"{_STOP}_2")                      # tmp: every candidate throws in Get-ProtectReason
+    d1, d2 = (w.temp / f"DemandForecast-deploy-2026110{i}-000000" for i in (1, 2))   # deploy_temp comes AFTER tmp
+    for d in (d1, d2):
+        _file(d / "pkg.zip")
+    w.age(3, d1, d2)
+    w.write_keep(["# unrelated", r"reports\no_such_folder"])
+    code, out, rep = w.run("exports,tmp,deploy_temp", apply=True, env_extra={"DF_TEST_PROTTHROW": _STOP})
+    assert code == 1, out
+    groups = _groups(rep)
+    assert {_n(t1), _n(t2)} <= _cands(rep, "tmp") and {_n(d1), _n(d2)} <= _cands(rep, "deploy_temp")   # the plan did list them
+    _gone(ex_victim, ex_control)                                          # what the apply did before the failure stays done
+    _alive(t1, t2, d1, d2)                                                # the group that failed and the later one: nothing
+    assert groups["exports"]["status"] == "ok" and groups["exports"]["deleted_count"] == 2
+    assert groups["tmp"]["status"] == "error" and groups["tmp"]["deleted_count"] == 0
+    assert any(e.startswith("apply stopped, line ") and "injected unexpected failure" in e for e in _list(groups["tmp"]["errors"])), groups["tmp"]["errors"]
+    assert groups["deploy_temp"]["status"] == "ok" and groups["deploy_temp"]["deleted_count"] == 0 and not _list(groups["deploy_temp"]["errors"])
+    assert "applied" not in groups["deploy_temp"] and groups["tmp"]["applied"] is True
+    assert "unexpected error in group tmp" in rep["apply_stopped"] and "nothing more archived or deleted" in rep["apply_stopped"]
+    assert rep["exit_code"] == 1 and rep["totals"]["deleted_count"] == 2 and rep["apply_gate"] == "MATCHED"
+    # APPLY STOPPED in the console, the .txt and the json; the .txt lists what was deleted before and why the rest was not
+    assert "APPLY STOPPED: unexpected error in group tmp" in out
+    j, txt, plan = _report_files(rep, out)
+    assert j.is_file() and txt.is_file() and plan.is_file()
+    assert plan.name == j.stem + ".plan.txt" and _sha(plan.read_bytes()) == rep["plan_hash"]   # all three files of the run, same hash
+    lines = txt.read_text(encoding="utf-8-sig").splitlines()
+    assert any(ln.startswith("APPLY STOPPED: unexpected error in group tmp") and ln.endswith(", exit 1.") for ln in lines), lines
+    for d in (ex_victim, ex_control):
+        assert any(ln.startswith("deleted exports ") and str(d).lower() in ln.lower() for ln in lines), lines
+    for t in (t1, t2):
+        assert any(ln.startswith("NOT deleted tmp ") and str(t).lower() in ln.lower() and "apply stopped in this group" in ln for ln in lines), lines
+    for d in (d1, d2):
+        assert any(ln.startswith("NOT deleted deploy_temp ") and str(d).lower() in ln.lower() and "group not applied: apply stopped" in ln for ln in lines), lines
+
+
+def test_sa_s2_an_unexpected_error_in_the_first_group_leaves_every_later_group_untouched(w: World):
+    _inject_throw(w)
+    ex_victim, ex_control = _old_export_days(w)                           # both export candidates sit under ...\du_bao\
+    (t1,) = _old_tmp(w, "ok_tmp")
+    w.write_keep(["# unrelated", r"reports\no_such_folder"])
+    code, out, rep = w.run("exports,tmp", apply=True, env_extra={"DF_TEST_PROTTHROW": "du_bao"})
+    assert code == 1, out
+    assert "unexpected error in group exports" in rep["apply_stopped"]
+    _alive(t1, ex_victim, ex_control)                                     # nothing deleted: not in exports, not in the later tmp
+    assert rep["totals"]["deleted_count"] == 0
+    assert not _list(_groups(rep)["tmp"]["errors"]) and "applied" not in _groups(rep)["tmp"]
+
+
+def test_sa_s3_dist_a_keep_list_check_that_throws_never_runs_prune_apply(w: World):
+    _inject_throw(w)
+    a, b = _dist_world(w)
+    w.write_keep([r"dist\other.zip"])
+    code, out, rep = w.run("dist", apply=True, extra=_DIST_ARGS, env_extra={"DF_TEST_KLTHROW": "a.zip"})
+    assert code == 1, out
+    assert "apply=True" not in _prune_calls(w) and _prune_calls(w), _prune_calls(w)    # prune-artifacts.ps1 -Apply never started
+    g = _groups(rep)["dist"]
+    assert any(e.startswith("prune-artifacts.ps1 -Apply not run: keep list check failed:") and "injected keep list failure" in e
+               for e in _list(g["errors"])), g["errors"]
+    assert g["status"] == "error" and g["deleted_count"] == 0 and rep["totals"]["deleted_count"] == 0
+    assert "apply_stopped" not in rep                                     # handled inside Invoke-DistApply, not an unexpected stop
+    _alive(a, b)
+
+
+def test_sa_s3_dist_without_the_failure_the_same_setup_still_runs_prune_apply(w: World):
+    _inject_throw(w)                                                      # injected copy, DF_TEST_KLTHROW not set: no change
+    a, b = _dist_world(w)
+    w.write_keep([r"dist\other.zip"])
+    code, out, rep = w.run("dist", apply=True, extra=_DIST_ARGS)
+    assert code == 0, out
+    assert _prune_calls(w)[-1] == "apply=True" and "apply_stopped" not in rep
+    _gone(a, b)
+
+
+def test_sa_s4_without_an_exception_nothing_changes_apply_deletes_the_plan_exit_0_no_stop_text(w: World):
+    ex_victim, ex_control = _old_export_days(w)
+    t1, t2 = _old_tmp(w, "ok1", "ok2")
+    w.write_keep(["# unrelated", r"reports\no_such_folder"])
+    code, out, rep = w.run("exports,tmp", apply=True)                     # the script of the repository, not changed
+    assert code == 0, out
+    assert "apply_stopped" not in rep and "APPLY STOPPED" not in out and rep["exit_code"] == 0
+    assert not any("APPLY STOPPED" in ln or "apply stopped" in ln for ln in _txt_report(out))
+    _gone(ex_victim, ex_control, t1, t2)
+    assert rep["totals"]["deleted_count"] == 4
+    assert all(g["status"] == "ok" and g["applied"] is True and not _list(g["errors"]) for g in _list(rep["groups"]))
+
+
+def test_sa_s4_a_keep_list_entry_still_blocks_with_the_new_try_and_is_not_an_error(w: World):
+    kept, gone = _old_tmp(w, "keepme", "dropme")
+    w.write_keep([str(kept)])
+    code, out, rep = w.run("tmp", apply=True)
+    assert code == 0, out
+    _alive(kept)
+    _gone(gone)
+    assert _n(kept) in _blocked(rep) and not _list(_groups(rep)["tmp"]["errors"]) and "apply_stopped" not in rep
+
+
+# ================================================================== 1.4.15: the launcher passes -Groups on
+
+_STUB_GROUPS = ('param([string]$ProjectRoot = "", [switch]$Apply, [switch]$IncludeDist, [string[]]$DistKeep = @(), [string]$TmpRoot = "",\n'
+                '      [string]$KeepListFile = "", [string]$ConcludedListFile = "", [string]$KeepListMaster = "", [string]$PlanHash = "",\n'
+                '      [string]$KeepListHash = "", [string[]]$Groups = @())\n'
+                "Set-Content -LiteralPath (Join-Path $PSScriptRoot 'args.txt') -Encoding UTF8 -Value ((@($PSBoundParameters.Keys | Sort-Object |\n"
+                "    ForEach-Object { \"$_=$(@($PSBoundParameters[$_]) -join '#')\" }) + @(\"GroupsCount=$(@($Groups).Count)\")) -join '|')\n"
+                "exit 0\n")
+# a script with the plan lock parameters but no -Groups
+_STUB_LOCK_NO_GROUPS = ('param([string]$ProjectRoot = "", [switch]$Apply, [string]$TmpRoot = "", [string]$KeepListMaster = "",\n'
+                        '      [string]$PlanHash = "", [string]$KeepListHash = "")\n') + _MARK
+
+
+def _got(lc: Launch) -> dict[str, str]:
+    return dict(kv.split("=", 1) for kv in (lc.ops / "args.txt").read_text(encoding="utf-8-sig").strip().split("|"))
+
+
+@pytest.mark.parametrize("given,want", [("tmp, deploy_temp", "tmp,deploy_temp"), (" tmp ,, deploy_temp , ", "tmp,deploy_temp"),
+                                        ("tmp,deploy_temp", "tmp,deploy_temp"), ("backups", "backups")])
+def test_l1_groups_given_as_one_string_is_split_trimmed_and_passed_on_as_one_comma_list(lc: Launch, given: str, want: str):
+    lc.install(_STUB_GROUPS)
+    code, out = lc.run("-Groups", given)
+    assert code == 0, out
+    got = _got(lc)
+    assert got["Groups"] == want and got["GroupsCount"] == "1", got      # ONE argument "a,b", not two words
+    assert "Apply" not in got and got["ProjectRoot"] == str(lc.proj)
+
+
+def test_l1_groups_goes_together_with_apply_and_the_hashes(lc: Launch):
+    lc.install(_STUB_GROUPS)
+    ph, kh = "0123456789abcdef" * 4, "fedcba9876543210" * 4
+    code, out = lc.run("-Groups", "tmp, deploy_temp", "-Apply", "-PlanHash", ph, "-KeepListHash", kh)
+    assert code == 0, out
+    got = _got(lc)
+    assert got["Groups"] == "tmp,deploy_temp" and got["Apply"] == "True" and got["PlanHash"] == ph and got["KeepListHash"] == kh
+
+
+@pytest.mark.parametrize("empty", ['""', '" "', '" , ,"'])
+def test_l2_groups_given_but_empty_is_refused_exit_2_nothing_run_not_the_default_groups(lc: Launch, empty: str):
+    lc.install(_STUB_GROUPS)
+    victim = _file(lc.tmproot / "old_entry" / "f.txt")
+    # the command line is built by hand: an empty argument must reach the launcher as "" (a list of arguments may drop it)
+    env = dict(os.environ, LOCALAPPDATA=str(lc.la), TEMP=str(lc.temp), TMP=str(lc.temp))
+    cmd = (f'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{WRAPPER}" -ProjectRoot "{lc.proj}" '
+           f'-TmpRoot "{lc.tmproot}" -Groups {empty}')
+    p = subprocess.run(cmd, capture_output=True, timeout=300, env=env)
+    out = (p.stdout + p.stderr).decode("utf-8", errors="replace")
+    assert p.returncode == 2, (p.returncode, out)
+    assert "-Groups refused" in out and "no group name given" in out and "Nothing run" in out, out
+    assert not (lc.ops / "args.txt").exists() and victim.is_file()
+
+
+@pytest.mark.parametrize("args", [["-Groups", "tmp"], ["-Groups", "tmp,deploy_temp", "-Apply", "-PlanHash", "a" * 64, "-KeepListHash", "b" * 64]])
+def test_l3_an_installed_script_with_the_lock_but_without_groups_is_refused_exit_2_nothing_run(lc: Launch, args: list[str]):
+    lc.install(_STUB_LOCK_NO_GROUPS)
+    code, out = lc.run(*args)
+    assert code == 2, out
+    assert "-Groups refused" in out and "has no -Groups parameter" in out and "Nothing run" in out, out
+    assert not (lc.ops / "ran.txt").exists()
+
+
+def test_l3_the_old_1_4_14_script_has_its_own_groups_parameter_so_a_dry_run_gets_it_but_apply_stays_refused(lc: Launch):
+    old = _head_cleanup()
+    assert old is not None, "tag v1.4.14 (the old installed script) is not available: this test must not be skipped"
+    assert b"PlanHash" not in old and b"KeepListMaster" not in old
+    assert b"[string[]]$Groups" in old                                    # the 1.4.14 release already had -Groups (read, not assumed)
+    lc.install(old)
+    victim = _file(lc.tmproot / "old_entry" / "f.txt")
+    _set_times(lc.root, [(victim, NOW - timedelta(days=3)), (victim.parent, NOW - timedelta(days=3))])
+    code, out = lc.run("-Groups", "tmp, deploy_temp")                     # a dry run: -Groups is passed on, as one comma list
+    assert code == 0, out
+    reports = list((lc.proj / "logs" / "don_dep").glob("don_dep-*.json"))
+    assert len(reports) == 1 and "groups=tmp,deploy_temp" in out and victim.is_file()
+    code, out = lc.run("-Groups", "tmp", "-Apply")                        # -Apply: refused because of the missing plan lock
+    assert code == 2 and "-Apply refused" in out and "-Groups refused" not in out, out
+    assert victim.is_file()
+
+
+def test_l3_an_installed_script_that_cannot_be_parsed_is_refused_with_groups(lc: Launch):
+    lc.install(_STUB_ALL + "if ( {\n")
+    code, out = lc.run("-Groups", "tmp")
+    assert code == 2, out
+    assert "-Groups refused" in out and "cannot be parsed" in out and "Nothing run" in out, out
+    assert not (lc.ops / "args.txt").exists()
+
+
+def test_l3_groups_named_only_in_a_comment_or_a_string_do_not_count_as_a_parameter(lc: Launch):
+    lc.install('# supports -Groups\nparam([string]$ProjectRoot = "", [switch]$Apply)\n$null = \'param($Groups)\'\n' + _MARK)
+    code, out = lc.run("-Groups", "tmp")
+    assert code == 2 and "has no -Groups parameter" in out, out
+    assert not (lc.ops / "ran.txt").exists()
+
+
+def test_l4_without_groups_nothing_is_passed_the_default_groups_decide(lc: Launch):
+    lc.install(_STUB_GROUPS)
+    for extra in ([], ["-Apply", "-PlanHash", "a" * 64, "-KeepListHash", "b" * 64]):
+        code, out = lc.run(*extra)
+        assert code == 0, out
+        got = _got(lc)
+        assert "Groups" not in got and got["GroupsCount"] == "0", got
+    # and a script without -Groups still runs as before when none is requested
+    lc.install(_STUB_LOCK_NO_GROUPS)
+    code, out = lc.run()
+    assert code == 0 and (lc.ops / "ran.txt").is_file(), out
+
+
+def _l5_tree(lc: Launch) -> tuple[Path, Path, Path]:
+    """The current script installed, a valid keep list, one old candidate in tmp and one in deploy_temp (%TEMP% of the run)."""
+    lc.install(CLEANUP.read_bytes())
+    for n in ("don_dep_giu.txt", "don_dep_ket_luan.txt"):
+        shutil.copyfile(CLEANUP.parent / n, lc.ops / n)
+    (lc.ops / "runner").mkdir()
+    (lc.proj / "docs" / "quy-tac").mkdir(parents=True)
+    keep = lc.proj / "docs" / "quy-tac" / "keep_list.txt"
+    keep.write_text("# nothing here matches\nreports\\no_such_folder\n", encoding="ascii")
+    in_tmp = _file(lc.tmproot / "old_entry" / "f.txt").parent
+    dep = lc.temp / "DemandForecast-deploy-20261101-000000"
+    _file(dep / "pkg.zip")
+    _set_times(lc.root, [(in_tmp / "f.txt", NOW - timedelta(days=3)), (in_tmp, NOW - timedelta(days=3)),
+                         (dep / "pkg.zip", NOW - timedelta(days=3)), (dep, NOW - timedelta(days=3))])
+    return in_tmp, dep, keep
+
+
+def _json_of(out: str) -> dict:
+    return json.loads(Path([ln.strip()[len("Report: "):] for ln in out.splitlines() if ln.strip().startswith("Report: ")][-1]).read_text(encoding="utf-8-sig"))
+
+
+def test_l5_the_real_script_through_the_launcher_apply_with_groups_tmp_deletes_only_the_tmp_plan(lc: Launch):
+    in_tmp, dep, keep = _l5_tree(lc)
+    code, out = lc.run("-Groups", "tmp")
+    assert code == 0, out
+    ph_tmp, kh = _hashes(out)
+    assert ph_tmp and kh == _sha(keep.read_bytes())
+    rep_tmp = _json_of(out)
+    assert _list(rep_tmp["groups_selected"]) == ["tmp"] and [g["group"] for g in _list(rep_tmp["groups"])] == ["tmp"]
+    code, out = lc.run()                                                  # the default groups: another plan, another hash
+    assert code == 0, out
+    ph_all, kh_all = _hashes(out)
+    assert ph_all and ph_all != ph_tmp and kh_all == kh
+    assert in_tmp.is_dir() and dep.is_dir()                               # dry runs delete nothing
+    # the hash of the plan of ALL groups given with -Groups tmp: refused, exit 2, nothing deleted
+    code, out = lc.run("-Groups", "tmp", "-Apply", "-PlanHash", ph_all, "-KeepListHash", kh)
+    assert code == 2 and "APPLY REFUSED" in out and "plan changed" in out, out
+    assert in_tmp.is_dir() and dep.is_dir()
+    # the right pair: only the group tmp is deleted, deploy_temp stays although it is a candidate of the default plan
+    code, out = lc.run("-Groups", "tmp", "-Apply", "-PlanHash", ph_tmp, "-KeepListHash", kh)
+    assert code == 0, out
+    assert not in_tmp.exists() and dep.is_dir() and (dep / "pkg.zip").is_file()
+    rep = _json_of(out)
+    assert rep["mode"] == "APPLY" and _list(rep["groups_selected"]) == ["tmp"] and rep["totals"]["deleted_count"] == 1
+
+
+def test_l5_the_default_plan_of_the_same_tree_does_list_the_deploy_temp_candidate(lc: Launch):
+    """Control of the test above: the entry that -Groups tmp leaves alone really is a candidate of the default plan."""
+    in_tmp, dep, _keep = _l5_tree(lc)
+    code, out = lc.run()
+    assert code == 0, out
+    rep = _json_of(out)
+    assert _n(dep) in {_n(c["path"]) for g in _list(rep["groups"]) if g["group"] == "deploy_temp" for c in _list(g["candidates"])}
+    assert _n(in_tmp) in {_n(c["path"]) for g in _list(rep["groups"]) if g["group"] == "tmp" for c in _list(g["candidates"])}
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_l6_an_unknown_group_name_is_refused_by_the_cleanup_exit_2_nothing_deleted(lc: Launch, apply: bool):
+    in_tmp, dep, keep = _l5_tree(lc)
+    extra = ["-Apply", "-PlanHash", "a" * 64, "-KeepListHash", _sha(keep.read_bytes())] if apply else []
+    code, out = lc.run("-Groups", "tmp,bogus", *extra)
+    assert code == 2, out
+    assert "unknown group bogus" in out and "Nothing done" in out, out
+    assert in_tmp.is_dir() and dep.is_dir()
+    assert not (lc.proj / "logs" / "don_dep").exists()                    # the cleanup stopped before any report

@@ -139,6 +139,20 @@ run (error, exit 1); a `dist\` / `release\` entry that disappears during its run
 `DemandForecastCleanup` calls `...\1.4.0\scripts\ops\don_dep_dinh_ky.ps1 -Apply` directly, which knows neither the keep
 list nor the plan lock: keep it DISABLED; before enabling it again (owner approval, after 1.4.15 is installed) back the
 task up and point it at `don_dep_current.ps1` (a weekly task cannot pass the hash of a plan approved the same week).
+`don_dep_current.ps1 -Groups a,b` (1.4.15) passes the groups on as one comma list; it is refused (exit 2, nothing run,
+never the default groups instead) when `-Groups` is empty or the INSTALLED script has no `-Groups` parameter. The plan
+hash depends on the groups chosen, so `-Apply` takes the same `-Groups` as the dry run:
+`don_dep_current.ps1 -ProjectRoot "D:\Buymed\Lightgbm AI" -Groups backups` (dry run), then the same
+`-Groups backups -Apply -PlanHash <PLAN_HASH> -KeepListHash <KEEP_LIST_SHA256>`.
+
+Fail-closed apply (1.4.15, S-a): a keep list check that throws right before a deletion (or before
+`prune-artifacts.ps1 -Apply`) deletes nothing for that entry (error `keep list check failed`, exit 1). An unexpected
+error that is not handled per entry stops every further deletion (that group and the next ones; report
+`apply_stopped`, `APPLY STOPPED` line, the group gets status `error`); the `.json` / `.txt` / `.plan.txt` are still
+written (entries deleted before are listed) and the exit code is 1. Errors handled per entry (an entry that cannot be
+deleted) and per archive (group `logs`) are only recorded and the next entry is still checked; the failed entry itself is
+never deleted. A companion file of a backup (`.sha256`, `config-*`) is its own entry: when the zip cannot be deleted, its
+companions may still be.
 
 | Group | Candidates |
 |---|---|

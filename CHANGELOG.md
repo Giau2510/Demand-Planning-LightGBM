@@ -5,6 +5,39 @@ are in the report named in brackets (folder `reports/`). "Changed defaults" list
 they take effect without any data change for every section/key that was never saved (see
 [docs/data/DATA-MODEL.md](docs/data/DATA-MODEL.md) section 9).
 
+## 1.4.15 (cleanup script: plan lock and master keep list - in preparation, not installed)
+
+Owner 18/11/2026 (master keep list) and 19/11/2026 (plan lock), with the fixes approved 22/11/2026. Only the cleanup
+script `scripts\ops\don_dep_dinh_ky.ps1`, its launcher `scripts\ops\don_dep_current.ps1`, `scripts\ops\README.md` and
+their tests change: no application, schema, data or forecast number change.
+
+* **Master keep list** `docs\quy-tac\keep_list.txt` (owner 18/11/2026), checked by the script right before every
+  deletion of every group and before `prune-artifacts.ps1 -Apply`: a kept path or pattern (and what contains it) is never
+  deleted and is listed as `KEEP_LIST`. Fail-closed: a missing, empty or unreadable list deletes nothing (exit 1, one
+  notice with `-Apply`).
+* **Plan lock** (owner 19/11/2026): a dry run prints `PLAN_HASH` (SHA-256 of the plan text, saved as `.plan.txt`) and
+  `KEEP_LIST_SHA256`; `-Apply` needs `-PlanHash` and `-KeepListHash` and computes the plan again. A missing / malformed
+  hash, a changed plan or a changed keep list -> `APPLY_REFUSED`, exit 2, nothing archived or deleted.
+* `-Apply` reads only the master keep list of the project (`-KeepListMaster` empty or that file, else exit 2). The
+  launcher refuses `-Apply` (exit 2, nothing run) when the installed script is older (no keep list / plan lock
+  parameters, 1.4.0 - 1.4.14).
+* Group `dist`: `prune-artifacts.ps1 -Apply` runs only when its dry run lists exactly the planned candidates that still
+  exist; anything else under `dist\` / `release\` that disappears -> error, exit 1.
+* A folder candidate written at or after the start of the run (itself or anything in it) is skipped (`changed after the
+  plan`).
+* Fail-closed apply (S-a, 22/11/2026): a keep list check that throws deletes nothing for that entry (error, exit 1); an
+  unexpected error that is not handled per entry stops every further deletion (`apply_stopped`), the `.json` / `.txt` /
+  `.plan.txt` reports are still written (entries deleted before are listed) and the exit code is 1. Errors handled per
+  entry (an entry that cannot be deleted, a keep list check that throws) and per archive (group `logs`) are recorded and
+  the next entry is still checked; the failed entry itself is never deleted. A companion file of a backup (`.sha256`,
+  `config-*`) is its own entry: when the zip cannot be deleted, its companions may still be.
+* Launcher `-Groups a,b` (22/11/2026): passed on to the installed script as one comma list; refused (exit 2, never the
+  default groups instead) when empty or when the installed script has no `-Groups` parameter. The plan hash depends on
+  the groups: `-Apply` takes the same `-Groups` as the dry run.
+
+Not included: S1 - S5; the 7 proposed keep list lines; any change of the scheduled task `DemandForecastCleanup` (it
+stays DISABLED; it still calls the 1.4.0 script with `-Apply` directly, which bypasses the keep list and the plan lock).
+
 ## 1.4.14 (Forecast Results merged into Daily forecast)
 
 Owner order 15/11/2026 (Task 8): the page "Kết quả dự báo" (Results, `/results`) is merged into "Dự báo hằng ngày"

@@ -1284,7 +1284,10 @@ function Remove-Candidate($G, $C) {
     $allow = if ($C.Contains("allow")) { $C.allow } else { "" }
     $why = Get-ProtectReason $p $allow
     if ($why) { [void]$G.errors.Add("${p}: refused, protected ($why)"); return }
-    if (Test-KeepListBlocked $G $p) { return }
+    # 1.4.15 (S-a): a keep list check that fails is fail-closed (not deleted, error, exit 1)
+    try { $kept = Test-KeepListBlocked $G $p }
+    catch { [void]$G.errors.Add("${p}: keep list check failed: $($_.Exception.Message): not deleted"); return }
+    if ($kept) { return }
     try {
         if (-not (Test-Path -LiteralPath $p)) { Add-Skip $G $p "gone before deletion"; return }
         $it = Get-Item -LiteralPath $p -Force
@@ -1394,7 +1397,8 @@ function Invoke-DistApply($G) {
     if (-not $IncludeDist) { return }
     # keep list: prune-artifacts.ps1 deletes its own plan, so it never runs while the list is not usable or one of its
     # plan entries is kept (checked again here, right before)
-    $kb = @($G.candidates | Where-Object { Test-KeepListBlocked $G $_.path })
+    try { $kb = @($G.candidates | Where-Object { Test-KeepListBlocked $G $_.path }) }
+    catch { [void]$G.errors.Add("prune-artifacts.ps1 -Apply not run: keep list check failed: $($_.Exception.Message)"); return }
     if (-not $KeepMaster.ok -or $G.Contains("keep_list_blocked") -or $kb.Count) {
         [void]$G.errors.Add("prune-artifacts.ps1 -Apply not run: KEEP_LIST $(if ($KeepMaster.ok) { 'keeps an entry of its plan' } else { 'not usable' })"); return
     }
@@ -1582,15 +1586,26 @@ if ($gate -eq "MATCHED") {
 $report["plan_hash"] = $PlanHashNow
 $report["apply_gate"] = $gate
 if ($Refused.Count) { $report["apply_refused_reasons"] = @($Refused) }
+$ApplyStopped = ""
 if ($Apply -and -not $Refused.Count) {
     foreach ($g in $results) {
         if ($g.status -ne "ok") { continue }
         $g["applied"] = $true
-        if ($g.group -eq "logs") { Invoke-LogArchive $g }
-        elseif ($g.group -eq "dist") { Invoke-DistApply $g }
-        else { foreach ($c in @($g.candidates)) { Remove-Candidate $g $c } }
+        # 1.4.15 (S-a): an unexpected error stops every further deletion (this group and the next ones); the reports
+        # are still written below (what was deleted before is listed), exit 1
+        try {
+            if ($g.group -eq "logs") { Invoke-LogArchive $g }
+            elseif ($g.group -eq "dist") { Invoke-DistApply $g }
+            else { foreach ($c in @($g.candidates)) { Remove-Candidate $g $c } }
+        } catch {
+            $g.status = "error"
+            [void]$g.errors.Add("apply stopped, line $($_.InvocationInfo.ScriptLineNumber): $($_.Exception.Message)")
+            $ApplyStopped = "unexpected error in group $($g.group): nothing more archived or deleted"
+            break
+        }
     }
 }
+if ($ApplyStopped) { $report["apply_stopped"] = $ApplyStopped; Write-Host "APPLY STOPPED: $ApplyStopped" -ForegroundColor Red }
 $tot = [ordered]@{ before_bytes = 0L; candidate_count = 0; candidate_bytes = 0L; after_bytes = 0L; deleted_count = 0; deleted_bytes = 0L
                    kept_uncertain_count = 0; kept_uncertain_bytes = 0L }
 $uncertain = New-Object System.Collections.ArrayList
@@ -1630,6 +1645,7 @@ $lines = @("Don dep dinh ky / periodic cleanup  mode=$mode  $($Now.ToString('s')
 if (-not $Apply) { $lines += "DRY RUN: nothing deleted. To delete exactly these candidates: the same arguments + -Apply -PlanHash <PLAN_HASH> -KeepListHash <KEEP_LIST_SHA256> (dist only with -IncludeDist)." }
 foreach ($r in $Refused) { $lines += "APPLY REFUSED: $r" }
 if ($Refused.Count) { $lines += "APPLY REFUSED: nothing archived or deleted, exit 2." }
+if ($ApplyStopped) { $lines += "APPLY STOPPED: $ApplyStopped, exit 1." }
 foreach ($g in $results) {
     $lines += ("{0,-13} {1,-8} candidates {2,5}  {3,12}  before {4,12}  after {5,12}{6}  uncertain {7}  skipped {8}  errors {9}  {10}" -f
                $g.group, $g.status, $g.candidate_count, (& $gb $g.candidate_bytes), (& $gb $g.before_bytes), (& $gb $g.after_bytes),
@@ -1668,6 +1684,8 @@ if ($Apply) {
             }
             if (-not $why) {
                 $why = if ($Refused.Count) { "apply refused (plan / keep list hash), exit 2" }
+                       elseif ($ApplyStopped -and $g.Contains("applied")) { "apply stopped in this group ($ApplyStopped)" }
+                       elseif ($ApplyStopped -and $g.status -eq "ok") { "group not applied: apply stopped ($ApplyStopped)" }
                        elseif (-not $g.Contains("applied")) { "group not applied (status $($g.status))" }
                        elseif ($g.group -eq "dist" -and -not $IncludeDist) { "dist: deleted only with -IncludeDist" }
                        else { "no reason recorded" }
