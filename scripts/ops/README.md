@@ -151,8 +151,36 @@ error that is not handled per entry stops every further deletion (that group and
 `apply_stopped`, `APPLY STOPPED` line, the group gets status `error`); the `.json` / `.txt` / `.plan.txt` are still
 written (entries deleted before are listed) and the exit code is 1. Errors handled per entry (an entry that cannot be
 deleted) and per archive (group `logs`) are only recorded and the next entry is still checked; the failed entry itself is
-never deleted. A companion file of a backup (`.sha256`, `config-*`) is its own entry: when the zip cannot be deleted, its
-companions may still be.
+never deleted. A companion file of a backup (`.sha256`, `config-*`) is deleted only when its main zip is gone right
+before; a zip that was not deleted keeps its companions (`main zip not deleted: companion kept`). The plan lists them per
+zip candidate (`.txt` section `TEP DI KEM / companions`: `companions <zip>: <name> (<bytes> B), ...` or `none`;
+`companion_kept <name>: kept - <reason>` for every `.sha256` / `config-*` kept, e.g. a config copy without a matching
+backup); report `companions` / `companions_kept` of group `backups`. Display only: the matching rule and the plan hash
+do not change.
+
+Items log (1.4.15, only with `-Apply`, never in a dry run): `logs\don_dep\don_dep-<stamp>.items.jsonl` (same stamp as
+the `.json` / `.txt`; report `items_log`, `.txt` line `ITEMS_LOG:`), UTF-8 without BOM, one JSON object per line,
+appended and closed line by line (a run that dies still shows what it was deleting). Every line has `t` (local time),
+`t_utc`, `seq`. Events: first `{"event":"start", plan_hash, keep_list_sha256, groups, mode}`, last (when the script gets
+there) `{"event":"end", exit_code, deleted_count, deleted_bytes, error_count, apply_stopped}`; `prune_start` /
+`prune_end` around `prune-artifacts.ps1 -Apply`. Entry lines: `phase` (`intent` | `result`), `group`, `path`, `kind`,
+`bytes` (size right before the deletion), `action`, `reason`, `plan_hash`, `mode`. Each deletion by this script
+(groups other than `dist`) = an `intent` / `deleting` line written BEFORE `Remove-Item`, then a `result` line `deleted`
+or `error`; every other entry gets one `result` line `not_deleted`, `blocked` (keep list, protected), `skipped` (gone,
+reparse point, changed after the plan, main zip not deleted, ...) or `error`. Group `logs` works per archive zip: the
+files are added to the zip, one `archived` line for the zip, then each verified file is deleted as above (intent +
+result). Group `dist` has no intent line per entry (`prune-artifacts.ps1 -Apply` deletes): `prune_start` (written BEFORE
+the call; `entries` = lower-case long paths of the planned entries it is about to delete, `planned_existing` = their
+count), `prune_end` after it, then one `result` line per planned entry (`deleted`, `not_deleted`, `skipped`). An
+`intent` line without its `result`, or a `prune_start` without `prune_end`, = the run stopped during that deletion
+(check the paths). Fail-closed: log not writable at the start -> nothing archived or deleted, exit 1; an intent line
+(or `prune_start`) not written -> not deleted (error). Any other line not written -> error, exit 1 (an entry already
+deleted gets action `deleted`, reason `items log write failed: ...`, when the fallback line can be written; a log that fails twice for the
+same entry may leave an `error` line for an entry that was deleted: nothing is lost, only the log line, known limit 22/11/2026). Example:
+`{"t":"2026-11-22T11:03:53","t_utc":"2026-11-22T04:03:53Z","seq":3,"phase":"result","group":"backups","path":"D:\\...\\backups\\backup-20261101-100000-manual.zip","kind":"file","bytes":1000,"action":"deleted","reason":"","plan_hash":"a3db...","mode":"APPLY"}`.
+Read it with e.g. `Get-Content <file> -Encoding UTF8 | ConvertFrom-Json | Format-Table seq, phase, action, path`.
+
+Keep list patterns (S1, 1.4.15): a backtick in a folder name before the first wildcard is escaped too.
 
 | Group | Candidates |
 |---|---|

@@ -2249,3 +2249,576 @@ def test_l6_an_unknown_group_name_is_refused_by_the_cleanup_exit_2_nothing_delet
     assert "unknown group bogus" in out and "Nothing done" in out, out
     assert in_tmp.is_dir() and dep.is_dir()
     assert not (lc.proj / "logs" / "don_dep").exists()                    # the cleanup stopped before any report
+
+
+# ================================================================== 1.4.15 vong 3 (B-10): items log, companions, plan hash, S1 backtick, S4
+# Integration on a fake tree with the real PowerShell. The script copy in the fake tool folder is patched only where a
+# failure cannot be made any other way (each patch asserts that its insertion point occurs exactly once).
+
+_B9_BASE = "9f85915"                                                   # HEAD at B-9: the script before the round-3 changes
+
+
+def _patch_copy(w: World, old: bytes, new: bytes) -> None:
+    p = w.tool / CLEANUP.name
+    src = p.read_bytes()
+    assert src.count(old) == 1, old
+    p.write_bytes(src.replace(old, new))
+
+
+def _items(rep: dict) -> list[dict]:
+    assert rep.get("items_log"), "report has no items_log"
+    f = Path(rep["items_log"])
+    assert f.is_file(), f
+    return [json.loads(ln) for ln in f.read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+
+def _entry_lines(items: list[dict], path: Path | str) -> list[dict]:
+    return [i for i in items if "phase" in i and _n(i["path"]) == _n(path)]
+
+
+_ENTRY_KEYS = {"t", "t_utc", "seq", "phase", "group", "path", "kind", "bytes", "action", "reason", "plan_hash", "mode"}
+
+
+def _check_log_frame(items: list[dict], rep: dict) -> None:
+    assert items[0]["event"] == "start" and items[-1]["event"] == "end", (items[0], items[-1])
+    assert [i["seq"] for i in items] == list(range(1, len(items) + 1))
+    assert items[0]["plan_hash"] == rep["plan_hash"] and items[0]["keep_list_sha256"] == rep["keep_list"]["sha256"]
+    assert items[0]["mode"] == "APPLY"
+    for i in items:
+        assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d", i["t"]) and re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", i["t_utc"]), i
+        if "phase" in i:
+            assert _ENTRY_KEYS <= set(i), i
+            assert i["plan_hash"] == rep["plan_hash"] and i["mode"] == "APPLY" and i["phase"] in ("intent", "result"), i
+    assert items[-1]["exit_code"] == rep["exit_code"] and items[-1]["deleted_count"] == rep["totals"]["deleted_count"]
+
+
+def _tmp_apply_world(w: World, *names: str) -> list[Path]:
+    out = _old_tmp(w, *names)
+    w.write_keep(["# unrelated", r"reports\no_such_folder"])
+    return out
+
+
+def test_b10_items_log_written_before_and_after_each_deletion_skipped_entry_has_one_result_line(w: World):
+    _inject_touch(w)
+    victim, control, late = _h3_world(w, "tmp", False)
+    code, out, rep = w.run("tmp", apply=True, env_extra={"DF_TEST_TOUCH": str(late)})
+    assert code == 0, out
+    items = _items(rep)
+    _check_log_frame(items, rep)
+    assert Path(rep["items_log"]).parent == w.proj / "logs" / "don_dep" and Path(rep["items_log"]).name.endswith(".items.jsonl")
+    ctl = _entry_lines(items, control)
+    assert [(i["phase"], i["action"]) for i in ctl] == [("intent", "deleting"), ("result", "deleted")], ctl
+    assert ctl[0]["seq"] < ctl[1]["seq"] and ctl[0]["group"] == "tmp" and ctl[0]["kind"] == "dir" and ctl[0]["bytes"] > 0, ctl
+    assert not control.exists()
+    vic = _entry_lines(items, victim)                                    # skipped: no intent, exactly one result line with the reason
+    assert [(i["phase"], i["action"]) for i in vic] == [("result", "skipped")] and "changed after the plan" in vic[0]["reason"], vic
+    assert victim.is_dir()
+    assert items[-1]["deleted_count"] == 1 and items[-1]["exit_code"] == 0
+    # reported in the json, in the printed output and in the .txt report
+    assert f"ITEMS_LOG: {rep['items_log']}" in out
+    _j, txt, _plan = _report_files(rep, out)
+    assert f"ITEMS_LOG: {rep['items_log']}" in txt.read_text(encoding="utf-8-sig")
+
+
+def test_b10_dry_run_creates_no_items_log_and_reports_none(w: World):
+    _tmp_apply_world(w, "a", "b")
+    code, out, rep = w.plan("tmp")
+    assert code == 0, out
+    assert "items_log" not in rep and "ITEMS_LOG" not in out
+    assert not list((w.proj / "logs").rglob("*.items.jsonl"))
+    assert "ITEMS_LOG" not in _report_files(rep, out)[1].read_text(encoding="utf-8-sig")
+    # an -Apply that is refused (no hashes) writes none either
+    code, out, rep = w.run("tmp", apply=True, hashes="none")
+    assert code == 2 and "items_log" not in rep and not list((w.proj / "logs").rglob("*.items.jsonl")), out
+
+
+def test_b10_items_log_that_cannot_be_written_at_the_start_deletes_nothing_exit_1(w: World):
+    marker = b'$Script:ItemsLog = Join-Path $outDir "don_dep-$stamp.items.jsonl"'
+    _patch_copy(w, marker, marker + b"; if ($env:DF_TEST_ITEMSLOG) { $Script:ItemsLog = $env:DF_TEST_ITEMSLOG }")
+    a, b = _tmp_apply_world(w, "a", "b")
+    bad = w.root / "no_such_dir" / "x.items.jsonl"                       # AppendAllText cannot create the folder
+    code, out, rep = w.run("tmp", apply=True, env_extra={"DF_TEST_ITEMSLOG": str(bad)})
+    assert code == 1, out
+    _alive(a / "f.txt", b / "f.txt")
+    assert rep["totals"]["deleted_count"] == 0 and rep["exit_code"] == 1
+    assert "cannot be written" in rep["apply_stopped"] and "nothing archived or deleted" in rep["apply_stopped"], rep.get("apply_stopped")
+    assert not bad.exists() and "NOT WRITABLE" in out
+
+
+def test_b10_intent_line_not_written_means_that_entry_is_not_deleted_the_others_are(w: World):
+    marker = b"function Write-ItemLine($G, [string]$Path, [string]$Kind, $Bytes, [string]$Phase, [string]$Action, [string]$Reason) {"
+    _patch_copy(w, marker, marker + b' if ($Phase -eq "intent" -and $env:DF_TEST_NOINTENT -and $Path.ToLowerInvariant().Contains($env:DF_TEST_NOINTENT)) '
+                b'{ $Script:ItemsLogError = "injected intent failure"; return $false }')
+    victim, ok1 = _tmp_apply_world(w, "zzvictim", "ok1")
+    code, out, rep = w.run("tmp", apply=True, env_extra={"DF_TEST_NOINTENT": "zzvictim"})
+    assert code == 1, out
+    _alive(victim / "f.txt")
+    _gone(ok1)
+    g = _groups(rep)["tmp"]
+    assert any("items log intent line not written" in e and _n(victim) in _n(e) and e.endswith("not deleted") for e in _list(g["errors"])), g["errors"]
+    items = _items(rep)
+    vic = _entry_lines(items, victim)
+    assert [i["phase"] for i in vic] == ["result"] and vic[0]["action"] == "error" and "intent line not written" in vic[0]["reason"], vic
+    assert [(i["phase"], i["action"]) for i in _entry_lines(items, ok1)] == [("intent", "deleting"), ("result", "deleted")]
+    assert items[-1]["event"] == "end" and items[-1]["exit_code"] == 1 and items[-1]["deleted_count"] == 1
+
+
+def test_b10_logs_group_archived_error_and_blocked_lines_per_archive_zip(w: World):
+    ym = f"{NOW - timedelta(days=40):%Y%m}"
+    old1, old2 = _file(w.p("logs") / "old1.log"), _file(w.p("logs") / "old2.log")
+    w.age(40, old1, old2)
+    w.write_keep(["# unrelated", r"reports\no_such_folder"])
+    code, out, rep = w.run("logs", apply=True)
+    assert code == 0, out
+    items = _items(rep)
+    _check_log_frame(items, rep)
+    zip1 = w.p("logs") / f"logs-archive-{ym}.zip"
+    zl = _entry_lines(items, zip1)
+    assert len(zl) == 1 and (zl[0]["phase"], zl[0]["action"], zl[0]["kind"]) == ("result", "archived", "archive") and zl[0]["group"] == "logs", zl
+    assert "2 file(s) added, 2 verified" in zl[0]["reason"]
+    for f in (old1, old2):
+        assert [(i["phase"], i["action"]) for i in _entry_lines(items, f)] == [("intent", "deleting"), ("result", "deleted")]
+        assert _entry_lines(items, f)[0]["seq"] > zl[0]["seq"]            # deleted only after the archive line
+    _gone(old1, old2)
+    # error: the archive zip of the month is not a zip
+    e1, e2 = _file(w.p("logs") / "err1.log"), _file(w.p("logs") / "err2.log")
+    w.age(40, e1, e2)
+    _file(zip1, b"this is not a zip file")
+    code, out, rep = w.run("logs", apply=True)
+    assert code == 1, out
+    items = _items(rep)
+    zl = _entry_lines(items, zip1)
+    assert len(zl) == 1 and zl[0]["action"] == "error" and zl[0]["reason"], zl
+    for f in (e1, e2):
+        ln = _entry_lines(items, f)
+        assert len(ln) == 1 and ln[0]["phase"] == "result" and ln[0]["action"] == "error" and ln[0]["reason"], ln
+    _alive(e1, e2)
+    # blocked: a junction in the place of the archive zip
+    zip1.unlink()
+    _junction(zip1, w.outside / "jtgt")
+    code, out, rep = w.run("logs", apply=True)
+    assert code == 1, out
+    items = _items(rep)
+    zl = _entry_lines(items, zip1)
+    assert len(zl) == 1 and zl[0]["action"] == "blocked" and "reparse point" in zl[0]["reason"], zl
+    for f in (e1, e2):
+        ln = _entry_lines(items, f)
+        assert len(ln) == 1 and ln[0]["action"] in ("blocked", "error") and ln[0]["reason"], ln
+    _alive(e1, e2)
+    assert not any(i.get("action") == "deleted" for i in items)
+
+
+def test_b10_dist_prune_start_prune_end_and_one_line_per_plan_entry(w: World):
+    a, b = _dist_world(w)
+    w.write_keep(["# k", r"dist\other.zip"])
+    ex = ["-IncludeDist", "-DistKeep", "1.4.14"]
+    # without -IncludeDist the dist entries get a result line but prune never runs
+    code, out, rep = w.run("dist", apply=True, extra=["-DistKeep", "1.4.14"])
+    assert code == 0, out
+    items = _items(rep)
+    assert not any(i.get("event", "").startswith("prune") for i in items) and "apply=True" not in _prune_calls(w)
+    for f in (a, b):
+        ln = _entry_lines(items, f)
+        assert len(ln) == 1 and ln[0]["action"] == "not_deleted" and "IncludeDist" in ln[0]["reason"], ln
+    code, out, rep = w.run("dist", apply=True, extra=ex)
+    assert code == 0, out
+    items = _items(rep)
+    _check_log_frame(items, rep)
+    ev = [i for i in items if "event" in i]
+    names = [i["event"] for i in ev]
+    assert names == ["start", "prune_start", "prune_end", "end"], names
+    ps, pe = ev[1], ev[2]
+    assert ps["group"] == "dist" and ps["planned_existing"] == 2 and ps["plan_hash"] == rep["plan_hash"] and "1.4.14" in ps["keep"], ps
+    assert pe["ok"] is True and pe["output_lines"] >= 1
+    for f in (a, b):
+        ln = _entry_lines(items, f)
+        assert len(ln) == 1 and (ln[0]["phase"], ln[0]["action"], ln[0]["group"]) == ("result", "deleted", "dist") and ln[0]["seq"] > pe["seq"], ln
+    _gone(a, b)
+
+
+def test_b10_dist_prune_does_not_run_when_prune_start_cannot_be_logged(w: World):
+    marker = b"function Add-ItemsLine($Rec) {"
+    _patch_copy(w, marker, marker + b' if ($env:DF_TEST_NOPRUNESTART -and $Rec.Contains("event") -and $Rec.event -eq "prune_start") '
+                b'{ $Script:ItemsLogError = "injected prune_start failure"; return $false }')
+    a, b = _dist_world(w)
+    w.write_keep(["# k", r"dist\other.zip"])
+    code, out, rep = w.run("dist", apply=True, extra=["-IncludeDist", "-DistKeep", "1.4.14"], env_extra={"DF_TEST_NOPRUNESTART": "1"})
+    assert code == 1, out
+    assert "apply=True" not in _prune_calls(w) and _prune_calls(w), _prune_calls(w)    # the dry run ran, the delete did not
+    assert any("not run: items log line not written" in e for e in _list(_groups(rep)["dist"]["errors"])), _groups(rep)["dist"]["errors"]
+    _alive(a, b)
+    items = _items(rep)
+    assert not any(i.get("event") == "prune_start" for i in items) and items[-1]["event"] == "end" and items[-1]["exit_code"] == 1
+
+
+# -- companions
+
+def _companion_world(w: World) -> dict:
+    z = _backup_world(w)
+    t = NOW - timedelta(days=60)
+    pz = _file(w.p("backups") / f"backup-{_stamp(t)}-pre-1410.zip")
+    psha = _file(Path(f"{pz}.sha256"), b"ab")
+    pcfg = _file(w.p("backups") / f"config-{_stamp(t + timedelta(minutes=1))}-pre-1.4.10.json", b"{}")   # name does not pair with 'pre-1410'
+    orphan = _file(w.p("backups") / f"backup-{_stamp(NOW - timedelta(days=150))}-gone.zip.sha256", b"ab")
+    z["pre"] = (pz, psha, pcfg)
+    z["orphan"] = (orphan,)
+    w.write_keep(["# k", r"docs\x.txt"])
+    return z
+
+
+def test_b10_plan_lists_companions_per_zip_and_the_kept_ones_with_the_reason(w: World):
+    z = _companion_world(w)
+    code, out, rep = w.plan("backups")
+    assert code == 0, out
+    g = _groups(rep)["backups"]
+    comp = {c["zip"]: [x["name"] for x in _list(c["companions"])] for c in _list(g["companions"])}
+    for tag in ("z1", "z2", "z3"):
+        zip_, sha, cfg = z[tag]
+        assert sorted(comp[zip_.name]) == sorted([sha.name, cfg.name]), (tag, comp)
+    kept = {k["name"]: k["reason"] for k in _list(g["companions_kept"])}
+    assert "without a matching backup" in kept[z["pre"][2].name], kept
+    assert ".sha256 without a matching backup zip" in kept[z["orphan"][0].name], kept
+    cand = _cands(rep, "backups")
+    assert _n(z["pre"][2]) not in cand and _n(z["orphan"][0]) not in cand
+    # the companions are tied to their zip in the candidate list (companion_of) - read from the report
+    cands = {_n(c["path"]): c for c in _list(g["candidates"])}
+    assert _n(cands[_n(z["z2"][1])]["companion_of"]) == _n(z["z2"][0]) and _n(cands[_n(z["z2"][2])]["companion_of"]) == _n(z["z2"][0])
+    assert "companion_of" not in cands[_n(z["z2"][0])]
+    for text in (out, _report_files(rep, out)[1].read_text(encoding="utf-8-sig")):
+        assert "TEP DI KEM / companions" in text
+        line = next(ln for ln in text.splitlines() if ln.startswith("companions  ") and z["z2"][0].name in ln)
+        assert z["z2"][1].name in line and z["z2"][2].name in line, line
+        kl = next(ln for ln in text.splitlines() if ln.startswith("companion_kept  ") and z["pre"][2].name in ln)
+        assert "kept - config copy without a matching backup" in kl, kl
+    # a zip without a companion shows "none"
+    nz = _file(w.p("backups") / f"backup-{_stamp(NOW - timedelta(days=120))}-manual.zip")
+    code, out, rep = w.plan("backups")
+    ln = next(x for x in out.splitlines() if x.startswith("companions  ") and nz.name in x)
+    assert ln.rstrip().endswith("none"), ln
+
+
+def test_b10_apply_deletes_companions_after_their_zip_and_keeps_the_unpaired_config(w: World):
+    z = _companion_world(w)
+    code, out, rep = w.run("backups", apply=True)
+    assert code == 0, out
+    items = _items(rep)
+    _check_log_frame(items, rep)
+    for tag in ("z1", "z2", "z3"):
+        zip_, sha, cfg = z[tag]
+        _gone(zip_, sha, cfg)
+        zr = next(i for i in _entry_lines(items, zip_) if i["phase"] == "result")
+        for c in (sha, cfg):
+            ln = _entry_lines(items, c)
+            assert [(i["phase"], i["action"]) for i in ln] == [("intent", "deleting"), ("result", "deleted")], ln
+            assert ln[0]["seq"] > zr["seq"], (zr, ln)                    # a companion only after its main zip is gone
+    _alive(z["pre"][2], z["orphan"][0], z["recent"][0], z["notes"][0])
+
+
+def test_b10_companion_is_kept_when_its_main_zip_still_exists(w: World):
+    z = _companion_world(w)
+    zip2 = z["z2"][0]
+    _c, o, _r = w.plan("backups")
+    h = _hashes(o)
+    locker = subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                               "$s=[IO.File]::Open('%s','Open','Read','None'); Start-Sleep 120; $s.Close()" % zip2])
+    try:
+        for _ in range(100):                                             # wait until the lock is in place
+            try:
+                open(zip2, "ab").close()
+            except PermissionError:
+                break
+            time.sleep(0.2)
+        else:
+            pytest.skip("not checked: the file lock could not be taken on the fake zip")
+        code, out, rep = w.exec(w._args("backups", True, "explicit", None) + ["-PlanHash", h[0], "-KeepListHash", h[1]])
+    finally:
+        locker.kill()
+        locker.wait()
+    assert code == 1, out
+    _alive(zip2, z["z2"][1], z["z2"][2])                                 # zip not deleted -> its sha256 and config stay
+    _gone(*z["z1"], *z["z3"])
+    g = _groups(rep)["backups"]
+    sk = {_n(s["path"]): s["reason"] for s in _list(g["skipped"])}
+    for c in (z["z2"][1], z["z2"][2]):
+        assert "main zip not deleted: companion kept" in sk[_n(c)], sk
+    assert any(_n(zip2) in _n(e) for e in _list(g["errors"])), g["errors"]
+    items = _items(rep)
+    for c in (z["z2"][1], z["z2"][2]):
+        ln = _entry_lines(items, c)
+        assert len(ln) == 1 and (ln[0]["phase"], ln[0]["action"]) == ("result", "skipped") and "main zip not deleted: companion kept" in ln[0]["reason"], ln
+    zl = _entry_lines(items, zip2)
+    assert zl[0]["phase"] == "intent" and zl[-1]["action"] == "error", zl
+
+
+def test_b10_companion_never_goes_before_its_zip_whatever_the_processing_order(w: World):
+    # the copy applies the backups candidates in reverse (companions first): they must not be deleted while their zip exists
+    _patch_copy(w, b"else { foreach ($c in @($g.candidates)) { Remove-Candidate $g $c } }",
+                b"else { $cl = @($g.candidates); if ($env:DF_TEST_REVERSE) { [array]::Reverse($cl) }; foreach ($c in $cl) { Remove-Candidate $g $c } }")
+    z = _companion_world(w)
+    code, out, rep = w.run("backups", apply=True, env_extra={"DF_TEST_REVERSE": "1"})
+    assert code == 0, out
+    items = _items(rep)
+    for tag in ("z1", "z2", "z3"):
+        zip_, sha, cfg = z[tag]
+        assert not zip_.exists()
+        zr = next(i for i in _entry_lines(items, zip_) if i["phase"] == "result" and i["action"] == "deleted")
+        for c in (sha, cfg):
+            dl = [i for i in _entry_lines(items, c) if i["action"] == "deleting"]
+            assert all(i["seq"] > zr["seq"] for i in dl), (c, dl, zr)     # never an intent for a companion before its zip is gone
+            if c.exists():
+                assert any(i["action"] == "skipped" and "companion kept" in i["reason"] for i in _entry_lines(items, c)), _entry_lines(items, c)
+
+
+# -- plan hash
+
+def test_b10_plan_hash_is_the_same_as_the_one_of_the_script_before_these_changes(w: World):
+    old = subprocess.run(["git", "show", f"{_B9_BASE}:scripts/ops/don_dep_dinh_ky.ps1"], cwd=ROOT, capture_output=True)
+    if old.returncode != 0 or not old.stdout:
+        pytest.skip(f"not checked: git show {_B9_BASE} not available")
+    _companion_world(w)
+    _old_tmp(w, "t1", "t2")
+    _file(w.p("logs") / "old.log")
+    w.age(40, w.p("logs") / "old.log")
+    w.write_keep(["# k", r"docs\x.txt", f"{w.tmproot}\\*.zip   # a wildcard line without a backtick"])
+    groups = "tmp,backups,logs"
+    c1, o1, r1 = w.plan(groups)
+    assert c1 == 0, o1
+    h_new = _hashes(o1)
+    (w.tool / CLEANUP.name).write_bytes(old.stdout)
+    c2, o2, r2 = w.plan(groups)
+    assert c2 == 0, o2
+    assert h_new[0] and h_new == _hashes(o2), (h_new, _hashes(o2))
+    assert r1["plan_hash"] == r2["plan_hash"] and "TEP DI KEM" not in o2 and "TEP DI KEM" in o1
+
+
+# -- S1: a backtick in a folder name of the pattern prefix
+
+def test_b10_s1_backtick_in_a_prefix_folder_of_a_keep_list_pattern_blocks_the_match_not_the_lookalike(w: World):
+    # a file below the pattern's prefix folder: the prefix rule ("contains <prefix>") does not apply, only the pattern itself
+    lg = w.p("logs")
+    hit = _file(lg / "a`b" / "old.log")
+    look = _file(lg / "ab" / "old.log")                                  # what an unescaped backtick would have matched instead
+    plain = _file(lg / "plain.log")
+    w.age(40, hit, look, plain)
+    w.write_keep(["# s1 backtick", f"{lg}\\a`b\\*.log   # folder with a backtick in the prefix"])
+    code, out, rep = w.run("logs", apply=True)
+    assert code == 0, out
+    assert rep["keep_list"]["ok"] is True and rep["keep_list"]["entries"] == 1
+    bl = _blocked(rep)
+    assert _n(hit) in bl, (sorted(bl), _cands(rep, "logs"))
+    assert bl[_n(hit)]["how"] == "matches the pattern" and bl[_n(hit)]["line"] == 2, bl[_n(hit)]
+    assert "matches the pattern" in _kept_line(out, hit)
+    assert _cands(rep, "logs") == {_n(look), _n(plain)}, (_cands(rep, "logs"), sorted(bl))
+    assert _n(look) not in bl
+    _alive(hit)
+    _gone(look, plain)
+
+
+# -- S4: the fail-closed branch of Find-PatternInTree, through the whole program
+
+def test_b10_s4_tree_over_the_cap_is_blocked_by_the_pattern_walk_itself(w: World):
+    t = w.tmproot
+    many = [_file(t / "many" / "a" / f"f{i}.txt") for i in range(1, 6)]     # 6 entries below
+    small = _file(t / "small" / "f.txt")                                   # 1 entry: below the cap
+    w.age(3, t / "many", t / "small")
+    _set_tree_max(w, 2)                                                    # asserts that the insertion point occurs once
+    pat = f"{t}\\*.zip"
+    w.write_keep(["# s4", pat])
+    code, out, rep = w.run("tmp", apply=True)
+    assert code == 0, out
+    b = _blocked(rep)[_n(t / "many")]
+    assert b["how"] == "contains kept (pattern): fail-closed, more than 2 entries below, not all checked", b
+    assert b["entry"] == pat and b["line"] == 2 and b["group"] == "tmp", b
+    pl = _kept_line(out, t / "many")
+    assert "contains kept (pattern): fail-closed, more than 2 entries below" in pl and "keep list line 2" in pl, pl
+    g = _groups(rep)["tmp"]
+    assert any(s["reason"].startswith("KEEP_LIST: contains kept (pattern): fail-closed") and _n(s["path"]) == _n(t / "many") for s in _list(g["skipped"]))
+    assert not any("more than 2 entries" in e for e in _list(g["errors"])), g["errors"]    # blocked by the keep list, not an error
+    assert _n(t / "many") not in _cands(rep, "tmp") and _cands(rep, "tmp") == {_n(t / "small")}
+    _alive(*many)
+    _gone(small, t / "small")
+
+
+def test_b10_s4_tree_that_cannot_be_listed_is_blocked_by_the_pattern_walk_itself(w: World):
+    _patch_copy(w, b"foreach ($fi in $stack.Pop().EnumerateFileSystemInfos()) {",
+                b"$cur = $stack.Pop(); if ($env:DF_TEST_LISTFAIL -and $cur.FullName.ToLowerInvariant().Contains($env:DF_TEST_LISTFAIL)) "
+                b"{ throw (New-Object IO.IOException 'injected listing failure') }; foreach ($fi in $cur.EnumerateFileSystemInfos()) {")
+    t = w.tmproot
+    locked = _file(t / "zzlocked" / "inner" / "f.txt")
+    plain = _file(t / "plain" / "f.txt")
+    w.age(3, t / "zzlocked", t / "plain")
+    pat = f"{t}\\*.zip"
+    w.write_keep(["# s4", pat])
+    code, out, rep = w.run("tmp", apply=True, env_extra={"DF_TEST_LISTFAIL": "zzlocked"})
+    assert code == 0, out
+    b = _blocked(rep)[_n(t / "zzlocked")]
+    assert b["how"] == "contains kept (pattern): fail-closed, entries below cannot be listed (IOException)", b
+    assert b["entry"] == pat and b["line"] == 2
+    assert "fail-closed, entries below cannot be listed" in _kept_line(out, t / "zzlocked")
+    g = _groups(rep)["tmp"]
+    assert not _list(g["errors"]), g["errors"]
+    assert _cands(rep, "tmp") == {_n(t / "plain")}
+    _alive(locked)
+    _gone(plain, t / "plain")
+
+
+# ================================================================== 1.4.15 vong 3b (B-14): items log of the dist group, log write failures, G-1, UTF-8
+# Integration on a fake tree with the real PowerShell. A write failure of the items log is made by one line added to the
+# COPY of the script (right after "function Add-ItemsLine($Rec) {", asserted once by _patch_copy) that returns $false for the
+# records named in the condition; the real file is not touched.
+
+_B14_MARK = b"function Add-ItemsLine($Rec) {"
+_B14_EX = ["-IncludeDist", "-DistKeep", "1.4.14"]
+
+
+def _b14_fail(w: World, cond: bytes, msg: bytes = b"injected items log failure", also: bytes = b"") -> None:
+    """Add-ItemsLine of the copy returns $false (nothing written) when <cond> holds for $Rec."""
+    _patch_copy(w, _B14_MARK, _B14_MARK + b" if (" + cond + b") { $Script:ItemsLogError = '" + msg + b"'; " + also + b"return $false }")
+
+
+def _b14_dist(w: World) -> tuple[Path, Path]:
+    a, b = _dist_world(w)
+    w.write_keep(["# k", r"dist\other.zip"])
+    return a, b
+
+
+def test_b14_dist_prune_start_lists_the_planned_entries_then_prune_end_then_one_deleted_line_per_package(w: World):
+    a, b = _b14_dist(w)
+    code, out, rep = w.run("dist", apply=True, extra=_B14_EX)
+    assert code == 0, out
+    items = _items(rep)
+    _check_log_frame(items, rep)
+    ps = next(i for i in items if i.get("event") == "prune_start")
+    assert ps["group"] == "dist" and ps["planned_existing"] == 2, ps
+    assert isinstance(ps["entries"], list) and len(ps["entries"]) == 2, ps
+    assert all(e == e.lower() for e in ps["entries"]), ps["entries"]          # lower-case long paths
+    assert set(ps["entries"]) == {str(a).lower(), str(b).lower()} and ps["entries"] == sorted(ps["entries"]), ps["entries"]
+    pe = next(i for i in items if i.get("event") == "prune_end")
+    assert ps["seq"] < pe["seq"] and pe["ok"] is True, (ps, pe)
+    res = [i for i in items if i.get("phase") == "result"]
+    assert len(res) == 2 and {_n(i["path"]) for i in res} == {_n(a), _n(b)}, res
+    assert all(i["action"] == "deleted" and i["group"] == "dist" and i["seq"] > pe["seq"] for i in res), res
+    assert [i["event"] for i in items if "event" in i] == ["start", "prune_start", "prune_end", "end"]
+    _gone(a, b)
+
+
+def test_b14_dist_prune_start_holds_only_the_packages_that_still_exist_when_dist_versions_deleted_one_before(w: World):
+    a, b = _b14_dist(w)
+    pkg = _file(w.p("dist") / "DemandForecast-1.4.5-win64-portable.zip")    # dist_versions deletes it first
+    code, out, rep = w.run("dist_versions,dist", apply=True, extra=_B14_EX)
+    assert code == 0, out
+    ps = next(i for i in _items(rep) if i.get("event") == "prune_start")
+    assert ps["planned_existing"] == 2 and set(ps["entries"]) == {str(a).lower(), str(b).lower()}, ps
+    assert str(pkg).lower() not in ps["entries"]
+    _gone(a, b, pkg)
+
+
+def test_b14_dist_prune_start_not_written_means_prune_apply_does_not_run_and_no_entries_line(w: World):
+    a, b = _b14_dist(w)
+    _b14_fail(w, b'$Rec.Contains("event") -and $Rec.event -eq "prune_start"')
+    code, out, rep = w.run("dist", apply=True, extra=_B14_EX)
+    assert code == 1, out
+    assert "apply=True" not in _prune_calls(w) and _prune_calls(w), _prune_calls(w)
+    assert any("not run: items log line not written" in e for e in _list(_groups(rep)["dist"]["errors"]))
+    items = _items(rep)
+    assert not any(i.get("event", "").startswith("prune") for i in items)
+    _alive(a, b)
+
+
+def test_b14_dist_prune_end_line_not_written_is_a_group_error_exit_1(w: World):
+    a, b = _b14_dist(w)
+    _b14_fail(w, b'$Rec.Contains("event") -and $Rec.event -eq "prune_end"')
+    code, out, rep = w.run("dist", apply=True, extra=_B14_EX)
+    assert code == 1, out
+    assert rep["exit_code"] == 1 and _groups(rep)["dist"]["status"] == "error"
+    errs = _list(_groups(rep)["dist"]["errors"])
+    assert any("prune_end line not written" in e and "injected items log failure" in e for e in errs), errs
+    assert "apply=True" in _prune_calls(w)                                  # the prune had run (it is the log line that failed)
+    items = _items(rep)
+    assert not any(i.get("event") == "prune_end" for i in items) and any(i.get("event") == "prune_start" for i in items)
+    assert items[-1]["event"] == "end" and items[-1]["exit_code"] == 1
+    _gone(a, b)
+
+
+def test_b14_dist_result_lines_not_written_is_one_error_per_package_exit_1(w: World):
+    a, b = _b14_dist(w)
+    _b14_fail(w, b'$Rec.Contains("phase") -and $Rec.phase -eq "result" -and $Rec.group -eq "dist"')
+    code, out, rep = w.run("dist", apply=True, extra=_B14_EX)
+    assert code == 1, out
+    errs = _list(_groups(rep)["dist"]["errors"])
+    for f in (a, b):
+        mine = [e for e in errs if _n(f) in _n(e) and "items log result line not written" in e]
+        assert len(mine) == 1 and "deleted" in mine[0], (f, errs)
+    assert len([e for e in errs if "items log result line not written" in e]) == 2, errs
+    items = _items(rep)
+    assert not [i for i in items if i.get("phase") == "result"] and items[-1]["exit_code"] == 1
+    assert [i["event"] for i in items if "event" in i] == ["start", "prune_start", "prune_end", "end"]
+    _gone(a, b)                                                             # the packages themselves went as planned
+
+
+def test_b14_logs_archived_line_not_written_is_a_group_error_exit_1(w: World):
+    ym = f"{NOW - timedelta(days=40):%Y%m}"
+    old1, old2 = _file(w.p("logs") / "old1.log"), _file(w.p("logs") / "old2.log")
+    w.age(40, old1, old2)
+    w.write_keep(["# unrelated", r"reports\no_such_folder"])
+    _b14_fail(w, b'$Rec.Contains("action") -and $Rec.action -eq "archived"')
+    code, out, rep = w.run("logs", apply=True)
+    assert code == 1, out
+    zip1 = w.p("logs") / f"logs-archive-{ym}.zip"
+    g = _groups(rep)["logs"]
+    assert g["status"] == "error" and rep["exit_code"] == 1
+    errs = _list(g["errors"])
+    assert any(_n(zip1) in _n(e) and "archived, items log line not written" in e and "injected items log failure" in e for e in errs), errs
+    items = _items(rep)
+    assert not any(i.get("action") == "archived" for i in items)
+    assert items[-1]["event"] == "end" and items[-1]["exit_code"] == 1
+    import zipfile
+    with zipfile.ZipFile(zip1) as z:                                        # the archive itself was made and holds both files
+        assert {Path(n).name for n in z.namelist()} == {"old1.log", "old2.log"}
+
+
+def test_b14_g1_deleted_entry_whose_deleted_line_cannot_be_written_gets_a_fallback_line_the_others_stay_deleted(w: World):
+    _b14_fail(w, b'-not $Script:B14Once -and $Rec.Contains("action") -and $Rec.action -eq "deleted" '
+                 b'-and $Rec.path.ToLowerInvariant().Contains("zzvictim")', b"injected deleted-line failure",
+              also=b"$Script:B14Once = $true; ")
+    victim, ok1 = _tmp_apply_world(w, "zzvictim", "ok1")
+    code, out, rep = w.run("tmp", apply=True)
+    assert code == 1, out
+    _gone(victim, ok1)                                                      # both really deleted
+    g = _groups(rep)["tmp"]
+    assert any(_n(victim) in _n(e) and "deleted, items log result line not written" in e for e in _list(g["errors"])), g["errors"]
+    assert g["deleted_count"] == 2
+    items = _items(rep)
+    vic = _entry_lines(items, victim)
+    assert [(i["phase"], i["action"]) for i in vic] == [("intent", "deleting"), ("result", "deleted")], vic
+    assert "items log write failed" in vic[1]["reason"] and "injected deleted-line failure" in vic[1]["reason"], vic[1]
+    ok = _entry_lines(items, ok1)
+    assert [(i["phase"], i["action"], i["reason"]) for i in ok][1] == ("result", "deleted", ""), ok     # the other entry: normal line
+    assert items[-1]["event"] == "end" and items[-1]["exit_code"] == 1 and items[-1]["deleted_count"] == 2
+    assert not any(i.get("action") in ("error", "not_deleted") for i in items)
+
+
+def test_b14_items_log_is_utf8_and_every_line_parses_with_diacritics_in_the_paths(w: World):
+    vn_dir = "Báo cáo đã xóa_ệ ữ ơ"      # Bao cao da xoa with Vietnamese diacritics
+    vn_log = "nhật_ký_cũ.log"
+    dirs = _old_tmp(w, vn_dir, ACCENT)
+    old = _file(w.p("logs") / vn_log)
+    w.age(40, old)
+    w.write_keep(["# unrelated", r"reports\no_such_folder"])
+    code, out, rep = w.run("tmp,logs", apply=True)
+    assert code == 0, out
+    f = Path(rep["items_log"])
+    raw = f.read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf")
+    assert vn_dir.encode("utf-8") in raw and vn_log.encode("utf-8") in raw        # the UTF-8 bytes of the names, not escapes / ANSI
+    text = raw.decode("utf-8")                                             # strict: invalid UTF-8 raises
+    assert "�" not in text and "Ã" not in text and "á»" not in text, "mojibake"
+    parsed = [json.loads(ln) for ln in text.splitlines() if ln.strip()]    # every line is JSON
+    assert [i["seq"] for i in parsed] == list(range(1, len(parsed) + 1))
+    for d in dirs:
+        ln = [i for i in parsed if "phase" in i and i["path"] == str(d)]    # exact string equality, not just normcase
+        assert [(i["phase"], i["action"]) for i in ln] == [("intent", "deleting"), ("result", "deleted")], (d, ln)
+    ln = [i for i in parsed if "phase" in i and i["path"] == str(old)]
+    assert [(i["phase"], i["action"]) for i in ln] == [("intent", "deleting"), ("result", "deleted")], ln
+    assert any(i.get("action") == "archived" and i["path"].endswith(".zip") for i in parsed)
+    _gone(*dirs, old)

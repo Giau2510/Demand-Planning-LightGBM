@@ -87,6 +87,21 @@
            (same -Keep) lists exactly the planned dist candidates that still exist (dist_versions may have deleted some);
            else, or when its output cannot be read, it is not run (error, exit 1); a dist\ / release\ entry that disappears
            while it runs and is not planned -> error, exit 1.
+           Keep list "contains kept (pattern)": a candidate folder that holds, at any depth, an entry matching a pattern
+           of the list is blocked (reason "contains kept (pattern) <path>"); the tree below is walked (junctions /
+           symlinks not entered) up to $KeepTreeMax entries; more entries or a folder that cannot be listed -> blocked
+           ("fail-closed"). Pattern prefixes: a backtick in a folder name is escaped too (S1). Keep list notice with
+           -Apply: keep_list.notice_status = sent | failed | not_applicable; notified = true only when notify.py exits
+           0; failed -> the next -Apply run sends it again.
+           S-a (22/11): a keep list check that throws deletes nothing for that entry (error, exit 1); an unexpected
+           error stops every further deletion (apply_stopped), reports still written, exit 1.
+           Companions: a .sha256 / config-* companion of a backup zip (companion_of) is deleted only when that zip is
+           gone right before (else "main zip not deleted: companion kept"); the plan lists them per zip ("TEP DI KEM /
+           companions", report companions / companions_kept).
+           Items log (1.4.15, -Apply only): logs\don_dep\don_dep-<stamp>.items.jsonl, one JSON line appended per event
+           (start, intent "deleting" BEFORE each deletion, result deleted | not_deleted | blocked | skipped | error |
+           archived, prune_start / prune_end, end); log not writable at the start -> nothing deleted, exit 1; intent line
+           not written -> that entry not deleted (error).
            Info only: <project>\worktrees\<name> git worktrees whose version is installed, whose HEAD is on a
            remote-tracking branch, whose tag v<version> exists and whose status is clean -> "worktree_can_remove"
            (never removed here: scripts\ops\archive_worktree.py).
@@ -427,6 +442,8 @@ function Get-KeepForms([string]$Path) {
     return @($l, $r)
 }
 
+$Script:EscapeKeepsBacktick = ([Management.Automation.WildcardPattern]::Escape('`') -eq '`')
+
 function Read-KeepList([string]$File) {
     # .ok = $false (missing, unreadable, a line that cannot be read, no entry) -> fail-closed: every candidate is blocked
     # .sha256 = SHA-256 of the very bytes that are parsed (read once; 1.4.15 plan lock), "" when they cannot be read
@@ -472,7 +489,12 @@ function Read-KeepList([string]$File) {
             if ($pre.StartsWith('\\') -and $idx -lt 4) { throw "wildcard in the server / share part" }
             $prefixes = @(Get-KeepForms ([IO.Path]::GetFullPath($pre)))
             $tail = ($rest -join '\').Replace('`', '``').Replace('[', '`[').Replace(']', '`]')
-            $pats = @($prefixes | ForEach-Object { [Management.Automation.WildcardPattern]::Escape($_.TrimEnd('\')) + '\' + $tail })
+            # S1 (1.4.15): WildcardPattern.Escape of PS 5.1 leaves a backtick as it is (a folder name with ` would then
+            # never match): the backtick is doubled first, only where Escape does not do it itself (PS 7 does)
+            $pats = @($prefixes | ForEach-Object {
+                $lit = $_.TrimEnd('\')
+                if ($Script:EscapeKeepsBacktick) { $lit = $lit.Replace('`', '``') }
+                [Management.Automation.WildcardPattern]::Escape($lit) + '\' + $tail })
             $entries += [pscustomobject]@{ line = $no; raw = $t; wild = $true; prefixes = $prefixes; patterns = $pats }
         } catch {
             $kl.error = "keep list line $no cannot be read ($($_.Exception.Message)): $t"
@@ -753,25 +775,49 @@ function Get-BackupGroup {
         if (-not $keep.ContainsKey($z.name) -and (Test-KeepListBlocked $g $z.item.FullName)) { $keep[$z.name] = "KEEP_LIST" }
     }
     $g["kept"] = New-Object System.Collections.ArrayList
+    # 1.4.15: companions shown with their zip in the plan (report only, not in the plan hash); companion_of = the main
+    # zip: a companion is deleted only when that zip is gone (Remove-Candidate)
+    $comp = [ordered]@{}
+    $g["companions_kept"] = New-Object System.Collections.ArrayList
     foreach ($z in $srt) {
         $sha = $shas[$z.name + ".sha256"]
         if ($keep.ContainsKey($z.name)) {
             [void]$g.kept.Add([ordered]@{ name = $z.name; bytes = $z.bytes; reason = $keep[$z.name] })
+            if ($sha) { [void]$g.companions_kept.Add([ordered]@{ name = $sha.Name; bytes = $sha.Length; reason = "companion of kept $($z.name) ($($keep[$z.name]))" }) }
             continue
         }
-        [void](Add-Candidate $g $z.item.FullName "file" $z.bytes $z.t "backup outside the retention rule (type $($z.type))")
-        if ($sha) { [void](Add-Candidate $g $sha.FullName "file" $sha.Length $z.t "companion of deleted $($z.name)") }
+        $zc = Add-Candidate $g $z.item.FullName "file" $z.bytes $z.t "backup outside the retention rule (type $($z.type))"
+        $comp[$z.name] = [ordered]@{ zip = $z.name; zip_bytes = $z.bytes; zip_is_candidate = ($null -ne $zc); companions = (New-Object System.Collections.ArrayList) }
+        if ($sha) {
+            $sc = Add-Candidate $g $sha.FullName "file" $sha.Length $z.t "companion of deleted $($z.name)"
+            if ($sc) { $sc["companion_of"] = $z.item.FullName; [void]$comp[$z.name].companions.Add([ordered]@{ name = $sha.Name; bytes = $sha.Length }) }
+            else { [void]$g.companions_kept.Add([ordered]@{ name = $sha.Name; bytes = $sha.Length; reason = "not a candidate (protected / KEEP_LIST, see skipped)" }) }
+        }
+    }
+    $zipNames = @{}
+    foreach ($z in $zips) { $zipNames[$z.name + ".sha256"] = $true }
+    foreach ($n in @($shas.Keys | Sort-Object)) {
+        if (-not $zipNames.ContainsKey($n)) { [void]$g.companions_kept.Add([ordered]@{ name = $n; bytes = $shas[$n].Length; reason = ".sha256 without a matching backup zip" }) }
     }
     foreach ($c in $configs) {
         # companion = the backup of the same kind taken at most 30 min before the config copy
         $m = @($zips | Where-Object { $_.kind -eq $c.kind -and $_.t -le $c.t -and ($c.t - $_.t).TotalMinutes -le 30 } | Sort-Object t)
-        if ($m.Count -eq 0) { Add-Skip $g $c.item.FullName "config copy without a matching backup: kept"; continue }
+        if ($m.Count -eq 0) {
+            Add-Skip $g $c.item.FullName "config copy without a matching backup: kept"
+            [void]$g.companions_kept.Add([ordered]@{ name = $c.item.Name; bytes = $c.bytes; reason = "config copy without a matching backup" }); continue
+        }
         $z = $m[$m.Count - 1]
-        if ($keep.ContainsKey($z.name)) { continue }
-        if (-not $c.clean) { Add-Skip $g $c.item.FullName "companion folder contains a reparse point / unreadable entry: kept"; continue }
+        if ($keep.ContainsKey($z.name)) { [void]$g.companions_kept.Add([ordered]@{ name = $c.item.Name; bytes = $c.bytes; reason = "companion of kept $($z.name) ($($keep[$z.name]))" }); continue }
+        if (-not $c.clean) {
+            Add-Skip $g $c.item.FullName "companion folder contains a reparse point / unreadable entry: kept"
+            [void]$g.companions_kept.Add([ordered]@{ name = $c.item.Name; bytes = $c.bytes; reason = "companion folder contains a reparse point / unreadable entry" }); continue
+        }
         $kind = if ($c.item.PSIsContainer) { "dir" } else { "file" }
-        [void](Add-Candidate $g $c.item.FullName $kind $c.bytes $z.t "companion of deleted $($z.name)")
+        $cc = Add-Candidate $g $c.item.FullName $kind $c.bytes $z.t "companion of deleted $($z.name)"
+        if ($cc) { $cc["companion_of"] = $z.item.FullName; [void]$comp[$z.name].companions.Add([ordered]@{ name = $c.item.Name; bytes = $c.bytes }) }
+        else { [void]$g.companions_kept.Add([ordered]@{ name = $c.item.Name; bytes = $c.bytes; reason = "not a candidate (protected / KEEP_LIST, see skipped)" }) }
     }
+    $g["companions"] = @($comp.Values)
     $g.note = "kept versions: $($Inst.keep -join ', '), their installs known: $($installs.Count); backup zips: $($zips.Count), kept: $($keep.Count)"
     return $g
 }
@@ -1279,7 +1325,83 @@ function Get-DistGroup {
 }
 
 # ------------------------------------------------------------------ apply
+# items log (1.4.15): with -Apply one JSON line per event in <project>\logs\don_dep\don_dep-<stamp>.items.jsonl, appended
+# (open, write, close) line by line, so a run that dies in the middle still shows what it was deleting
+$Script:ItemsLog = $null
+$Script:ItemsSeq = 0
+$Script:ItemsLogged = @{}
+$Script:ItemsLogError = ""
+
+function Add-ItemsLine($Rec) {
+    # $true = the line is in the file; never throws (a failure is kept in ItemsLogError)
+    if (-not $Script:ItemsLog) { $Script:ItemsLogError = "items log not open"; return $false }
+    $d = Get-Date
+    $Script:ItemsSeq += 1
+    $o = [ordered]@{ t = $d.ToString("s"); t_utc = $d.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"); seq = $Script:ItemsSeq }
+    foreach ($k in $Rec.Keys) { $o[$k] = $Rec[$k] }
+    try {
+        [IO.File]::AppendAllText($Script:ItemsLog, ($o | ConvertTo-Json -Compress -Depth 4) + "`n", (New-Object Text.UTF8Encoding $false))
+        return $true
+    } catch { $Script:ItemsLogError = $_.Exception.Message; return $false }
+}
+
+function Write-ItemLine($G, [string]$Path, [string]$Kind, $Bytes, [string]$Phase, [string]$Action, [string]$Reason) {
+    # one entry line (phase intent | result); a result line written marks the entry as logged
+    $ok = Add-ItemsLine ([ordered]@{ phase = $Phase; group = $G.group; path = $Path; kind = $Kind; bytes = $Bytes; action = $Action
+                                     reason = $Reason; plan_hash = $Script:PlanHashNow; mode = $Script:mode })
+    if ($ok -and $Phase -eq "result") { $Script:ItemsLogged["$($G.group)|$Path".ToLowerInvariant()] = $true }
+    return $ok
+}
+
+function Get-ItemAction([string]$Reason) {
+    if ($Reason.StartsWith("KEEP_LIST") -or $Reason.StartsWith("refused, protected") -or $Reason.StartsWith("protected")) { return "blocked" }
+    return "skipped"
+}
+
+function Get-ItemReason($G, $C) {
+    # action + reason of an entry from what its group recorded (last skip of the path, else last error naming it)
+    $sk = @($G.skipped | Where-Object { $_.path -eq $C.path })
+    if ($sk.Count) { $r = "$($sk[$sk.Count - 1].reason)"; return @((Get-ItemAction $r), $r) }
+    $pre = @("$($C.path):")
+    if ($C.Contains("archive")) { $pre += "$($C.archive):" }
+    $er = @($G.errors | Where-Object { $e = "$_"; @($pre | Where-Object { $e.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0 })
+    if ($er.Count) { $r = "$($er[$er.Count - 1])"; return @($(if ($r.Contains("refused, protected")) { "blocked" } else { "error" }), $r) }
+    return @("not_deleted", "")
+}
+
+function Test-MainZipGone([string]$Zip) {
+    # $true only when the main zip is certainly gone (not found); any other answer keeps the companion
+    try { [void](Get-Item -LiteralPath $Zip -Force -ErrorAction Stop); return $false }
+    catch [Management.Automation.ItemNotFoundException] { return $true }
+    catch { return $false }
+}
+
 function Remove-Candidate($G, $C) {
+    # 1.4.15: one result line per entry in the items log (the skip / error this entry just recorded); the intent line
+    # and the deleted line are written next to Remove-Item
+    $ns = $G.skipped.Count; $ne = $G.errors.Count
+    Remove-CandidateOnce $G $C
+    if ($Script:ItemsLogged.ContainsKey("$($G.group)|$($C.path)".ToLowerInvariant())) { return }
+    $er = if ($G.errors.Count -gt $ne) { "$($G.errors[$G.errors.Count - 1])" } else { "" }
+    if ($C.Contains("deleted") -and $C.deleted) {
+        # deleted, only its deleted line was not written: still "deleted", not "error"
+        $a = "deleted"
+        $r = if ($er) { "items log write failed: $er" } else { "items log write failed" }
+    } elseif ($G.skipped.Count -gt $ns) {
+        $r = "$($G.skipped[$G.skipped.Count - 1].reason)"
+        $a = Get-ItemAction $r
+        if ($er) { $r += " (error: $er)" }
+    } elseif ($er) {
+        $r = $er
+        $a = if ($er.Contains("refused, protected")) { "blocked" } else { "error" }
+    } else {
+        $a, $r = Get-ItemReason $G $C          # e.g. a keep list block recorded before for this path
+        if (-not $r) { $r = "no reason recorded" }
+    }
+    if (-not (Write-ItemLine $G $C.path $C.kind $C.bytes "result" $a $r)) { [void]$G.errors.Add("$($C.path): items log line not written ($Script:ItemsLogError)") }
+}
+
+function Remove-CandidateOnce($G, $C) {
     $p = $C.path
     $allow = if ($C.Contains("allow")) { $C.allow } else { "" }
     $why = Get-ProtectReason $p $allow
@@ -1344,11 +1466,24 @@ function Remove-Candidate($G, $C) {
             # 1.4.15: a folder written during this run (the folder itself or anything in it) is not the planned one
             $new = @(@($it) + $t.files.ToArray() + $t.dirs.ToArray() | Where-Object { $_.LastWriteTime -ge $Now } | Select-Object -First 1)
             if ($new.Count) { Add-Skip $G $p "changed after the plan ($($new[0].FullName) written at or after the start of this run): not deleted"; return }
+            $sz = Get-Sum $t.files
+        } else { $sz = $it.Length }
+        # 1.4.15: a .sha256 / config-* companion goes only when its main zip is gone (deleted before, in this group)
+        if ($C.Contains("companion_of") -and -not (Test-MainZipGone $C.companion_of)) { Add-Skip $G $p "main zip not deleted: companion kept"; return }
+        # fail-closed: no intent line in the items log -> not deleted
+        if (-not (Write-ItemLine $G $p $C.kind $sz "intent" "deleting" "planned: $($C.reason)")) {
+            [void]$G.errors.Add("${p}: items log intent line not written ($Script:ItemsLogError): not deleted"); return
         }
-        Remove-Item -LiteralPath $p -Recurse -Force -Confirm:$false
+        try { Remove-Item -LiteralPath $p -Recurse -Force -Confirm:$false }
+        catch {
+            [void]$G.errors.Add("${p}: $($_.Exception.Message)")
+            [void](Write-ItemLine $G $p $C.kind $sz "result" "error" "$($_.Exception.Message)")
+            return
+        }
         $C["deleted"] = $true
         $G.deleted_count += 1
         $G.deleted_bytes += $C.bytes
+        if (-not (Write-ItemLine $G $p $C.kind $sz "result" "deleted" "")) { [void]$G.errors.Add("${p}: deleted, items log result line not written ($Script:ItemsLogError)") }
     } catch { [void]$G.errors.Add("${p}: $($_.Exception.Message)") }
 }
 
@@ -1358,7 +1493,10 @@ function Invoke-LogArchive($G) {
     foreach ($grp in @($G.candidates | Group-Object { $_.archive })) {
         $zip = $grp.Name
         $rp = Get-ReparseInChain $zip
-        if ($rp) { [void]$G.errors.Add("${zip}: refused, reparse point in path ($rp): nothing archived or deleted"); continue }
+        if ($rp) {
+            [void]$G.errors.Add("${zip}: refused, reparse point in path ($rp): nothing archived or deleted")
+            [void](Write-ItemLine $G $zip "archive" 0 "result" "blocked" "reparse point in path ($rp): nothing archived or deleted"); continue
+        }
         try {
             $names = @{}
             if (Test-Path -LiteralPath $zip) {
@@ -1385,11 +1523,18 @@ function Invoke-LogArchive($G) {
             $r = [IO.Compression.ZipFile]::OpenRead($zip)
             $len = @{}
             try { foreach ($e in $r.Entries) { $len[$e.FullName] = $e.Length } } finally { $r.Dispose() }
+            $ok = @($todo | Where-Object { $len.ContainsKey($_.entry) -and $len[$_.entry] -eq $_.c.bytes }).Count
+            if (-not (Write-ItemLine $G $zip "archive" (Get-Item -LiteralPath $zip -Force).Length "result" "archived" "$($todo.Count) file(s) added, $ok verified")) {
+                [void]$G.errors.Add("${zip}: archived, items log line not written ($Script:ItemsLogError)")
+            }
             foreach ($x in $todo) {
                 if ($len.ContainsKey($x.entry) -and $len[$x.entry] -eq $x.c.bytes) { $x.c["archived_as"] = $x.entry; Remove-Candidate $G $x.c }
                 else { [void]$G.errors.Add("$($x.c.path): not verified in $zip, not deleted") }
             }
-        } catch { [void]$G.errors.Add("${zip}: $($_.Exception.Message)") }
+        } catch {
+            [void]$G.errors.Add("${zip}: $($_.Exception.Message)")
+            [void](Write-ItemLine $G $zip "archive" 0 "result" "error" "$($_.Exception.Message)")
+        }
     }
 }
 
@@ -1427,14 +1572,34 @@ function Invoke-DistApply($G) {
         [void]$G.errors.Add("prune-artifacts.ps1 -Apply not run: its dry run differs from the plan (not planned: $($extra -join ', '); planned, not listed: $($miss -join ', '))"); return
     }
     $before = Get-DistEntries
+    # items log: start / end of the prune-artifacts.ps1 -Apply call (fail-closed: no start line -> not run), then one
+    # result line per planned entry (gone or still there); the start line lists the planned entries it is about to delete
+    if (-not (Add-ItemsLine ([ordered]@{ event = "prune_start"; group = $G.group; keep = @($pk); planned_existing = $expect.Count
+                                         entries = @($expect.Keys | Sort-Object); plan_hash = $Script:PlanHashNow; mode = $Script:mode }))) {
+        [void]$G.errors.Add("prune-artifacts.ps1 -Apply not run: items log line not written ($Script:ItemsLogError)"); return
+    }
     try {
         $out = @(& $prune @p *>&1 | ForEach-Object { "$_" })
         $G["apply_output"] = $out
+        if (-not (Add-ItemsLine ([ordered]@{ event = "prune_end"; group = $G.group; ok = $true; output_lines = $out.Count }))) {
+            [void]$G.errors.Add("prune-artifacts.ps1 -Apply: ran, items log prune_end line not written ($Script:ItemsLogError)")
+        }
         foreach ($c in $G.candidates) {
             $k = (Get-LongPath $c.path).ToLowerInvariant()
             if ($expect.ContainsKey($k) -and -not (Test-Path -LiteralPath $c.path)) { $c["deleted"] = $true; $G.deleted_count += 1; $G.deleted_bytes += $c.bytes }
         }
-    } catch { [void]$G.errors.Add("prune-artifacts.ps1 -Apply: $($_.Exception.Message)") }
+    } catch {
+        [void]$G.errors.Add("prune-artifacts.ps1 -Apply: $($_.Exception.Message)")
+        if (-not (Add-ItemsLine ([ordered]@{ event = "prune_end"; group = $G.group; ok = $false; error = "$($_.Exception.Message)" }))) {
+            [void]$G.errors.Add("prune-artifacts.ps1 -Apply: items log prune_end line not written ($Script:ItemsLogError)")
+        }
+    }
+    foreach ($c in $G.candidates) {
+        if ($c.Contains("deleted") -and $c.deleted) { $a = "deleted"; $r = "gone after prune-artifacts.ps1 -Apply" }
+        elseif (Test-Path -LiteralPath $c.path) { $a = "not_deleted"; $r = "still there after prune-artifacts.ps1 -Apply" }
+        else { $a = "skipped"; $r = "gone before prune-artifacts.ps1 -Apply ran" }
+        if (-not (Write-ItemLine $G $c.path $c.kind $c.bytes "result" $a $r)) { [void]$G.errors.Add("$($c.path): $a, items log result line not written ($Script:ItemsLogError)") }
+    }
     # anything under dist\ / release\ gone that the plan did not list -> error (exit 1)
     $after = @{}
     foreach ($e in (Get-DistEntries)) { $after[$e] = $true }
@@ -1587,7 +1752,21 @@ $report["plan_hash"] = $PlanHashNow
 $report["apply_gate"] = $gate
 if ($Refused.Count) { $report["apply_refused_reasons"] = @($Refused) }
 $ApplyStopped = ""
+$ItemsLogFailed = $false
 if ($Apply -and -not $Refused.Count) {
+    # 1.4.15 items log: created first; not writable -> nothing archived or deleted, exit 1
+    $Script:ItemsLog = Join-Path $outDir "don_dep-$stamp.items.jsonl"
+    $report["items_log"] = $Script:ItemsLog
+    try { New-Item -ItemType Directory -Force -Path $outDir | Out-Null } catch { $Script:ItemsLogError = $_.Exception.Message }
+    $started = (Test-Path -LiteralPath $outDir -PathType Container) -and
+               (Add-ItemsLine ([ordered]@{ event = "start"; plan_hash = $PlanHashNow; keep_list_sha256 = $KeepMaster.sha256; groups = @($Selected); mode = $mode }))
+    if (-not $started) {
+        $ItemsLogFailed = $true
+        $ApplyStopped = "items log $($Script:ItemsLog) cannot be written ($Script:ItemsLogError): nothing archived or deleted"
+        $Script:ItemsLog = $null
+    }
+}
+if ($Apply -and -not $Refused.Count -and -not $ItemsLogFailed) {
     foreach ($g in $results) {
         if ($g.status -ne "ok") { continue }
         $g["applied"] = $true
@@ -1602,6 +1781,21 @@ if ($Apply -and -not $Refused.Count) {
             [void]$g.errors.Add("apply stopped, line $($_.InvocationInfo.ScriptLineNumber): $($_.Exception.Message)")
             $ApplyStopped = "unexpected error in group $($g.group): nothing more archived or deleted"
             break
+        }
+    }
+    # every candidate without a result line yet (group not applied, apply stopped, not archived, dist without -IncludeDist)
+    foreach ($g in $results) {
+        foreach ($c in @($g.candidates)) {
+            if ($Script:ItemsLogged.ContainsKey("$($g.group)|$($c.path)".ToLowerInvariant())) { continue }
+            $a, $r = Get-ItemReason $g $c
+            if (-not $r) {
+                $r = if ($ApplyStopped) { "apply stopped ($ApplyStopped)" }
+                     elseif (-not $g.Contains("applied")) { "group not applied (status $($g.status))" }
+                     elseif ($g.group -eq "dist" -and -not $IncludeDist) { "dist: deleted only with -IncludeDist" }
+                     elseif ($g.errors.Count) { "error in the group: $($g.errors[$g.errors.Count - 1])" }
+                     else { "no reason recorded" }
+            }
+            [void](Write-ItemLine $g $c.path $c.kind $c.bytes "result" $a $r)
         }
     }
 }
@@ -1637,7 +1831,14 @@ $report["keep_list"] = [ordered]@{ file = $KeepMaster.file; ok = $KeepMaster.ok;
                                    notice_status = $KeepMaster.notice_status; sha256 = $KeepMaster.sha256 }
 $planFile = Join-Path $outDir "don_dep-$stamp.plan.txt"
 $report["plan_text_file"] = $planFile
+if ($ItemsLogFailed) { $failed = $true }          # items log not writable: nothing deleted, exit 1
 $exitCode = if ($Refused.Count) { 2 } elseif ($failed) { 1 } else { 0 }
+if ($Script:ItemsLog) {
+    $endOk = Add-ItemsLine ([ordered]@{ event = "end"; exit_code = $exitCode; deleted_count = $tot.deleted_count; deleted_bytes = $tot.deleted_bytes
+                                        error_count = @($results | ForEach-Object { $_.errors.Count } | Measure-Object -Sum).Sum
+                                        apply_stopped = $ApplyStopped; plan_hash = $PlanHashNow; mode = $mode })
+    if (-not $endOk) { $report.errors += "items log end line not written ($Script:ItemsLogError)"; $exitCode = 1 }
+}
 $report.exit_code = $exitCode
 
 $gb = { param($b) "{0:N3} GB" -f ($b / 1GB) }
@@ -1661,6 +1862,17 @@ $lines += ("MUC BI KEEP_LIST CHAN / blocked by the keep list: {0}  |  {1}: {2}  
            $(if ($Apply) { "candidates" } else { "se xoa / to delete" }), $tot.candidate_count, $KeepMaster.file,
            $(if ($KeepMaster.ok) { "$(@($KeepMaster.entries).Count) entries" } else { "NOT USABLE" }))
 foreach ($b in $Script:KeepBlocked) { $lines += ("KEEP_LIST  {0,-13} {1}  - {2}; entry '{3}' (keep list line {4})" -f $b.group, $b.path, $b.how, $b.entry, $b.line) }
+# 1.4.15: companions of every backup zip candidate (deleted with it) and the .sha256 / config-* kept, with the reason
+foreach ($g in @($results | Where-Object { $_.group -eq "backups" -and $_.Contains("companions") })) {
+    $lines += "TEP DI KEM / companions (backups): zip candidates $(@($g.companions).Count), kept companions $($g.companions_kept.Count)"
+    foreach ($z in @($g.companions)) {
+        $cl = if (@($z.companions).Count) { (@($z.companions) | ForEach-Object { "$($_.name) ($($_.bytes) B)" }) -join ', ' } else { "none" }
+        $note = if ($z.zip_is_candidate) { "" } else { "  (zip not a candidate: its companions stay at apply time)" }
+        $lines += "companions  $($z.zip) ($(& $gb $z.zip_bytes)): $cl$note"
+    }
+    foreach ($k in $g.companions_kept) { $lines += "companion_kept  $($k.name) ($($k.bytes) B): kept - $($k.reason)" }
+}
+if ($report.Contains("items_log")) { $lines += "ITEMS_LOG: $($report.items_log)$(if ($ItemsLogFailed) { ' (NOT WRITABLE: nothing deleted)' })" }
 if (-not $KeepMaster.ok) {
     $lines += "KEEP_LIST ERROR: $($KeepMaster.error). Fail-closed: nothing deleted, exit 1."
     if ($Apply) { $lines += "KEEP_LIST notice: $(if ($KeepMaster.notified) { 'da bao / sent once' } else { 'BAO THAT BAI / notify FAILED (next -Apply run tries again)' }) ($($KeepMaster.notify_note))" }

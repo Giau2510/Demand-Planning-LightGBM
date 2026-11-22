@@ -29,14 +29,34 @@ their tests change: no application, schema, data or forecast number change.
   unexpected error that is not handled per entry stops every further deletion (`apply_stopped`), the `.json` / `.txt` /
   `.plan.txt` reports are still written (entries deleted before are listed) and the exit code is 1. Errors handled per
   entry (an entry that cannot be deleted, a keep list check that throws) and per archive (group `logs`) are recorded and
-  the next entry is still checked; the failed entry itself is never deleted. A companion file of a backup (`.sha256`,
-  `config-*`) is its own entry: when the zip cannot be deleted, its companions may still be.
+  the next entry is still checked; the failed entry itself is never deleted.
+* Companions (22/11/2026): a `.sha256` / `config-*` companion of a backup zip is deleted only when its main zip is gone
+  right before (checked for every order); a zip that was not deleted (error, locked, skipped, blocked, changed after the
+  plan) keeps its companions (`main zip not deleted: companion kept`). The plan (`.txt` section `TEP DI KEM /
+  companions`, report `companions` / `companions_kept` of group `backups`) lists per zip candidate the companions deleted
+  with it (or `none`) and every `.sha256` / `config-*` kept with the reason (names are only shown: the matching rule is
+  unchanged). The plan hash does not change.
+* Items log (22/11/2026): with `-Apply`, `logs\don_dep\don_dep-<stamp>.items.jsonl` (report `items_log`, `.txt`
+  `ITEMS_LOG:`), one JSON line appended per event: `start`, an `intent` / `deleting` line BEFORE each deletion and a
+  `result` line per entry (`deleted`, `not_deleted`, `blocked`, `skipped`, `error`; `archived` for a logs archive),
+  `prune_start` (with `entries`: the planned paths it is about to delete) / `prune_end` around
+  `prune-artifacts.ps1 -Apply`, `end`. Fail-closed: log not writable at the start -> nothing archived or deleted, exit 1;
+  an intent line (or `prune_start`) not written -> not deleted (error); any other line not written -> error, exit 1 (an
+  entry already deleted gets action `deleted` when the fallback line can be written; a log that fails twice for the same entry
+  may leave an `error` line for an entry that was deleted: the log line is wrong, nothing is lost; known limit). No file in a dry run.
+* S1 (22/11/2026): a backtick in a folder name before the first wildcard of a keep list pattern is escaped too
+  (`WildcardPattern.Escape` of PS 5.1 leaves it, so such a pattern never matched).
+* S5 (comments only): the script header describes `contains kept (pattern)`, `notice_status`, S-a, companions and the
+  items log; no behaviour change.
 * Launcher `-Groups a,b` (22/11/2026): passed on to the installed script as one comma list; refused (exit 2, never the
   default groups instead) when empty or when the installed script has no `-Groups` parameter. The plan hash depends on
   the groups: `-Apply` takes the same `-Groups` as the dry run.
 
-Not included: S1 - S5; the 7 proposed keep list lines; any change of the scheduled task `DemandForecastCleanup` (it
-stays DISABLED; it still calls the 1.4.0 script with `-Apply` directly, which bypasses the keep list and the plan lock).
+Not included: S2 as a separate change (covered by S-a); S3; S4 beyond tests (S4 was tests only; they are added); the
+total budget part of S5 (only its comments are done); the wrong reason printed for a group deleted completely before a
+later group fails; handling of a folder whose deletion stops half way; the 7
+proposed keep list lines; any change of the scheduled task `DemandForecastCleanup` (it stays DISABLED; it still calls
+the 1.4.0 script with `-Apply` directly, which bypasses the keep list and the plan lock).
 
 ## 1.4.14 (Forecast Results merged into Daily forecast)
 
