@@ -463,7 +463,10 @@ def test_default_scope_is_the_active_source_even_without_history(client, small_d
 
 # ------------------------------------------------------------------ end to end with the real pipeline
 def test_a_real_publish_records_its_d1_history(client, small_demo):
-    timeutil.set_now_override(None)
+    # 22/11/2026: was set_now_override(None) (real clock). The demo batch is built at the frozen NOW (20/10) and its 30-day
+    # horizon ends about 19/11, so from 20/11 on the real run date + 1 had no forecast values (NO_D1_VALUES, NOT_ELIGIBLE):
+    # a time bomb of the test, not of the app. A clock inside the horizon keeps every assertion below unchanged.
+    timeutil.set_now_override(lambda: NOW + timedelta(hours=1))
     r = client.post("/api/training/run", json={"force": True})
     assert r.status_code == 200, r.text
     with db.read() as c:
