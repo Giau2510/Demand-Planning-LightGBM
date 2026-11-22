@@ -1,4 +1,4 @@
-"""1.4.15 (lot 1): the four guarded data_policy fields change only through /api/data-policy/guarded.
+"""1.4.15 (lot 1, 1b): the guarded data_policy fields change only through /api/data-policy/guarded.
 
 Integration with fakes (TestClient on the isolated temporary database, no real data, no network).
 Covers: the generic editor (PUT /api/settings/data_policy and its reset) keeps the four fields; GET / preview / apply of
@@ -6,6 +6,7 @@ the guarded endpoint (expected value, confirmation text of the Vietnam day, reas
 history, audit, undo, sequential "concurrent" requests); other sections are not affected.
 """
 import json
+import sqlite3
 from datetime import datetime
 
 import pytest
@@ -15,7 +16,8 @@ from app import settings_service as ss
 from app import timeutil
 from app.timeutil import VN_TZ
 
-GUARDED = ("window_start_date", "history_change_policy", "history_day_check", "source_time_travel_hours")
+GUARDED = ("window_start_date", "history_change_policy", "history_day_check", "source_time_travel_hours",
+           "training_start_rule")
 TODAY = "2026-11-22"
 CONFIRM = f"DOI-CHINH-SACH-DU-LIEU-{TODAY}"
 REASON = "chu du an duyet doi chinh sach"       # >= 10 characters
@@ -158,7 +160,7 @@ def test_get_fresh_version_zero_and_contract(client):
     assert j["defaults"] == j["fields"]
     assert j["version"] == 0
     assert j["confirm_text"] == CONFIRM
-    assert j["high_risk_fields"] == ["history_change_policy", "window_start_date"]
+    assert j["high_risk_fields"] == ["history_change_policy", "window_start_date", "training_start_rule"]
     assert j["reason_min_length"] == 10
     assert j["history"] == []
 
@@ -184,7 +186,8 @@ def test_get_version_is_latest_history_id_and_history_max_five(client):
     ids = [h["id"] for h in j["history"]]
     assert ids == sorted(ids, reverse=True)                    # newest first
     assert [h["values"]["source_time_travel_hours"] for h in j["history"]] == [106, 105, 104, 103, 102]
-    assert set(j["history"][0]) == {"id", "changed_at", "note", "values", "previous_values"}
+    assert set(j["history"][0]) == {"id", "changed_at", "note", "values", "previous_values", "changed_fields"}
+    assert j["history"][0]["changed_fields"] == ["source_time_travel_hours"]
     assert set(j["history"][0]["values"]) == set(GUARDED)
 
 
@@ -796,8 +799,8 @@ def test_preview_impact_without_bigquery_settings_has_unknown_count(client):
 
 def test_preview_other_fields_only_have_no_impact_but_a_warning(client):
     j = client.post("/api/data-policy/guarded/preview", json={"patch": {"history_day_check": False}}).json()
-    assert j["impact"] is None
-    assert any("history_day_check" in w for w in j["warnings"])
+    assert j["impact"] is None and j["impacts"] == []
+    assert j["warnings"] == ["NO_IMPACT_ESTIMATE:history_day_check"]
 
 
 # ---- reset / PUT and training_start_rule
@@ -815,10 +818,294 @@ def test_reset_keeps_training_start_rule_and_guarded_fields(client):
     assert st["training_start_rule"] == "OPEN_HOURS_COVERAGE" and {k: st[k] for k in GUARDED} == kept
 
 
-def test_put_can_still_change_training_start_rule(client):
-    r = client.put("/api/settings/data_policy", json={**_policy(), "training_start_rule": "OPEN_HOURS_COVERAGE"})
+def test_put_ignores_training_start_rule(client):
+    # 1.4.15 lot 1b: a guarded field - the generic editor ignores the value sent (no error, the rest is saved)
+    r = client.put("/api/settings/data_policy", json={**_policy(), "training_start_rule": "OPEN_HOURS_COVERAGE",
+                                                     "max_data_lag_days": 4})
     assert r.status_code == 200, r.text
-    assert r.json()["training_start_rule"] == "OPEN_HOURS_COVERAGE"
-    assert _policy()["training_start_rule"] == "OPEN_HOURS_COVERAGE"
-    r = client.put("/api/settings/data_policy", json={**_policy(), "training_start_rule": "WINDOW_START"})
-    assert r.json()["training_start_rule"] == "WINDOW_START"
+    assert r.json()["training_start_rule"] == "WINDOW_START" and _policy()["training_start_rule"] == "WINDOW_START"
+    assert _policy()["max_data_lag_days"] == 4
+
+
+# ------------------------------------------------------------------ lot 1b: stale jobs, training_start_rule, codes
+# frozen clock: 22/11 12:00 Vietnam = 22/11 05:00 UTC; STALE = max(6 h, train_timeout_seconds 10800 + 600 s) = 6 h
+OLD = "2026-11-21T20:00:00+00:00"       # 9 h before now
+RECENT = "2026-11-22T03:00:00+00:00"    # 2 h before now
+
+
+def _job_at(jid, job_type, status, created_at, started_at=None, stage_updated_at=None, next_attempt_at=None):
+    with db.tx() as c:
+        c.execute("INSERT INTO job_runs(id, job_type, idempotency_key, trigger, status, created_at, started_at, "
+                  "stage_updated_at, next_attempt_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                  (jid, job_type, f"idem-{jid}", "SCHEDULE", status, created_at, started_at, stage_updated_at,
+                   next_attempt_at))
+
+
+def _job_row(jid):
+    with db.read() as c:
+        return dict(c.execute("SELECT * FROM job_runs WHERE id=?", (jid,)).fetchone())
+
+
+def test_busy_recent_running_job_blocks_and_is_not_stale(client):
+    _job_at("JB-1", "D1_SYNC", "RUNNING", OLD, started_at=OLD, stage_updated_at=RECENT)   # newest mark counts
+    r = _apply(client, {"source_time_travel_hours": 100}, acknowledged=True)
+    assert r.status_code == 409 and _code(r) == "DATA_POLICY_BUSY", r.text
+    assert [j["id"] for j in r.json()["params"]["jobs"]] == ["JB-1"] and r.json()["params"]["stale_ignored"] == []
+    pv = client.post("/api/data-policy/guarded/preview", json={"patch": {"source_time_travel_hours": 100}}).json()
+    assert pv["busy"]["busy"] is True and [j["id"] for j in pv["busy"]["jobs"]] == ["JB-1"]
+
+
+def test_busy_old_running_job_without_live_thread_is_ignored_and_audited(client):
+    _job_at("JB-2", "D1_SYNC", "RUNNING", OLD, started_at=OLD, stage_updated_at=OLD)
+    before = _job_row("JB-2")
+    pv = client.post("/api/data-policy/guarded/preview", json={"patch": {"source_time_travel_hours": 100}}).json()
+    assert pv["busy"]["busy"] is False and pv["busy"]["jobs"] == []
+    assert [j["id"] for j in pv["busy"]["stale_ignored"]] == ["JB-2"]
+    r = _apply(client, {"source_time_travel_hours": 100}, acknowledged=True)
+    assert r.status_code == 200, r.text
+    with db.read() as c:
+        d = json.loads(c.execute("SELECT details_json FROM audit_log WHERE action='DATA_POLICY_GUARDED_APPLIED' "
+                                 "ORDER BY id DESC LIMIT 1").fetchone()[0])
+    assert d["stale_ignored"] == [{"id": "JB-2", "job_type": "D1_SYNC", "status": "RUNNING"}]
+    assert d["stale_ignored_total"] == 1
+    assert _job_row("JB-2") == before          # the job row is never changed here
+
+
+def test_busy_old_retry_wait_is_ignored_recent_next_attempt_blocks(client):
+    _job_at("JB-3", "FORECAST_REFRESH", "RETRY_WAIT", OLD, next_attempt_at=OLD)
+    assert _apply(client, {"source_time_travel_hours": 100}, acknowledged=True).status_code == 200
+    _job_at("JB-4", "CANDIDATE_TRAIN", "RETRY_WAIT", OLD, next_attempt_at=RECENT)     # its next attempt is recent
+    r = _apply(client, {"source_time_travel_hours": 90}, acknowledged=True)
+    assert r.status_code == 409 and _code(r) == "DATA_POLICY_BUSY"
+    assert [j["id"] for j in r.json()["params"]["jobs"]] == ["JB-4"]
+    assert [j["id"] for j in r.json()["params"]["stale_ignored"]] == ["JB-3"]
+
+
+def test_busy_old_job_still_live_in_this_process_blocks(client, monkeypatch):
+    from app.jobs import runner
+    _job_at("JB-5", "TRAIN_PUBLISH", "RUNNING", OLD, started_at=OLD, stage_updated_at=OLD)
+    monkeypatch.setattr(runner, "live_jobs", lambda: [{"job_id": "JB-5", "job_type": "TRAIN_PUBLISH", "heavy": True}])
+    r = _apply(client, {"source_time_travel_hours": 100}, acknowledged=True)
+    assert r.status_code == 409 and _code(r) == "DATA_POLICY_BUSY", r.text
+    assert r.json()["params"]["stale_ignored"] == []
+
+
+def test_busy_stale_limit_follows_training_timeout(client):
+    ss.update("sel2_pipeline", {"train_timeout_seconds": 43200}, note="test")     # STALE = 12 h 10 min
+    _job_at("JB-6", "CANDIDATE_TRAIN", "RUNNING", OLD, started_at=OLD)              # 9 h old: still blocks
+    r = _apply(client, {"source_time_travel_hours": 100}, acknowledged=True)
+    assert r.status_code == 409 and _code(r) == "DATA_POLICY_BUSY"
+
+
+def test_preview_busy_structure_in_window(client):
+    _at(1, 0, 23)
+    b = client.post("/api/data-policy/guarded/preview", json={"patch": {"source_time_travel_hours": 100}}).json()["busy"]
+    assert set(b) == {"busy", "detail", "window", "jobs", "stale_ignored", "stale_ignored_total"}
+    assert b["busy"] is True and b["window"] == "00:45-03:45" and b["detail"]
+    _at(12, 0)
+    b = client.post("/api/data-policy/guarded/preview", json={"patch": {"source_time_travel_hours": 100}}).json()["busy"]
+    assert b == {"busy": False, "detail": None, "window": None, "jobs": [], "stale_ignored": [],
+                 "stale_ignored_total": 0}
+
+
+# ---- training_start_rule (guarded, high risk)
+def test_training_start_rule_needs_confirm_text_and_reason(client):
+    n = _hist_count()
+    for kw in ({"reason": REASON}, {"confirm_text": CONFIRM}, {"confirm_text": CONFIRM, "reason": "short"},
+               {"acknowledged": True}):
+        r = _apply(client, {"training_start_rule": "OPEN_HOURS_COVERAGE"}, **kw)
+        assert r.status_code == 409 and _code(r) == "DATA_POLICY_CONFIRM_REQUIRED", (kw, r.text)
+    assert _hist_count() == n and _policy()["training_start_rule"] == "WINDOW_START"
+    r = _apply(client, {"training_start_rule": "OPEN_HOURS_COVERAGE"}, **_high())
+    assert r.status_code == 200, r.text
+    assert r.json()["applied"] == {"training_start_rule": "OPEN_HOURS_COVERAGE"}
+    h = client.get("/api/data-policy/guarded").json()["history"]
+    assert h[0]["changed_fields"] == ["training_start_rule"]
+    assert h[0]["previous_values"]["training_start_rule"] == "WINDOW_START"
+    assert "training_start_rule WINDOW_START -> OPEN_HOURS_COVERAGE" in h[0]["note"]
+
+
+def test_training_start_rule_expected_mismatch_409(client):
+    _set(training_start_rule="OPEN_HOURS_COVERAGE")
+    r = _apply(client, {"training_start_rule": "WINDOW_START"}, expected={"training_start_rule": "WINDOW_START"},
+               **_high())
+    assert r.status_code == 409 and _code(r) == "SETTINGS_CHANGED_ELSEWHERE"
+    assert r.json()["params"]["current"]["training_start_rule"] == "OPEN_HOURS_COVERAGE"
+
+
+def test_training_start_rule_invalid_value_422(client):
+    r = client.post("/api/data-policy/guarded/preview", json={"patch": {"training_start_rule": "OTHER"}})
+    assert r.status_code == 422 and _code(r) == "DATA_POLICY_INVALID_VALUE"
+
+
+def _bigquery_active():
+    ss.update("bigquery", {"project_id": "proj-x", "dataset_id": "ds_x", "source_table": "tbl_x"}, note="test")
+    ss.update("general", {"active_source": "BIGQUERY"}, note="test")
+
+
+def test_preview_training_start_impact_without_bigquery_scope(client):
+    j = client.post("/api/data-policy/guarded/preview", json={"patch": {"training_start_rule": "OPEN_HOURS_COVERAGE"}}).json()
+    ws = _policy()["window_start_date"]
+    assert j["impact"] == {"kind": "TRAINING_START", "window_start_date": ws, "coverage_start": None,
+                           "effective_current": ws, "effective_after": ws, "delta_days": 0,
+                           "applies_from": "NEXT_DATA_WINDOW_READ"}
+    assert "TRAINING_START_CHANGES_MODEL_INPUT" in j["notes"] and "NO_ESTIMATE_TIMEOUT" not in j["notes"]
+    assert j["high_risk"] is True and j["needs_confirm_text"] is True and j["needs_acknowledged"] is False
+
+
+def test_preview_training_start_impact_with_coverage(client, monkeypatch):
+    from app.data import open_hours
+    _bigquery_active()
+    monkeypatch.setattr(open_hours, "coverage_start", lambda c, scope_key, start, end: "2026-03-01")
+    j = client.post("/api/data-policy/guarded/preview", json={"patch": {"training_start_rule": "OPEN_HOURS_COVERAGE"}}).json()
+    assert j["impact"] == {"kind": "TRAINING_START", "window_start_date": "2026-01-01", "coverage_start": "2026-03-01",
+                           "effective_current": "2026-01-01", "effective_after": "2026-03-01", "delta_days": 59,
+                           "applies_from": "NEXT_DATA_WINDOW_READ"}
+
+
+def test_preview_training_start_timeout_gives_null_and_note(client, monkeypatch):
+    import sqlite3
+    from app.data import open_hours
+    _bigquery_active()
+
+    def _interrupted(c, scope_key, start, end):
+        raise sqlite3.OperationalError("interrupted")
+    monkeypatch.setattr(open_hours, "coverage_start", _interrupted)
+    n = _hist_count()
+    r = client.post("/api/data-policy/guarded/preview", json={"patch": {"training_start_rule": "OPEN_HOURS_COVERAGE"}})
+    assert r.status_code == 200, r.text
+    imp = r.json()["impact"]
+    assert imp["coverage_start"] is None and imp["effective_after"] is None and imp["delta_days"] is None
+    assert imp["effective_current"] == "2026-01-01"
+    assert "NO_ESTIMATE_TIMEOUT" in r.json()["notes"] and "NO_ESTIMATE_ERROR" not in r.json()["notes"]
+    assert _hist_count() == n
+
+
+def test_apply_training_start_rule_never_runs_the_coverage_scan(client, monkeypatch):
+    from app.data import open_hours
+    _bigquery_active()
+
+    def _boom(*a, **k):
+        raise AssertionError("coverage scan must not run in apply")
+    monkeypatch.setattr(open_hours, "coverage_start", _boom)
+    assert _apply(client, {"training_start_rule": "OPEN_HOURS_COVERAGE"}, **_high()).status_code == 200
+
+
+# ---- codes: warnings, impacts, PUT note
+def test_preview_warnings_are_codes(client):
+    j = client.post("/api/data-policy/guarded/preview",
+                    json={"patch": {"history_day_check": False, "source_time_travel_hours": 100}}).json()
+    assert j["warnings"] == ["NO_IMPACT_ESTIMATE:history_day_check,source_time_travel_hours"]
+    j = client.post("/api/data-policy/guarded/preview", json={"patch": {"source_time_travel_hours": 160}}).json()
+    assert j["warnings"] == ["NO_CHANGE"]
+
+
+def test_preview_two_impacts_first_is_held_lines(client):
+    j = client.post("/api/data-policy/guarded/preview",
+                    json={"patch": {"history_change_policy": "FOLLOW_SOURCE",
+                                    "training_start_rule": "OPEN_HOURS_COVERAGE"}}).json()
+    assert [i["kind"] for i in j["impacts"]] == ["HELD_LINES", "TRAINING_START"]
+    assert j["impact"] == j["impacts"][0]
+
+
+def test_put_note_lists_changed_fields(client):
+    assert client.put("/api/settings/data_policy", json={**_policy(), "max_data_lag_days": 9}).status_code == 200
+    with db.read() as c:
+        note = c.execute("SELECT note FROM settings_history WHERE section='data_policy' ORDER BY id DESC LIMIT 1").fetchone()[0]
+    assert note == "updated via UI: max_data_lag_days 2 -> 9"
+    assert client.put("/api/settings/data_policy", json=_policy()).status_code == 200
+    with db.read() as c:
+        note = c.execute("SELECT note FROM settings_history WHERE section='data_policy' ORDER BY id DESC LIMIT 1").fetchone()[0]
+    assert note == "updated via UI"
+
+
+# ------------------------------------------------------------------ L1B-BE-FIX: real interrupt, errors, marks, job types
+@pytest.mark.parametrize("exc", [sqlite3.OperationalError("no such column: open_hours_status"), RuntimeError("boom")])
+def test_preview_training_start_other_error_is_no_estimate_error(client, monkeypatch, exc):
+    from app.data import open_hours
+    _bigquery_active()
+
+    def _fail(c, scope_key, start, end):
+        raise exc
+    monkeypatch.setattr(open_hours, "coverage_start", _fail)
+    r = client.post("/api/data-policy/guarded/preview", json={"patch": {"training_start_rule": "OPEN_HOURS_COVERAGE"}})
+    assert r.status_code == 200, r.text
+    assert r.json()["impact"]["coverage_start"] is None and r.json()["impact"]["effective_after"] is None
+    assert "NO_ESTIMATE_ERROR" in r.json()["notes"] and "NO_ESTIMATE_TIMEOUT" not in r.json()["notes"]
+
+
+def test_preview_coverage_scan_really_interrupted_by_progress_handler(client, monkeypatch):
+    """The handler installed by the preview stops a slow query on its read connection; that connection is closed after
+    and later reads work (the handler does not stay on any connection in use)."""
+    import time as _time
+    from app.api import data_policy_routes
+    from app.data import open_hours
+    _bigquery_active()
+    monkeypatch.setattr(data_policy_routes, "COVERAGE_TIMEOUT_S", 0.2)
+    seen = {}
+
+    def _slow(c, scope_key, start, end):          # a slow query on the connection the preview prepared
+        seen["conn"] = c
+        return c.execute("WITH RECURSIVE r(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM r WHERE x < 200000000) "
+                         "SELECT MAX(x) FROM r").fetchone()[0]
+    monkeypatch.setattr(open_hours, "coverage_start", _slow)
+    t0 = _time.monotonic()
+    r = client.post("/api/data-policy/guarded/preview", json={"patch": {"training_start_rule": "OPEN_HOURS_COVERAGE"}})
+    elapsed = _time.monotonic() - t0
+    assert r.status_code == 200, r.text
+    assert "NO_ESTIMATE_TIMEOUT" in r.json()["notes"] and r.json()["impact"]["coverage_start"] is None
+    assert elapsed < 20, elapsed                     # interrupted long before the 200 M steps finish
+    with pytest.raises(sqlite3.ProgrammingError):    # the scan connection is closed
+        seen["conn"].execute("SELECT 1")
+    with db.read() as c:                             # a later read is not interrupted
+        assert c.execute("WITH RECURSIVE r(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM r WHERE x < 100000) "
+                         "SELECT MAX(x) FROM r").fetchone()[0] == 100000
+    monkeypatch.setattr(open_hours, "coverage_start", lambda c, scope_key, start, end: "2026-02-01")
+    j = client.post("/api/data-policy/guarded/preview", json={"patch": {"training_start_rule": "OPEN_HOURS_COVERAGE"}}).json()
+    assert j["impact"]["coverage_start"] == "2026-02-01" and "NO_ESTIMATE_TIMEOUT" not in j["notes"]
+
+
+def test_busy_running_job_without_any_time_mark_blocks(client):
+    _job_at("JB-N", "D1_SYNC", "RUNNING", "")        # created_at is NOT NULL: an empty text is "no mark"
+    r = _apply(client, {"source_time_travel_hours": 100}, acknowledged=True)
+    assert r.status_code == 409 and _code(r) == "DATA_POLICY_BUSY", r.text
+    assert r.json()["params"]["jobs"][0]["id"] == "JB-N" and r.json()["params"]["jobs"][0]["last_mark"] is None
+
+
+@pytest.mark.parametrize("marks", [dict(created_at="not-a-date"),
+                                   dict(created_at=OLD, stage_updated_at="22/11/2026 10:00"),
+                                   dict(created_at=OLD, started_at=OLD, next_attempt_at="garbage")])
+def test_busy_malformed_time_mark_blocks_without_500(client, marks):
+    created = marks.pop("created_at")
+    status = "RETRY_WAIT" if "next_attempt_at" in marks else "RUNNING"
+    _job_at("JB-M", "FORECAST_REFRESH", status, created, **marks)
+    r = _apply(client, {"source_time_travel_hours": 100}, acknowledged=True)
+    assert r.status_code == 409 and _code(r) == "DATA_POLICY_BUSY", r.text
+    pv = client.post("/api/data-policy/guarded/preview", json={"patch": {"source_time_travel_hours": 100}})
+    assert pv.status_code == 200 and pv.json()["busy"]["busy"] is True
+    assert pv.json()["busy"]["stale_ignored"] == []
+
+
+@pytest.mark.parametrize("job_type", ["SPIKE_LINES", "FORECAST_EXPORT", "ACCURACY_REPORT"])
+def test_busy_new_job_types_block(client, job_type):
+    _job_at(f"JB-{job_type}", job_type, "RUNNING", RECENT, started_at=RECENT)
+    r = _apply(client, {"source_time_travel_hours": 100}, acknowledged=True)
+    assert r.status_code == 409 and _code(r) == "DATA_POLICY_BUSY", r.text
+    assert [j["job_type"] for j in r.json()["params"]["jobs"]] == [job_type]
+
+
+def test_forecast_extend_does_not_block(client):
+    _job_at("JB-EXT", "FORECAST_EXTEND", "RUNNING", RECENT, started_at=RECENT)
+    assert _apply(client, {"source_time_travel_hours": 100}, acknowledged=True).status_code == 200
+
+
+def test_stale_ignored_is_capped_at_ten_with_total(client):
+    for i in range(12):
+        _job_at(f"JB-S{i:02d}", "D1_SYNC", "RUNNING", OLD, started_at=OLD)
+    b = client.post("/api/data-policy/guarded/preview", json={"patch": {"source_time_travel_hours": 100}}).json()["busy"]
+    assert b["busy"] is False and len(b["stale_ignored"]) == 10 and b["stale_ignored_total"] == 12
+    assert _apply(client, {"source_time_travel_hours": 100}, acknowledged=True).status_code == 200
+    with db.read() as c:
+        d = json.loads(c.execute("SELECT details_json FROM audit_log WHERE action='DATA_POLICY_GUARDED_APPLIED' "
+                                 "ORDER BY id DESC LIMIT 1").fetchone()[0])
+    assert len(d["stale_ignored"]) == 10 and d["stale_ignored_total"] == 12

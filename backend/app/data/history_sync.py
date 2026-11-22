@@ -797,10 +797,14 @@ def _rollback_check(c, run_id: str):
     return run, entries, conflicts, new_holds, gone_holds, released
 
 
-def rollback(run_id: str, apply: bool = False, by: str = "CLI") -> dict:
+def rollback(run_id: str, apply: bool = False, by: str = "CLI", before_write=None) -> dict:
     """Restore the stored rows of one committed run exactly as they were before it (loaded_at included) and undo its
     held-line changes. Refused when a later write changed one of its keys. Dry run unless `apply` (then an online
-    backup first). The rollback is itself a run (ROLLBACK) with its change log."""
+    backup first). The rollback is itself a run (ROLLBACK) with its change log.
+    1.4.15 before_write (None = the CLI behaviour): before_write(conn, check) inside the write transaction, after the
+    backup and the conflict check, before the first write; `check` = the (run, entries, conflicts, new_holds,
+    gone_holds, released) of _rollback_check just computed under the write lock (no second check needed). Raising there
+    (the API's preview signature / busy / window / lock checks) rolls back and nothing is written."""
     with db.read() as c:
         run, entries, conflicts, new_holds, gone_holds, released = _rollback_check(c, run_id)
     out = {"run_id": run_id, "kind": run["kind"], "entries": len(entries), "conflicts": conflicts[:50],
@@ -825,6 +829,8 @@ def rollback(run_id: str, apply: bool = False, by: str = "CLI") -> dict:
         if conflicts:
             raise AppError("SYNC_ROLLBACK_REFUSED", 409, detail=f"{len(conflicts)} keys changed since {run_id}",
                            conflicts=conflicts[:20])
+        if before_write is not None:
+            before_write(c, (run, entries, conflicts, new_holds, gone_holds, released))
         for e in reversed(entries):
             k = (e["scope_key"], e["order_date"], e["sku_id"], e["fc_id"])
             before = json.loads(e["before_json"]) if e["before_json"] else None
@@ -871,10 +877,18 @@ def rollback(run_id: str, apply: bool = False, by: str = "CLI") -> dict:
 
 # ------------------------------------------------------------------ owner decision: release held lines
 def release_holds(scope_key: str, cause: str | None = None, sku_id: str | None = None, start: str | None = None,
-                  end: str | None = None, apply: bool = False, by: str = "CLI") -> dict:
+                  end: str | None = None, apply: bool = False, by: str = "CLI", expected_ids: set | None = None,
+                  before_write=None) -> dict:
     """Explicit owner decision: stop keeping some held lines (e.g. accept that a product left the source scope). The
     stored rows lose the held units (a row kept only by them is removed). Dry run unless `apply` (online backup first);
-    logged as a HOLD_RELEASE run, reversible with rollback()."""
+    logged as a HOLD_RELEASE run, reversible with rollback(). Known (backlog, not changed): its change-log rows record
+    held_after = 0.0 even when other held lines of the key stay ACTIVE.
+    1.4.15 expected_ids (the API's previewed selection; None = the CLI behaviour): with `apply`, the ACTIVE lines the
+    filter selects must be exactly these ids - checked before the backup and again under the write lock - else
+    HELD_RELEASE_PREVIEW_STALE (409) and nothing is written.
+    1.4.15 before_write (None = the CLI behaviour): called with the write connection inside the write transaction,
+    after the backup and before the first write; raising there (the API's busy / window / lock checks) rolls
+    back and nothing is written."""
     if cause and cause not in HOLD_CAUSES:
         raise AppError("VALIDATION_ERROR", 422, detail=f"cause must be one of {HOLD_CAUSES}")
     q = "SELECT * FROM demand_held_lines WHERE scope_key=? AND status='ACTIVE'"
@@ -897,6 +911,8 @@ def release_holds(scope_key: str, cause: str | None = None, sku_id: str | None =
     out = {"scope_key": scope_key, "filter": {"cause": cause, "sku_id": sku_id, "start": start, "end": end},
            "holds": len(hs), "units": round(sum(h["qty"] for h in hs), 6), "keys": len(by_key),
            "by_cause": dict(Counter(h["cause"] for h in hs)), "applied": False}
+    if apply and expected_ids is not None:
+        _expect_ids(expected_ids, {h["id"] for h in hs})     # before the backup: no useless backup of a stale choice
     if not apply or not hs:
         return out
     from ..backup import backup_database
@@ -909,6 +925,10 @@ def release_holds(scope_key: str, cause: str | None = None, sku_id: str | None =
         now_active = {h["id"] for h in db.rows(c, q, p)}
         if ids - now_active:
             raise AppError("VALIDATION_ERROR", 409, detail=f"{len(ids - now_active)} held lines changed since the dry run")
+        if expected_ids is not None:
+            _expect_ids(expected_ids, now_active)             # a line added meanwhile is refused too, nothing written
+        if before_write is not None:
+            before_write(c)
         logged = 0
         for k, lst in sorted(by_key.items()):
             row = c.execute(f"SELECT {', '.join(COLS)}, loaded_at, data_source FROM demand_daily WHERE scope_key=? AND "
@@ -948,6 +968,13 @@ def release_holds(scope_key: str, cause: str | None = None, sku_id: str | None =
         db.audit(c, "HELD_LINES_RELEASED", "scope", scope_key, {**summary, "run": rid, "backup": bk.name})
     out.update(applied=True, run_id=rid, backup=bk.name)
     return out
+
+
+def _expect_ids(expected: set, now: set) -> None:
+    if set(expected) != now:
+        raise AppError("HELD_RELEASE_PREVIEW_STALE", 409,
+                       detail=f"{len(now - set(expected))} held lines added and {len(set(expected) - now)} gone since "
+                              "the preview")
 
 
 # ------------------------------------------------------------------ daily check of the history outside the window

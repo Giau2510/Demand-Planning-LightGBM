@@ -27,6 +27,12 @@
   apply-preset lgbm-chot [--apply]          1.3.1: settings of PHUONG AN CHOT (model, daily_forecast, flows refresh +
                                             report). Default: dry run (read-only) printing the changes; --apply saves
                                             them through settings_service / the schedule flows (idempotent)
+  settings-export --out P                   1.4.15: settings file cai_dat_<yyyymmdd_hhmm>.json (read-only on the DB;
+                                            refused inside the data / backups / logs / reports folder; never overwrites)
+  settings-import --file P [--sections a,b] [--apply --confirm NHAP-CAI-DAT-<day> --reason TEXT
+                  [--confirm-purchase DOI-CAI-DAT-ANH-HUONG-MUA-HANG-<day>] [--confirm-high DOI-CAI-DAT-AN-<day>]]
+                                            1.4.15: default
+                                            prints the preview only; --apply imports all selected sections or none
   sel2-openhours-backfill [--start D] [--end D] [--yes]     1.4.0: open-hours history from BigQuery (read-only)
   sel2-train --origin D [--yes]             1.4.0: LightGBM candidates of a weekly origin (finished models skipped)
   sel2-day [--date D] [--force] [--yes]     1.4.0: candidates + SEL2 + publication of a forecast day
@@ -200,6 +206,19 @@ def main(argv=None) -> int:
     ap_ = sub.add_parser("apply-preset", help="1.3.1: settings of a release preset (dry run unless --apply)")
     ap_.add_argument("name", choices=sorted(PRESETS))
     ap_.add_argument("--apply", action="store_true", help="save the settings and switch the preset's flows ON")
+    # 1.4.15 lot 2B settings export / import (settings_portable.py)
+    sx = sub.add_parser("settings-export", help="1.4.15: write the settings file (read-only on the database)")
+    sx.add_argument("--out", required=True, help="file or folder (never inside the data folder)")
+    sim = sub.add_parser("settings-import", help="1.4.15: preview a settings file (writes only with --apply)")
+    sim.add_argument("--file", required=True)
+    sim.add_argument("--sections", default=None, help="comma list (default: the sections selected by default)")
+    sim.add_argument("--apply", action="store_true", help="import (needs --confirm and --reason)")
+    sim.add_argument("--confirm", default=None, help="NHAP-CAI-DAT-<today, Vietnam>")
+    sim.add_argument("--reason", default=None, help="reason, at least 10 characters")
+    sim.add_argument("--confirm-high", default=None, help="DOI-CAI-DAT-AN-<today>: needed when a selected section "
+                                                         "changes a HIGH key")
+    sim.add_argument("--confirm-purchase", default=None, help="DOI-CAI-DAT-ANH-HUONG-MUA-HANG-<today>: needed when a "
+                     "selected section changes a key that alters the forecast / purchase numbers")
     # 1.4.0 SEL2: AVG_DEMAND read from BigQuery (read-only) into avg_demand_daily (ml/sel2/avg_demand.py)
     sar = sub.add_parser("sel2-avg-read", help="1.4.0: read AVG_DEMAND from BigQuery (current snapshot for --date, or "
                                                "the historical days) into the configured database (plan only unless --yes)")
@@ -382,6 +401,8 @@ def _run(a) -> int:
         return 0
     if a.cmd == "apply-preset":
         return _apply_preset(a)
+    if a.cmd in ("settings-export", "settings-import"):
+        return _settings_portable(a)
     if a.cmd in ("d0-pause", "d0-resume", "d0-status"):
         return _d0_pause(a)
     if a.cmd == "sel2-export":
@@ -520,9 +541,9 @@ PRESETS = {"lgbm-chot": {
     "sections": {
         "model": {"feature_sku_code": False, "horizon_weight_short": 3.0, "horizon_weight_cutoff": 7,
                   "fallback_enabled": False},
-        # trial_mode is left as stored (True by default): only its own confirmed endpoint changes it
-        "daily_forecast": {"enabled": True, "rounding_threshold": 0.2, "log_retention_days": 120,
-                           "report_subdir": "theo-doi"}},
+        # trial_mode is left as stored (True by default): only its own confirmed endpoint changes it. 1.4.15 (owner
+        # 23/11/2026): log_retention_days is no longer set by the preset (a lower value deletes stored data)
+        "daily_forecast": {"enabled": True, "rounding_threshold": 0.2, "report_subdir": "theo-doi"}},
     "flows": ("refresh", "report")}}
 
 
@@ -813,6 +834,96 @@ def _d0_pause(a) -> int:
     return 0
 
 
+def _settings_portable(a) -> int:
+    """1.4.15 `settings-export --out P` (read-only on the database; the file is never written inside the data folder)
+    and `settings-import --file P [--sections a,b] [--apply --confirm NHAP-CAI-DAT-<day> --reason TEXT]` (default:
+    prints the preview only, nothing written; without --sections only the sections selected by default = LOW keys only,
+    a section with a HIGH / PURCHASE key must be named in --sections). Exit 0 ok, 1 refused by a check, 2 unsafe target, 3 no database."""
+    from pathlib import Path
+
+    from . import db, paths
+    from . import settings_portable as sp
+    from .messages import AppError
+    if not paths.db_path().exists():
+        print(json.dumps({"ok": False, "code": "STORAGE_NOT_FOUND", "detail": str(paths.db_path())}, ensure_ascii=False))
+        return 3
+
+    def _err(e: AppError) -> int:
+        print(json.dumps({"ok": False, "code": e.code, "detail": e.detail, "params": e.params}, indent=2, default=str,
+                         ensure_ascii=False))
+        return 1
+    if a.cmd == "settings-export":
+        out = Path(a.out)
+        if out.is_dir():
+            out = out / sp.file_name()
+        target = out.resolve()
+        d = paths.describe()
+        for k in ("data_dir", "backups_dir", "logs_dir", "reports_dir"):
+            root = Path(d[k]).resolve()
+            if target == root or root in target.parents:
+                print(json.dumps({"ok": False, "code": "SETTINGS_EXPORT_PATH_REFUSED", "detail": str(target)},
+                                 ensure_ascii=False))
+                return 2
+        if target.exists():
+            print(json.dumps({"ok": False, "code": "FILE_EXISTS", "detail": str(target)}, ensure_ascii=False))
+            return 2
+        with db.read() as c:
+            doc = sp.export_doc(c)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "x", encoding="utf-8", newline="\n") as f:
+            json.dump(doc, f, sort_keys=True, ensure_ascii=False, indent=2)
+        print(json.dumps({"ok": True, "file": str(target), "sha256": doc["sha256"]}, ensure_ascii=False))
+        return 0
+    try:
+        doc = json.loads(Path(a.file).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        print(json.dumps({"ok": False, "code": "SETTINGS_IMPORT_INVALID_FILE", "detail": type(e).__name__},
+                         ensure_ascii=False))
+        return 1
+    try:
+        with db.read() as c:
+            pv = sp.preview(c, doc)
+        chosen = [s.strip() for s in a.sections.split(",") if s.strip()] if a.sections else \
+            [p["section"] for p in pv["sections"] if p["default_selected"]]
+        if not a.apply:
+            print(json.dumps({"ok": True, "dry_run": True, "selected": chosen, **pv}, indent=2, default=str,
+                             ensure_ascii=False))
+            return 0
+        # data-reviewer L2-DREV / CV-L23: a write by the owner only; a lock file named by DF_OPS_LOCK / DF_HEAVY_LOCK
+        # (paths given by the environment, never hard-coded) refuses it
+        print("WARNING: settings-import --apply writes the settings: only the project owner runs it; an agent must "
+              "never run it.", file=sys.stderr)
+        for env, code in (("DF_OPS_LOCK", "SETTINGS_IMPORT_OPS_LOCKED"), ("DF_HEAVY_LOCK", "SETTINGS_IMPORT_HEAVY_LOCKED")):
+            lock = os.environ.get(env)
+            if lock and Path(lock).exists():
+                print(json.dumps({"ok": False, "code": code, "detail": lock}, ensure_ascii=False))
+                return 2
+        expected = {p["section"]: p["expected"] for p in pv["sections"]}
+        with db.tx() as c:
+            res = sp.apply(c, doc, chosen, expected, a.confirm, a.reason, a.confirm_purchase, a.confirm_high)
+    except AppError as e:
+        return _err(e)
+    print(json.dumps({"ok": True, "warning": "only the project owner runs settings-import --apply", **res}, indent=2,
+                     default=str, ensure_ascii=False))
+    return 0
+
+
+def _preset_values(preset: dict, cur: dict) -> tuple[dict, list[dict]]:
+    """1.4.15 (owner 23/11/2026): a preset never LOWERS a retention (settings_registry only_increase: a lower value
+    deletes stored data): such a key keeps its current value and is listed in kept_higher."""
+    from . import settings_registry as reg
+    vals_of, kept = {}, []
+    for s, vals in preset["sections"].items():
+        vals_of[s] = {}
+        for k, v in vals.items():
+            e = reg.entry(s, k)
+            if e is not None and e.only_increase and v < getattr(cur[s], k):
+                kept.append({"section": s, "key": k, "current": getattr(cur[s], k), "preset": v})
+                continue
+            vals_of[s][k] = v
+    return vals_of, kept
+
+
 def _apply_preset(a) -> int:
     """1.3.1 `apply-preset <name> [--apply]`. Dry run (default): the planned changes and the readiness of the flows,
     read-only. --apply: each section saved once through settings_service (validated, history note PRESET_NOTE), then
@@ -831,10 +942,12 @@ def _apply_preset(a) -> int:
             schema = 0
         cur = {s: ss.get(s, c) for s in preset["sections"]}
     latest = max(v for v, _ in db.available_migrations())
+    vals_of, kept = _preset_values(preset, cur)
     changes = [{"section": s, "key": k, "from": getattr(cur[s], k), "to": v}
-               for s, vals in preset["sections"].items() for k, v in vals.items() if getattr(cur[s], k) != v]
-    new = {s: {**cur[s].model_dump(), **vals} for s, vals in preset["sections"].items()}
-    out = {"preset": a.name, "dry_run": not a.apply, "schema_version": schema, "schema_required": latest}
+               for s, vals in vals_of.items() for k, v in vals.items() if getattr(cur[s], k) != v]
+    new = {s: {**cur[s].model_dump(), **vals} for s, vals in vals_of.items()}
+    out = {"preset": a.name, "dry_run": not a.apply, "schema_version": schema, "schema_required": latest,
+           "kept_higher": kept}
 
     def _refuse(why: str) -> int:
         print(json.dumps({"ok": False, **out, "refused": why, "changes": changes}, indent=2, ensure_ascii=False,

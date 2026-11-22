@@ -222,15 +222,33 @@ def test_generic_settings_put_guards(client, scoped):
     r = client.put("/api/settings/daily_forecast", json={**cur, "trial_mode": False})
     assert r.status_code == 409 and r.json()["code"] == "TRIAL_MODE_CONFIRM_REQUIRED"
     assert _history("daily_forecast") == h0 and ss.get("daily_forecast").trial_mode is True
+    # 1.4.15: enabled / rounding_threshold are registry keys (settings_registry): a changed value is refused, nothing saved
     r = client.put("/api/settings/daily_forecast", json={**cur, "enabled": True, "rounding_threshold": 0.3})
-    assert r.status_code == 200 and ss.get("daily_forecast").enabled is True
+    assert r.status_code == 409 and r.json()["code"] == "SETTINGS_FIELD_GUARDED"
+    assert sorted(r.json()["params"]["fields"]) == ["enabled", "rounding_threshold"]
+    d = ss.get("daily_forecast")
+    assert d.enabled is False and d.rounding_threshold == 0.2 and _history("daily_forecast") == h0
+    # a registry key changed one at a time is refused too
+    for key, val in (("enabled", True), ("rounding_threshold", 0.3)):
+        r = client.put("/api/settings/daily_forecast", json={**cur, key: val})
+        assert r.status_code == 409 and r.json()["params"]["fields"] == [key], key
+    assert _history("daily_forecast") == h0
+    # the same values set through the owner path (here: the service) are what the editor and its reset must now keep
+    ss.update("daily_forecast", {"enabled": True, "rounding_threshold": 0.3})
+    assert client.put("/api/settings/daily_forecast", json=ss.get("daily_forecast").model_dump()).status_code == 200
     client.post("/api/daily-forecast/trial-mode", json={"trial_mode": False, "confirm_text": "TAT-CHAY-THU-2026-10-29"})
     no_key = {k: v for k, v in ss.get("daily_forecast").model_dump().items() if k != "trial_mode"}
     assert client.put("/api/settings/daily_forecast", json=no_key).status_code == 200
     assert ss.get("daily_forecast").trial_mode is False              # a body without the key keeps it
     assert client.post("/api/settings/daily_forecast/reset").status_code == 200
     d = ss.get("daily_forecast")
-    assert d.trial_mode is False and d.enabled is False and d.rounding_threshold == 0.2     # reset keeps the trial mode
+    # reset keeps the trial mode and (1.4.15) every registry key
+    assert d.trial_mode is False and d.enabled is True and d.rounding_threshold == 0.3
+    # a key outside the registry (own box in the UI) is still editable through the generic editor
+    m0 = ss.get("model").model_dump()
+    assert client.put("/api/settings/model", json={**m0, "num_boost_round": m0["num_boost_round"] + 10}).status_code == 200
+    assert ss.get("model").num_boost_round == m0["num_boost_round"] + 10
+    ss.update("model", {"num_boost_round": m0["num_boost_round"]})
     for method, url in (("put", "/api/settings/feature_table"), ("post", "/api/settings/feature_table/reset")):
         r = getattr(client, method)(url, json={"features": {"lag_1": {"enabled": False}}})
         assert r.status_code == 409 and r.json()["code"] == "FEATURE_TABLE_VIA_OWN_API", url

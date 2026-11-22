@@ -15,7 +15,9 @@ from pydantic import ValidationError
 
 from . import __version__, db, paths
 from .api import (bq_routes, daily_routes, data_policy_routes, data_routes, explainer_routes, forecast_routes,
-                  history_routes, ops_routes, schedule_routes, sel2_routes)
+                  held_lines_routes, history_routes, open_hours_routes, ops_routes, ops_tools_routes, schedule_routes,
+                  sel2_routes,
+                  settings_advanced_routes, settings_portable_routes, sync_rollback_routes)
 from .jobs import scheduler as sched_mod
 from .logging_setup import setup_logging
 from .messages import AppError
@@ -132,6 +134,12 @@ def create_app() -> FastAPI:
     app.include_router(daily_routes.router)      # 1.3.1: daily forecast refresh, reports, feature table
     app.include_router(sel2_routes.router)       # 1.4.0: forecast source per SKU x FC, AVG_DEMAND values
     app.include_router(data_policy_routes.router)    # 1.4.15: guarded data_policy fields (expected value + confirmation)
+    app.include_router(settings_advanced_routes.router)  # 1.4.15 lot 2: registry fields (settings_registry)
+    app.include_router(settings_portable_routes.router)  # 1.4.15 lot 2B: settings export / import
+    app.include_router(held_lines_routes.router)     # 1.4.15 lot 3: release of held lines (preview, backup, background)
+    app.include_router(open_hours_routes.router)     # 1.4.15 lot 4: read missing open-hours days again (background)
+    app.include_router(sync_rollback_routes.router)  # 1.4.15 lot 5: undo of one history-sync run (preview, background)
+    app.include_router(ops_tools_routes.router)      # 1.4.15 lot 6: presets (guarded apply), spike-lines estimate
 
     dist = paths.frontend_dist()
     if (dist / "index.html").exists():
