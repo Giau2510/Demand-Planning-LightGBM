@@ -63,7 +63,11 @@ user guide [docs/CAI-DAT-NANG-CAO.md](docs/CAI-DAT-NANG-CAO.md)). No schema chan
 read-only preview, a typed text of the Vietnam day + a reason of at least 10 characters (or "I understand" for a LOW
 key), a check of the values seen at the preview (409 `SETTINGS_CHANGED_ELSEWHERE` / a stale signature), a busy gate
 (active jobs and the production windows 23:45-00:15 / 00:45-03:45), an audit row and an undo path. Status at the time of
-writing: tests written (`backend/tests/test_v1415_*.py`), NOT yet run; no package built.
+writing (23/11/2026 05:00, on the PC of the release, integration tests with fakes on temporary databases; no real BigQuery, no real
+installation): backend full suite 2529 passed, 80 skipped, 1 failed only because the temporary folder was inside "Lightgbm AI"
+(`test_v123_source_ready`, 7/7 passed with a temporary folder outside the project); frontend vitest 365 passed (47 files), typecheck
+exit 0; install chain tests (`scripts/ops/runner/tests`) 2019 passed, 3 skipped. Lint is not configured. Package: built by the release
+script from the final commit (see the release report).
 
 * Data policy (lot 1): the generic editor `PUT /api/settings/data_policy` and its reset keep `window_start_date`,
   `history_change_policy`, `history_day_check`, `source_time_travel_hours`; these change only through

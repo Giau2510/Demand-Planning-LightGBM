@@ -1,8 +1,10 @@
 # Cài đặt nâng cao và các nút ghi có chốt (bản 1.4.15)
 
 Tài liệu cho người dùng ứng dụng Demand Forecasting. Bản 1.4.15 đang chuẩn bị, CHƯA cài. Tại thời điểm viết: phần máy chủ
-đã viết xong và đã viết test (`backend/tests/test_v1415_*.py`), nhưng test CHƯA chạy; con số kết quả test sẽ được điều
-phối bổ sung sau. Mục nào ghi "đã viết test" nghĩa là có test, chưa có nghĩa là đã kiểm đạt.
+đã viết xong và đã kiểm bằng test tự động trên máy phát hành (23/11/2026 05:00; loại: kiểm thử tích hợp với dữ liệu giả, CHƯA có
+BigQuery thật, CHƯA cài vào ứng dụng thật): backend 2.529 đạt (80 bỏ qua; 1 hỏng chỉ vì thư mục tạm nằm trong thư mục dự án, đạt khi
+chạy riêng), giao diện 365 đạt, kiểm kiểu thoát 0, test chuỗi cài 2.019 đạt. Mục ghi "đã viết test" dưới đây = có test và test đó đã
+chạy đạt trong các con số trên; chưa có nghĩa là đã thử trên dữ liệu thật.
 
 ## 1. Chốt chung của mọi nút ghi
 
@@ -60,7 +62,7 @@ giá trị hiện tại vẫn là giá trị lần đó đã ghi (nếu đã b�
 nhận và lý do như lúc lưu, và không bao giờ giảm số ngày lưu giữ.
 
 Thẻ cài đặt cũ (sửa cả phần) không ghi đè được các trường trong sổ: nếu gửi giá trị khác hiện tại, máy chủ trả
-`SETTINGS_FIELD_GUARDED` (đã viết test).
+`SETTINGS_FIELD_GUARDED` (có test, đạt).
 
 ## 3. Năm trường chính sách dữ liệu được bảo vệ
 
@@ -122,7 +124,7 @@ dụng vẫn GIỮ dòng đó trong số bán đã lưu ("dòng bị giữ"). N�
   chụp KPI đã chốt không đổi).
 * **Hoàn tác**: kết quả có mã lần đồng bộ (`sync_run_id`, dạng `HRL-...`); dùng nút "Quay lại lần đồng bộ" (mục 7).
   Hậu quả: hoàn tác trả lại số bán đã lưu, KHÔNG trả lại mô hình / số dự báo đã học trên dữ liệu đã đổi.
-* Đã viết test (chưa chạy).
+* Đã có test (đạt trong lần chạy 23/11/2026 05:00).
 
 ## 6. Nút "Đọc lại giờ mở bán"
 
@@ -139,7 +141,7 @@ dụng vẫn GIỮ dòng đó trong số bán đã lưu ("dòng bị giữ"). N�
   lúc một việc. Không cần sao lưu (chỉ thêm dòng của ngày còn thiếu). Không đụng mốc đọc của lượt làm mới hằng ngày.
 * Hoàn tác: các dòng đã thêm có cùng thời điểm nạp (`loaded_at`) ghi trong kết quả và nhật ký; ứng dụng không có nút xóa
   (xóa dữ liệu luôn chờ chủ dự án duyệt).
-* Đã viết test (chưa chạy).
+* Đã có test (đạt trong lần chạy 23/11/2026 05:00).
 
 ## 7. Nút "Quay lại lần đồng bộ"
 
@@ -151,7 +153,7 @@ dụng vẫn GIỮ dòng đó trong số bán đã lưu ("dòng bị giữ"). N�
   ghi.
 * **Hậu quả**: trả lại ĐÚNG số bán lịch sử mà lần đó đã ghi; KHÔNG trả lại mô hình hay số dự báo đã học / đã công bố trên
   dữ liệu đã đổi; học lại hay không do chủ dự án quyết.
-* Đã viết test (chưa chạy).
+* Đã có test (đạt trong lần chạy 23/11/2026 05:00).
 
 ## 8. Bộ cấu hình (preset) lgbm-chot
 
@@ -163,7 +165,7 @@ dụng vẫn GIỮ dòng đó trong số bán đã lưu ("dòng bị giữ"). N�
 * Bộ cấu hình KHÔNG ghi `log_retention_days` và không bao giờ giảm số ngày lưu giữ (khóa đang cao hơn được giữ).
 * Hoàn tác: các khóa sửa được trả lại bằng nút Hoàn tác của trang Cài đặt nâng cao; công tắc luồng tắt lại ở trang Lịch
   chạy; quy tắc cố định (làm tròn) không hoàn tác ở đây.
-* Đã viết test (chưa chạy).
+* Đã có test (đạt trong lần chạy 23/11/2026 05:00).
 
 ## 9. Ước lượng spike-lines
 
